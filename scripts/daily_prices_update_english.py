@@ -1,6 +1,7 @@
 """
 daily_prices_update.py
 ----------------------
+English-commented duplicate of the German daily price update script.
 Automated script for updating the price list (prices)
 from the official Tankerkönig Azure repository
 
