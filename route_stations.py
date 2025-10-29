@@ -161,8 +161,8 @@ def ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, api_key):
     stations = []
     for feature in pois_data.get("features", []):
         props = feature.get("properties", {})
-        name = props.get("name") or props.get("osm_tags", {}).get("brand") or "Unnamed" # kommt immer nur Unnamend
-        name = feature["osm_tags"]["name"] or "Unnamed" # müsste auch gehen aber gerade time out, konnte es nicht mehr probieren
+        tags = props.get("osm_tags", {})
+        name = tags.get("name") or tags.get("brand") or "Unnamed"
         lon, lat = feature["geometry"]["coordinates"]
         stations.append({"name": name, "lat": lat, "lon": lon})
     
@@ -202,3 +202,6 @@ stations = ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, ors_api
 
 for s in stations[:10]:
     print(f"{s['name']} → lat={s['lat']:.5f}, lon={s['lon']:.5f}")
+
+# %% Test
+print()
