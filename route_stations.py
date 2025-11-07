@@ -29,7 +29,7 @@ end_locality = "Reutlingen"
 end_country = "Germany"
 
 # Search parameter for the gas stations along the route
-# darf nicht größer als 2000 m sein laut ORS Doku
+# must not be larger than 2000 meter according to ORS docs
 buffer_meters = 100  # buffer width in meters
 
 
@@ -78,7 +78,7 @@ def ors_geocode_structured(street, city, country, api_key):
     feature = features[0]
     lon, lat = feature["geometry"]["coordinates"]
     label = feature["properties"].get("label", "Unknown")
-    print("ors_geocode_structured successful")
+    print("Function ors_geocode_structured successful")
     return lat, lon, label
 
 # Function to get route between two coordinates
@@ -115,7 +115,8 @@ def ors_route_driving_car(start_lat, start_lon, end_lat, end_lon, api_key):
 
     distance_km = (summary.get("distance", 0.0) or 0.0) / 1000.0
     duration_min = (summary.get("duration", 0.0) or 0.0) / 60.0
-    print("\n ors_route_driving_car successful")
+
+    print("\n Function ors_route_driving_car successful")
     return coords_lonlat, distance_km, duration_min
 
 # Function to get fuel stations (POIs) along a route using ORS /pois endpoint
@@ -129,7 +130,7 @@ def ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, api_key):
         api_key (str): ORS API key
 
     Returns:
-        pois_data (dict): GeoJSON FeatureCollection containing fuel stations along the route
+        stations (list): List of fuel stations with 'name', 'lat', 'lon'
     """
     
     url = f"{ors_base}/pois"
@@ -153,7 +154,7 @@ def ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, api_key):
     r = requests.post(url, headers=headers, data=json.dumps(body))
 
     # for debugging purposes, print status code and reason, delete later
-    print(r.status_code, r.reason)
+    print("\n Delete later \n Status code:", r.status_code, "Reason:", r.reason)
 
     r.raise_for_status()
     pois_data = r.json()
@@ -166,7 +167,7 @@ def ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, api_key):
         lon, lat = feature["geometry"]["coordinates"]
         stations.append({"name": name, "lat": lat, "lon": lon})
     
-    print("ors_pois_fuel_along_route successful")
+    print("\n Function ors_pois_fuel_along_route successful")
     return stations
 
 
@@ -200,8 +201,6 @@ print(f"Number of points: {len(route_coords_lonlat)} coordinates along the route
 # get data of fuel stations along the route
 stations = ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, ors_api_key)
 
+print("\n--- Check FUEL STATIONS ---")
 for s in stations[:10]:
     print(f"{s['name']} → lat={s['lat']:.5f}, lon={s['lon']:.5f}")
-
-# %% Test
-print()
