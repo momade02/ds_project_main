@@ -4,7 +4,7 @@ calculate a driving route between them, and find gas stations along that route w
 """
 
 # test case long/short/switzerland
-route_scenario = "switzerland" # "long", "short" or "switzerland"
+route_scenario = "short" # "long", "short" or "switzerland"
 
 # === Setup ===
 # import libraries
@@ -36,8 +36,8 @@ elif route_scenario == "long":
     start_address = "Wilhelmstraße 7"
     start_locality = "Tübingen"
     start_country = "Germany"
-    end_address = "Marienplatz 1"
-    end_locality = "München"
+    end_address = "Borsigallee 26"
+    end_locality = "Frankfurt am Main"
     end_country = "Germany"
 elif route_scenario == "switzerland":
     start_address = "Zinngärten 9"
@@ -64,6 +64,28 @@ if not ors_api_key:
 
 # === helper functions ===
 # Functions that help main functions.
+
+def compute_max_segment_length(buffer_meters):
+    """
+    Compute the maximum segment length to stay in line with ORS /pois endpoint limits.
+
+    Inputs:
+        buffer_meters (float): Search radius (buffer) around the route in meters
+    Returns:
+        max_segment_length (float): Maximum segment length in meters
+    """
+    if buffer_meters <= 0 or buffer_meters > 2000:
+        raise ValueError("buffer_meters must be positive and not exceed 2000 meters.")
+    
+    # maximum area per segment to stay within ORS limits (50 km^2)
+    maximum_area = 50
+    max_segment_length = maximum_area/(2*(buffer_meters/1000))
+    
+    print(f"Computed max segment length: {max_segment_length:.2f} km for buffer: {buffer_meters} m")
+    print("\n Function compute_max_segment_length successful")
+
+    return max_segment_length
+
 
 def simplify_route(coords_lonlat, tolerance=0.001):
     """
@@ -164,7 +186,7 @@ def ors_route_driving_car(start_lat, start_lon, end_lat, end_lon, api_key):
     return coords_lonlat, distance_km, duration_min
 
 # Function to get fuel stations (POIs) along a route using ORS /pois endpoint
-def ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, api_key, timeout_seconds=10):
+def ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, api_key, timeout_seconds=20):
     """
     Get fuel stations (category ID 596) along a driving route using ORS /pois endpoint.
 
@@ -204,6 +226,7 @@ def ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, api_key, timeo
 
         # for debugging purposes, print status code and reason, delete later
         print("\n Delete later \n Status code:", r.status_code, "Reason:", r.reason)
+        # print(r.text)
         r.raise_for_status()
         pois_data = r.json()
 
