@@ -14,6 +14,8 @@ import json
 import requests
 from dotenv import load_dotenv
 from shapely.geometry import LineString
+from shapely.ops import split, transform, snap, substring
+import pyproj
 
 # Load .env
 env_path = Path(__file__).with_name(".env")
@@ -63,29 +65,7 @@ if not ors_api_key:
     raise SystemExit("Please set your ORS_API_KEY environment variable first!")
 
 # === helper functions ===
-# Functions that help main functions.
-
-def compute_max_segment_length(buffer_meters):
-    """
-    Compute the maximum segment length to stay in line with ORS /pois endpoint limits.
-
-    Inputs:
-        buffer_meters (float): Search radius (buffer) around the route in meters
-    Returns:
-        max_segment_length (float): Maximum segment length in meters
-    """
-    if buffer_meters <= 0 or buffer_meters > 2000:
-        raise ValueError("buffer_meters must be positive and not exceed 2000 meters.")
-    
-    # maximum area per segment to stay within ORS limits (50 km^2)
-    maximum_area = 50
-    max_segment_length = maximum_area/(2*(buffer_meters/1000))
-    
-    print(f"Computed max segment length: {max_segment_length:.2f} km for buffer: {buffer_meters} m")
-    print("\n Function compute_max_segment_length successful")
-
-    return max_segment_length
-
+    # Functions that help main functions.
 
 def simplify_route(coords_lonlat, tolerance=0.001):
     """
@@ -104,6 +84,48 @@ def simplify_route(coords_lonlat, tolerance=0.001):
     print(f"Simplified route from {len(coords_lonlat)} to {len(simplified.coords)} points")
     print("Function simplify_route successful")
     return list(simplified.coords)
+
+def segment_route(coords_lonlat, segment_length_m=10000):
+    """
+    Segment a route into smaller segments of specified length in meters.
+
+    Inputs:
+        coords_lonlat (list): List of [lon, lat] coordinates along the route
+        segment_length_m (float): Length of each segment in meters
+    Returns:
+        segments_lonlat (list): List of segments, each segment is a list of [lon, lat] coordinates
+    """
+
+    line = LineString(coords_lonlat)
+
+    # transormer for WGS 84 (EPSG:4326) to UTM zone 32N (EPSG:32632)
+    project_to_utm = pyproj.Transformer.from_crs(crs_from =
+        "EPSG:4326", crs_to = "EPSG:32632", always_xy = True
+    ).transform
+
+    # transformer back
+    project_to_lonlat = pyproj.Transformer.from_crs(
+        "EPSG:32632", "EPSG:4326", always_xy=True
+    ).transform
+
+    line_m = transform(project_to_utm, line)
+
+    segments_m = []
+    total_length = line_m.length
+
+    start = 0
+    while start < total_length:
+        end = start + segment_length_m
+        seg = substring(line_m, start, end)
+        segments_m.append(seg)
+        start = end
+    
+    segments_lonlat = []
+    for seg in segments_m:
+        seg_lonlat = transform(project_to_lonlat, seg)
+        coords = list(seg_lonlat.coords)
+        segments_lonlat.append([[lon, lat] for (lon, lat) in coords])
+    return segments_lonlat
 
 # === main functions ===
 # Functions to interact with OpenRouteService (ORS) API.
@@ -202,6 +224,9 @@ def ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, api_key, timeo
 
     # call helper function to reduce number of points along the route
     route_coords_lonlat = simplify_route(route_coords_lonlat)
+
+    # call helper function to segment the route if needed
+    route_segments = segment_route(route_coords_lonlat)
 
     url = f"{ors_base}/pois"
     body = {
