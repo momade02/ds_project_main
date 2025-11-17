@@ -4,7 +4,7 @@ calculate a driving route between them, and find gas stations along that route w
 """
 
 # test case long/short/switzerland
-route_scenario = "short" # "long", "short" or "switzerland"
+route_scenario = "long" # "long", "short" or "switzerland"
 
 # === Setup ===
 # import libraries
@@ -14,8 +14,10 @@ import json
 import requests
 from dotenv import load_dotenv
 from shapely.geometry import LineString
-from shapely.ops import split, transform, snap, substring
+from shapely.ops import transform, substring
 import pyproj
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 
 # Load .env
 env_path = Path(__file__).with_name(".env")
@@ -85,7 +87,7 @@ def simplify_route(coords_lonlat, tolerance=0.001):
     print("Function simplify_route successful")
     return list(simplified.coords)
 
-def segment_route(coords_lonlat, segment_length_m=10000):
+def segment_route(coords_lonlat, segment_length_m=200000):
     """
     Segment a route into smaller segments of specified length in meters.
 
@@ -207,27 +209,11 @@ def ors_route_driving_car(start_lat, start_lon, end_lat, end_lon, api_key):
     print("\n Function ors_route_driving_car successful")
     return coords_lonlat, distance_km, duration_min
 
-# Function to get fuel stations (POIs) along a route using ORS /pois endpoint
-def ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, api_key, timeout_seconds=20):
+def ors_pois_single_segment(segment_coords, buffer_meters, api_key, timeout_seconds):
     """
-    Get fuel stations (category ID 596) along a driving route using ORS /pois endpoint.
-
-    Inputs:
-        route_coords_lonlat (list): List of [lon, lat] coordinates along the route
-        buffer_meters (float): Search radius (buffer) around the route in meters
-        api_key (str): ORS API key
-        timeout_seconds (int|float): max seconds to wait for the ORS server
-
-    Returns:
-        stations (list): List of fuel stations with 'name', 'lat', 'lon', 'distance'
+    Helper function to get fuel stations (POIs) for a single route segment using ORS /pois endpoint.
     """
-
-    # call helper function to reduce number of points along the route
-    route_coords_lonlat = simplify_route(route_coords_lonlat)
-
-    # call helper function to segment the route if needed
-    route_segments = segment_route(route_coords_lonlat)
-
+    
     url = f"{ors_base}/pois"
     body = {
         "request": "pois",
@@ -235,7 +221,7 @@ def ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, api_key, timeo
             "buffer": buffer_meters,
             "geojson": {
                 "type": "LineString",
-                "coordinates": route_coords_lonlat  # [lon, lat] from the route
+                "coordinates": segment_coords  # [lon, lat] from the route segment
             }
         },
         "filters": {
@@ -246,7 +232,6 @@ def ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, api_key, timeo
     headers = {"Authorization": api_key, "Content-Type": "application/json"}
     
     try:
-        # send POST with timeout; timeout applies to connect+read (single value) 
         r = requests.post(url, headers=headers, data=json.dumps(body), timeout=timeout_seconds)
 
         # for debugging purposes, print status code and reason, delete later
@@ -270,8 +255,64 @@ def ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, api_key, timeo
           #  can implement distance calculation with shapely if needed
         stations.append({"name": name, "lat": lat, "lon": lon, "distance": distance})
 
-    print("\n Function ors_pois_fuel_along_route successful")
+    print("\n Function ors_pois_single_segment successful")
     return stations
+
+
+# Function to get fuel stations (POIs) along a route using ORS /pois endpoint
+def ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, api_key, timeout_seconds=30):
+    """
+    Get fuel stations (category ID 596) along a driving route using ORS /pois endpoint.
+
+    Inputs:
+        route_coords_lonlat (list): List of [lon, lat] coordinates along the route
+        buffer_meters (float): Search radius (buffer) around the route in meters
+        api_key (str): ORS API key
+        timeout_seconds (int|float): max seconds to wait for the ORS server
+
+    Returns:
+        stations (list): List of fuel stations with 'name', 'lat', 'lon', 'distance'
+    """
+
+    # call helper function to reduce number of points along the route
+    route_coords_lonlat = simplify_route(route_coords_lonlat)
+
+    # call helper function to segment the route if needed
+    route_segments = segment_route(route_coords_lonlat)
+
+    if len(route_segments) == 1:
+        return ors_pois_single_segment(
+            route_segments[0], buffer_meters, api_key, timeout_seconds
+        )
+
+    print(f"Running {len(route_segments)} segment requests in parallel...")
+
+    all_stations = []
+    futures = []
+    submit_delay = 0.2
+
+    with ThreadPoolExecutor(max_workers=min(4, len(route_segments))) as executor:
+        for seg in route_segments:
+            time.sleep(submit_delay)
+            futures.append(
+                executor.submit(
+                    ors_pois_single_segment,
+                    seg, buffer_meters, api_key, timeout_seconds
+                )
+            )
+
+        for f in as_completed(futures):
+            all_stations.extend(f.result())
+
+    unique = {}
+    for s in all_stations:
+        key = (s["lat"], s["lon"])
+        if key not in unique:
+            unique[key] = s
+
+    print(f"Finished parallel POI search. Found total: {len(unique)} fuel stations.")
+
+    return list(unique.values())
 
 
 # === Execution ===
