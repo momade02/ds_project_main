@@ -436,6 +436,6 @@ stations_with_eta = estimate_arrival_times(stations, route_coords_lonlat, route_
 
 print("\n--- Stations with ETA ---")
 for s in stations_with_eta:
-    print(f"{s['name']} → lat={s['lat']:.5f}, lon={s['lon']:.5f}, "
-          f"along={s.get('distance_along_m',0):.0f} m, "
-          f"share={s.get('fraction_of_route',0):.1%}, ETA={s.get('eta')}")
+    print(f"{s.get('name','Unnamed')} → lat={s.get('lat',0.0):.5f}, lon={s.get('lon',0.0):.5f}, distance={s.get('distance',0.0)} m, "
+          f"along={s.get('distance_along_m',0.0):.0f} m, "
+          f"share={s.get('fraction_of_route',0.0):.1%}, ETA={s.get('eta','-')}")
