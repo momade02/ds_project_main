@@ -25,24 +25,7 @@ For example, if ETA is 14:35, the time cell is 29 (14*2 + 1 = 29, because 35 >= 
 
 HOW TO USE:
 -----------
-# Option 1: Import and use in your code
-from route_tankerkoenig_integration import integrate_route_with_prices
-
-# Get stations from route_stations.py (the stations_with_eta output)
-stations_with_eta = [...]  # Output from route_stations.py
-
-# Run integration
-model_input = integrate_route_with_prices(
-    stations_with_eta=stations_with_eta,
-    use_realtime=False  # Set True for live API prices, False for demo/testing
-)
-
-# Pass to model
-predictions = model.predict(model_input)
-
-
-# Option 2: Run this file directly for testing
-python route_tankerkoenig_integration.py
+- see simply_usage_guide.ipynb
 
 CONFIGURATION:
 --------------
@@ -53,13 +36,12 @@ Required environment variables in .env file:
 
 FILE LOCATION:
 --------------
-This file is placed in: src/integration/route_tankerkoenig_integration.py
+This file should be placed in: src/integration/route_tankerkoenig_integration.py
 
 IMPORTS FROM route_stations.py:
 -------------------------------
 Currently assumes route_stations.py is in the project root (DS_PROJECT_MAIN/).
 When it moves to src/routing/, uncomment the alternative import path in the code.
-
 
 """
 
@@ -81,6 +63,31 @@ from geopy.distance import geodesic
 # Load environment variables from .env file
 # This contains our API keys and database credentials
 load_dotenv()
+
+# Import route_stations.py functions at module level
+# Note: This will execute route_stations.py's script-level code once
+# To avoid this, route_stations.py should have an if __name__ == "__main__" guard
+_ROUTE_FUNCTIONS_IMPORTED = False
+try:
+    # Add project root to path if needed
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    if 'src' in project_root:
+        project_root = os.path.dirname(os.path.dirname(project_root))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    
+    from route_stations import (
+        ors_geocode_structured,
+        ors_route_driving_car,
+        ors_pois_fuel_along_route,
+        estimate_arrival_times,
+        ors_api_key,
+        buffer_meters
+    )
+    _ROUTE_FUNCTIONS_IMPORTED = True
+except ImportError:
+    # Will be handled in the function that needs these
+    pass
 
 # Supabase credentials for database access
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -845,7 +852,172 @@ def run_example():
 
 
 # =============================================================================
-# SECTION 7: INTEGRATION WITH route_stations.py
+# SECTION 7: COMPLETE PIPELINE FUNCTION (For Streamlit/Production)
+# =============================================================================
+
+def get_fuel_prices_for_route(
+    start_locality: str,
+    end_locality: str,
+    start_address: str = "",
+    end_address: str = "",
+    start_country: str = "Germany",
+    end_country: str = "Germany",
+    use_realtime: bool = False
+) -> List[Dict]:
+    """
+    COMPLETE PIPELINE: From addresses to model-ready data.
+    
+    This is the ONE function you call for the full pipeline.
+    Perfect for Streamlit dashboard or production use.
+    
+    What it does (everything automatically):
+    1. Geocode the start and end addresses
+    2. Calculate the driving route
+    3. Find fuel stations along the route
+    4. Calculate ETAs for each station
+    5. Match stations to Tankerkoenig database
+    6. Get historical prices (yesterday, 7 days ago)
+    7. Optionally get real-time prices from API
+    8. Return data ready for the prediction model
+    
+    Args:
+        start_locality: Starting city/town (e.g., "Tübingen") - REQUIRED
+                        Note: This maps to ORS 'locality' parameter
+        end_locality: Ending city/town (e.g., "Reutlingen") - REQUIRED
+                      Note: This maps to ORS 'locality' parameter
+        start_address: Starting street address (e.g., "Wilhelmstraße 7") - OPTIONAL
+                       If empty, geocodes to city center
+        end_address: Ending street address (e.g., "Charlottenstraße 45") - OPTIONAL
+                     If empty, geocodes to city center
+        start_country: Starting country (default: "Germany")
+        end_country: Ending country (default: "Germany")
+        use_realtime: If True, fetch current prices from API. If False, use yesterday's prices.
+    
+    Returns:
+        List of dictionaries with all data for the prediction model.
+        Same format as integrate_route_with_prices() output.
+    
+    Example usage:
+        # With full addresses (recommended for precision):
+        model_input = get_fuel_prices_for_route(
+            start_locality="Tübingen",
+            end_locality="Reutlingen",
+            start_address="Wilhelmstraße 7",
+            end_address="Charlottenstraße 45",
+            use_realtime=False
+        )
+        
+        # With just city names (uses city centers):
+        model_input = get_fuel_prices_for_route(
+            start_locality="Tübingen",
+            end_locality="Reutlingen",
+            use_realtime=False
+        )
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(model_input)
+        
+        # Pass to model
+        predictions = model.predict(df)
+    
+    Raises:
+        ImportError: If route_stations.py cannot be imported
+        RuntimeError: If geocoding or route calculation fails
+    
+    Note: Parameter names match route_stations.py exactly:
+          - start_locality/end_locality (not start_city/end_city)
+          - These map to the ORS API 'locality' parameter
+    """
+    print("\n" + "=" * 70)
+    print("COMPLETE FUEL PRICE PIPELINE")
+    print("=" * 70)
+    print(f"Route: {start_locality} → {end_locality}")
+    print(f"Mode: {'REAL-TIME API' if use_realtime else 'HISTORICAL (demo)'}")
+    
+    # Check if route_stations functions are available
+    if not _ROUTE_FUNCTIONS_IMPORTED:
+        raise ImportError(
+            "Could not import route_stations.py functions.\n"
+            "Make sure route_stations.py is in the project root."
+        )
+    
+    # Step 1: Geocode addresses
+    print("\nStep 1: Geocoding addresses...")
+    try:
+        start_lat, start_lon, start_label = ors_geocode_structured(
+            start_address, start_locality, start_country, ors_api_key
+        )
+        end_lat, end_lon, end_label = ors_geocode_structured(
+            end_address, end_locality, end_country, ors_api_key
+        )
+        print(f"  Start: {start_label} ({start_lat:.5f}, {start_lon:.5f})")
+        print(f"  End: {end_label} ({end_lat:.5f}, {end_lon:.5f})")
+    except Exception as e:
+        raise RuntimeError(f"Geocoding failed: {e}")
+    
+    # Step 2: Calculate route
+    print("\nStep 2: Calculating route...")
+    try:
+        route_coords, route_km, route_min = ors_route_driving_car(
+            start_lat, start_lon, end_lat, end_lon, ors_api_key
+        )
+        print(f"  Distance: {route_km:.1f} km")
+        print(f"  Duration: {route_min:.0f} min")
+    except Exception as e:
+        raise RuntimeError(f"Route calculation failed: {e}")
+    
+    # Step 3: Find fuel stations along route
+    print("\nStep 3: Finding fuel stations along route...")
+    print(f"  Route has {len(route_coords)} coordinate points")
+    print(f"  Buffer: {buffer_meters}m, Route length: {route_km:.1f}km")
+    
+    try:
+        stations = ors_pois_fuel_along_route(
+            route_coords, buffer_meters, ors_api_key, route_km
+        )
+        print(f"  Found {len(stations)} stations")
+        
+        if len(stations) == 0:
+            print("\n  ⚠ WARNING: No stations found along route!")
+            print("  Possible reasons:")
+            print("    1. ORS POI database doesn't have stations for this area")
+            print("    2. Buffer distance is too small (current: {}m)".format(buffer_meters))
+            print("    3. Route is very short")
+            print("    4. ORS API rate limit reached")
+            print("\n  TIP: Try running route_stations.py directly to verify it works.")
+            return []
+    except Exception as e:
+        raise RuntimeError(f"Station search failed: {e}")
+    
+    # Step 4: Calculate ETAs
+    print("\nStep 4: Calculating arrival times...")
+    try:
+        stations_with_eta = estimate_arrival_times(stations, route_coords, route_km, route_min)
+        print(f"  Calculated ETAs for {len(stations_with_eta)} stations")
+    except Exception as e:
+        raise RuntimeError(f"ETA calculation failed: {e}")
+    
+    # Step 5: Integrate with Tankerkoenig data
+    print("\nStep 5: Matching to Tankerkoenig database and fetching prices...")
+    try:
+        model_input = integrate_route_with_prices(
+            stations_with_eta=stations_with_eta,
+            use_realtime=use_realtime
+        )
+    except Exception as e:
+        raise RuntimeError(f"Tankerkoenig integration failed: {e}")
+    
+    # Summary
+    print("\n" + "=" * 70)
+    print("PIPELINE COMPLETE")
+    print("=" * 70)
+    print(f"Total stations with complete data: {len(model_input)}")
+    
+    return model_input
+
+
+# =============================================================================
+# SECTION 8: INTEGRATION WITH route_stations.py (Legacy Examples)
 # =============================================================================
 
 def run_full_integration_example():
@@ -898,22 +1070,22 @@ def run_full_integration_example():
     # )
     
     # Define route (example: Tuebingen to Reutlingen)
-    start_address = "Wilhelmstrasse 7"
-    start_city = "Tuebingen"
+    start_address = "Wilhelmstraße 7"
+    start_locality = "Tübingen"
     start_country = "Germany"
-    end_address = "Charlottenstrasse 45"
-    end_city = "Reutlingen"
+    end_address = "Charlottenstraße 45"
+    end_locality = "Reutlingen"
     end_country = "Germany"
     
-    print(f"\nRoute: {start_address}, {start_city} -> {end_address}, {end_city}")
+    print(f"\nRoute: {start_address}, {start_locality} -> {end_address}, {end_locality}")
     
     # Step 1: Geocode addresses
     print("\nStep 1: Geocoding addresses...")
     start_lat, start_lon, start_label = ors_geocode_structured(
-        start_address, start_city, start_country, ors_api_key
+        start_address, start_locality, start_country, ors_api_key
     )
     end_lat, end_lon, end_label = ors_geocode_structured(
-        end_address, end_city, end_country, ors_api_key
+        end_address, end_locality, end_country, ors_api_key
     )
     
     print(f"  Start: {start_label} ({start_lat:.5f}, {start_lon:.5f})")
@@ -954,19 +1126,42 @@ if __name__ == "__main__":
     Usage:
         python route_tankerkoenig_integration.py
     
-    This will run the example integration and display the results.
+    This will run the complete pipeline with a test route.
     """
-    # Run the simple example with hardcoded data
-    # This is useful for testing without needing route_stations.py
-    result = run_example()
     
-    # Uncomment the following to run the full integration with route_stations.py:
+    print("=" * 70)
+    print("TESTING COMPLETE PIPELINE FUNCTION")
+    print("=" * 70)
+    
+    # Test with a real route
+    try:
+        result = get_fuel_prices_for_route(
+            start_locality="Tübingen",
+            end_locality="Reutlingen",
+            start_address="Wilhelmstraße 7",
+            end_address="Charlottenstraße 45",
+            use_realtime=False
+        )
+        
+        if result:
+            print("\n" + "=" * 70)
+            print("SUCCESS: Complete pipeline works!")
+            print(f"Generated {len(result)} model input records")
+            print("=" * 70)
+            
+            # Show first station
+            print("\nFirst station:")
+            for key, value in result[0].items():
+                print(f"  {key}: {value}")
+        else:
+            print("\nNo stations found on this route.")
+    
+    except Exception as e:
+        print(f"\nERROR: {e}")
+        print("\nFalling back to simple example...")
+        
+        # Fallback to the simple example
+        result = run_example()
+    
+    # Uncomment to run the full integration with route_stations.py:
     # result = run_full_integration_example()
-    
-    if result:
-        print("\n" + "=" * 70)
-        print("SUCCESS: Integration complete!")
-        print(f"Generated {len(result)} model input records")
-        print("=" * 70)
-
- 
