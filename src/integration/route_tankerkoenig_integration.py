@@ -85,6 +85,7 @@ try:
         ors_route_driving_car,
         ors_pois_fuel_along_route,
         estimate_arrival_times,
+        ors_api_key,
         buffer_meters
     )
     _ROUTE_FUNCTIONS_IMPORTED = True
@@ -101,7 +102,8 @@ TANKERKOENIG_API_KEY = os.getenv("TANKERKOENIG_API_KEY")
 TANKERKOENIG_BASE_URL = "https://creativecommons.tankerkoenig.de/json"
 
 # ORS credentials to get the routing results
-ORS_API_KEY = os.getenv("ORS_API_KEY")
+# ORS_API_KEY = os.getenv("ORS_API_KEY")
+
 
 # Finding the correct station:
 # Matching thresholds for coordinate matching (in meters)
