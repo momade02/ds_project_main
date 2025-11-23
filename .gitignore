@@ -1,3 +1,21 @@
+
+# Environment variables
 .env
+venv/
+.env.local
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local development files
+local_only/
+
 # Large data files – do not commit
 *.parquet
+
+# OS
+.DS_Store
+Thumbs.db

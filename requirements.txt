@@ -1,2 +1,16 @@
+# Data processing
 pandas
 numpy 
+
+# Database
+supabase==2.9.0
+psycopg2-binary==2.9.9
+
+# HTTP requests
+requests==2.31.0
+
+# Environment variables
+python-dotenv==1.0.0
+
+# Utilities
+pytz==2024.1
