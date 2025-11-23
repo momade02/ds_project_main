@@ -4,7 +4,7 @@ calculate a driving route between them, and find gas stations along that route w
 """
 
 # test case long/short/switzerland
-route_scenario = "switzerland" # "long", "short" or "switzerland"
+route_scenario = "short" # "long", "short" or "switzerland"
 
 # === Setup ===
 # import libraries
@@ -13,7 +13,12 @@ from pathlib import Path
 import json
 import requests
 from dotenv import load_dotenv
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Point
+from shapely.ops import transform, substring
+import pyproj
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from datetime import datetime, timedelta
 
 # Load .env
 env_path = Path(__file__).with_name(".env")
@@ -36,9 +41,12 @@ elif route_scenario == "long":
     start_address = "Wilhelmstraße 7"
     start_locality = "Tübingen"
     start_country = "Germany"
-    end_address = "Marienplatz 1"
-    end_locality = "München"
+    end_address = "Borsigallee 26"
+    end_locality = "Frankfurt am Main"
     end_country = "Germany"
+    # end_address = "Langberger Weg 4"
+    # end_locality = "Flensburg"
+    # end_country = "Germany"
 elif route_scenario == "switzerland":
     start_address = "Zinngärten 9"
     start_locality = "Stühlingen"
@@ -51,8 +59,7 @@ else:
 
 # Search parameter for the gas stations along the route
 # must not be larger than 2000 meter according to ORS docs
-buffer_meters = 100  # buffer width in meters
-
+buffer_meters = 300  # buffer width in meters
 
 # OpenRouteService API configuration
 ors_base = "https://api.openrouteservice.org"
@@ -63,9 +70,49 @@ if not ors_api_key:
     raise SystemExit("Please set your ORS_API_KEY environment variable first!")
 
 # === helper functions ===
-# Functions that help main functions.
+# # Functions that help main functions.
 
-def simplify_route(coords_lonlat, tolerance=0.001):
+def determine_segments(total_length_km, buffer_m):
+    """
+    Determine appropriate segment length in meters for route segmentation, based on ORS API and developers constraints.
+
+    Inputs:
+        total_length_km (float): Total length of the route in kilometers
+        buffer_m (float): Buffer width in meters
+    Returns:
+        segment_length_m (float): Length of each segment in meters
+    """
+
+    max_segments = 12  # 12, so user can request a new route every 12 seconds
+    max_segment_length = 240  # km, from the docs with a little safety margin
+    max_area_km2 = 49         # km^2, from the docs with a little safety margin
+
+    if buffer_m <= 0:
+        raise ValueError("buffer_m must be > 0")
+    elif buffer_m > 1000:
+        raise ValueError("buffer_m must be <= 1000")
+
+    for segments in range(1, max_segments + 1):
+        L = total_length_km / segments  # segment length in km
+
+        # Constraint 1: segment length
+        if L > max_segment_length:
+            continue
+
+        # Constraint 2: area
+        area = 2 * L * (buffer_m / 1000)
+        if area > max_area_km2:
+            continue
+
+        return L * 1000 # return segment length in meters
+
+    raise ValueError(
+        f"Cannot satisfy API constraints with buffer={buffer_m}m and total route length={total_length_km} km. "
+        "Try a smaller buffer or a shorter route."
+    )
+
+def simplify_route(coords_lonlat, tolerance=0.0002):
+      #  tolerance ~22m
     """
     Simplify a route by reducing the number of points using the Ramer-Douglas-Peucker algorithm.
 
@@ -80,12 +127,99 @@ def simplify_route(coords_lonlat, tolerance=0.001):
     simplified = line.simplify(tolerance, preserve_topology=False)
 
     print(f"Simplified route from {len(coords_lonlat)} to {len(simplified.coords)} points")
-    print("Function simplify_route successful")
+
     return list(simplified.coords)
+
+def segment_route(coords_lonlat, segment_length_m):
+    """
+    Segment a route into smaller segments of specified length in meters.
+
+    Inputs:
+        coords_lonlat (list): List of [lon, lat] coordinates along the route
+        segment_length_m (float): Length of each segment in meters
+    Returns:
+        segments_lonlat (list): List of segments, each segment is a list of [lon, lat] coordinates
+    """
+
+    line = LineString(coords_lonlat)
+
+    # transormer for WGS 84 (EPSG:4326) to UTM zone 32N (EPSG:32632)
+    project_to_utm = pyproj.Transformer.from_crs(crs_from =
+        "EPSG:4326", crs_to = "EPSG:32632", always_xy = True
+    ).transform
+
+    # transformer back
+    project_to_lonlat = pyproj.Transformer.from_crs(
+        "EPSG:32632", "EPSG:4326", always_xy=True
+    ).transform
+
+    line_m = transform(project_to_utm, line)
+
+    segments_m = []
+    total_length = line_m.length
+
+    start = 0
+    while start < total_length:
+        end = start + segment_length_m
+        seg = substring(line_m, start, end)
+        segments_m.append(seg)
+        start = end
+    
+    segments_lonlat = []
+    for seg in segments_m:
+        seg_lonlat = transform(project_to_lonlat, seg)
+        coords = list(seg_lonlat.coords)
+        segments_lonlat.append([[lon, lat] for (lon, lat) in coords])
+    
+    return segments_lonlat
+
+def estimate_arrival_times(stations, route_coords_lonlat, total_distance_km, total_duration_min, departure_time=None):
+    """
+    Augments each station with:
+      - distance_along_m: meters from the start along the route (projected)
+      - fraction_of_route: fraction of the total route (0..1)
+      - eta: estimated time of arrival
+
+    Args:
+        stations (list): list of dicts containing 'lat' and 'lon'
+        route_coords_lonlat (list): [[lon, lat], ...] route coordinates
+        total_distance_km (float): total route length in km (from ors_route_driving_car)
+        total_duration_min (float): total route duration in minutes (from ors_route_driving_car)
+        departure_time (datetime|None): departure time. If None, current time is used
+
+    Returns:
+        list: copied station dicts with added fields
+    """
+
+    if departure_time is None:
+        departure_time = datetime.utcnow()
+
+    project_to_utm = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:32632", always_xy=True).transform
+    line = LineString(route_coords_lonlat)
+    line_m = transform(project_to_utm, line)
+    total_length_m = total_distance_km * 1000.0
+
+    results = []
+    for s in stations:
+        pt = Point(s["lon"], s["lat"])
+        pt_m = transform(project_to_utm, pt)
+        dist_along = line_m.project(pt_m)
+        fraction = dist_along / total_length_m
+        offset_seconds = fraction * (total_duration_min * 60.0)
+        eta = departure_time + timedelta(seconds=offset_seconds)
+
+        s_copy = s.copy()
+        s_copy.update({
+            "distance_along_m": float(dist_along),
+            "fraction_of_route": float(fraction),
+            "eta": eta.isoformat()
+        })
+        results.append(s_copy)
+
+    return results
 
 # === main functions ===
 # Functions to interact with OpenRouteService (ORS) API.
-
 
 # Function for structured geocoding search
 def ors_geocode_structured(street, city, country, api_key):
@@ -122,7 +256,7 @@ def ors_geocode_structured(street, city, country, api_key):
     feature = features[0]
     lon, lat = feature["geometry"]["coordinates"]
     label = feature["properties"].get("label", "Unknown")
-    print("Function ors_geocode_structured successful")
+
     return lat, lon, label
 
 # Function to get route between two coordinates
@@ -160,27 +294,14 @@ def ors_route_driving_car(start_lat, start_lon, end_lat, end_lon, api_key):
     distance_km = (summary.get("distance") or 0.0) / 1000.0
     duration_min = (summary.get("duration") or 0.0) / 60.0
 
-    print("\n Function ors_route_driving_car successful")
     return coords_lonlat, distance_km, duration_min
 
-# Function to get fuel stations (POIs) along a route using ORS /pois endpoint
-def ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, api_key, timeout_seconds=10):
+# Function to get fuel stations (POIs) along a route segment using ORS /pois endpoint
+def ors_pois_single_segment(segment_coords, buffer_meters, api_key, timeout_seconds):
     """
     Get fuel stations (category ID 596) along a driving route using ORS /pois endpoint.
-
-    Inputs:
-        route_coords_lonlat (list): List of [lon, lat] coordinates along the route
-        buffer_meters (float): Search radius (buffer) around the route in meters
-        api_key (str): ORS API key
-        timeout_seconds (int|float): max seconds to wait for the ORS server
-
-    Returns:
-        stations (list): List of fuel stations with 'name', 'lat', 'lon', 'distance'
     """
-
-    # call helper function to reduce number of points along the route
-    route_coords_lonlat = simplify_route(route_coords_lonlat)
-
+    
     url = f"{ors_base}/pois"
     body = {
         "request": "pois",
@@ -188,22 +309,21 @@ def ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, api_key, timeo
             "buffer": buffer_meters,
             "geojson": {
                 "type": "LineString",
-                "coordinates": route_coords_lonlat  # [lon, lat] from the route
+                "coordinates": segment_coords  # [lon, lat] from the route segment
             }
         },
         "filters": {
             "category_ids": [596]  # 596 = Fuel (gas stations)
-        },
-        "limit": 100  # optional, max number of results
+        }
     }
     headers = {"Authorization": api_key, "Content-Type": "application/json"}
     
     try:
-        # send POST with timeout; timeout applies to connect+read (single value) 
         r = requests.post(url, headers=headers, data=json.dumps(body), timeout=timeout_seconds)
 
         # for debugging purposes, print status code and reason, delete later
         print("\n Delete later \n Status code:", r.status_code, "Reason:", r.reason)
+        # print(r.text)
         r.raise_for_status()
         pois_data = r.json()
 
@@ -222,8 +342,64 @@ def ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, api_key, timeo
           #  can implement distance calculation with shapely if needed
         stations.append({"name": name, "lat": lat, "lon": lon, "distance": distance})
 
-    print("\n Function ors_pois_fuel_along_route successful")
     return stations
+
+# Function to get fuel stations (POIs) along a route using ORS /pois endpoint
+def ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, api_key, route_length_km, timeout_seconds=90):
+    """
+    Get fuel stations (category ID 596) along a driving route using ORS /pois endpoint.
+    If the route is long, it segments the route and runs multiple requests in parallel.
+
+    Inputs:
+        route_coords_lonlat (list): List of [lon, lat] coordinates along the route
+        buffer_meters (float): Search radius (buffer) around the route in meters
+        api_key (str): ORS API key
+        timeout_seconds (int|float): max seconds to wait for the ORS server
+
+    Returns:
+        stations (list): List of fuel stations with 'name', 'lat', 'lon', 'distance'
+    """
+
+    # call helper function to reduce number of points along the route
+    route_coords_lonlat = simplify_route(route_coords_lonlat)
+
+    # call helper function to segment the route if needed
+    route_segments = segment_route(route_coords_lonlat, segment_length_m=determine_segments(route_length_km, buffer_meters))
+
+    if len(route_segments) == 1:
+        return ors_pois_single_segment(
+            route_segments[0], buffer_meters, api_key, timeout_seconds
+        )
+
+    print(f"Running {len(route_segments)} segment requests in parallel...")
+
+    all_stations = []
+    futures = []
+    submit_delay = 0.2
+
+    with ThreadPoolExecutor(max_workers=min(4, len(route_segments))) as executor:
+        for seg in route_segments:
+            time.sleep(submit_delay)
+            print(f"Segment {route_segments.index(seg)} -> coords: {len(seg)}, approx payload bytes: {len(seg)*32}")
+            futures.append(
+                executor.submit(
+                    ors_pois_single_segment,
+                    seg, buffer_meters, api_key, timeout_seconds
+                )
+            )
+
+        for f in as_completed(futures):
+            all_stations.extend(f.result())
+
+    unique = {}
+    for s in all_stations:
+        key = (s["lat"], s["lon"])
+        if key not in unique:
+            unique[key] = s
+
+    print(f"Finished parallel POI search. Found total: {len(unique)} fuel stations.")
+
+    return list(unique.values())
 
 
 # === Execution ===
@@ -254,8 +430,12 @@ print(f"Duration: {route_min:.0f} min")
 print(f"Number of points unthinned list: {len(route_coords_lonlat)} coordinates along the route")
 
 # get data of fuel stations along the route
-stations = ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, ors_api_key)
+stations = ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, ors_api_key, route_km)
 
-print("\n--- Check FUEL STATIONS ---")
-for s in stations[:10]:
-    print(f"{s['name']} → lat={s['lat']:.5f}, lon={s['lon']:.5f}, distance={s['distance']:.1f} m")
+stations_with_eta = estimate_arrival_times(stations, route_coords_lonlat, route_km, route_min)
+
+print("\n--- Stations with ETA ---")
+for s in stations_with_eta:
+    print(f"{s.get('name','Unnamed')} → lat={s.get('lat',0.0):.5f}, lon={s.get('lon',0.0):.5f}, distance={s.get('distance',0.0)} m, "
+          f"along={s.get('distance_along_m',0.0):.0f} m, "
+          f"share={s.get('fraction_of_route',0.0):.1%}, ETA={s.get('eta','-')}")
