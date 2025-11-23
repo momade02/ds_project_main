@@ -7,7 +7,7 @@ PURPOSE:
 This script is the bridge between route_stations.py and the fuel price prediction model.
 It takes the output from route_stations.py (gas stations along a route with ETAs) and:
 1. Matches each station to a Tankerkoenig station in our Supabase database
-2. Retrieves historical prices (yesterday, 7 days ago) from Supabase
+2. Retrieves historical prices (yesterday, 2 days, 3 days, 7 days ago) from Supabase
 3. Optionally fetches real-time prices from Tankerkoenig API
 4. Calculates time cells (0-47) for the model
 5. Returns data in the format the prediction model expects
@@ -33,10 +33,6 @@ Required environment variables in .env file:
 - SUPABASE_URL: Your Supabase project URL
 - SUPABASE_SECRET_KEY: Your Supabase service role key
 - TANKERKOENIG_API_KEY: Your Tankerkoenig API key (only needed if use_realtime=True)
-
-FILE LOCATION:
---------------
-This file should be placed in: src/integration/route_tankerkoenig_integration.py
 
 IMPORTS FROM route_stations.py:
 -------------------------------
@@ -68,25 +64,32 @@ load_dotenv()
 # Note: This will execute route_stations.py's script-level code once
 # To avoid this, route_stations.py should have an if __name__ == "__main__" guard
 _ROUTE_FUNCTIONS_IMPORTED = False
+
+# EDIT FOR LATER
+# To make sure Python can find route_stations.py regardless of where the script is inside the repo
+# Why needed: route_stations.py is currently in the project root, not in src/. This adds the root to Python's search path
+# __file__ = current file path (route_tankerkoenig_integration.py)
+# Example: /project/src/integration/route_tankerkoenig_integration.py
 try:
     # Add project root to path if needed
     project_root = os.path.dirname(os.path.abspath(__file__))
     if 'src' in project_root:
-        project_root = os.path.dirname(os.path.dirname(project_root))
+        # We're in src/integration, so go up 2 levels to project root
+        project_root = os.path.dirname(os.path.dirname(project_root)) # Result: /project
     if project_root not in sys.path:
-        sys.path.insert(0, project_root)
+        sys.path.insert(0, project_root) # Now Python can find route_stations.py in /project/
     
+    # Import functions from route_stations.py
     from route_stations import (
         ors_geocode_structured,
         ors_route_driving_car,
         ors_pois_fuel_along_route,
         estimate_arrival_times,
-        ors_api_key,
         buffer_meters
     )
     _ROUTE_FUNCTIONS_IMPORTED = True
 except ImportError:
-    # Will be handled in the function that needs these
+    # Will be handled separately in the function that needs these
     pass
 
 # Supabase credentials for database access
@@ -97,6 +100,10 @@ SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY")
 TANKERKOENIG_API_KEY = os.getenv("TANKERKOENIG_API_KEY")
 TANKERKOENIG_BASE_URL = "https://creativecommons.tankerkoenig.de/json"
 
+# ORS credentials to get the routing results
+ORS_API_KEY = os.getenv("ORS_API_KEY")
+
+# Finding the correct station:
 # Matching thresholds for coordinate matching (in meters)
 # We try progressively larger thresholds until we find a match
 MATCH_THRESHOLDS = [25, 50, 100]  # meters
@@ -137,24 +144,29 @@ def calculate_time_cell(eta_string: str) -> int:
         "2025-11-20T14:35:49" -> 29  (14:30-14:59)
         "2025-11-20T23:59:59" -> 47  (23:30-23:59)
     """
-    # Parse the timestamp string into a datetime object
-    # Handle both formats: with and without microseconds
+    
+    # Convert the ETA string into a datetime object so we can extract the time
+    # Code handles 2 formats (with and without microseconds): Sometimes route_stations.py includes microseconds (.644499), sometimes not
     try:
         if '.' in eta_string:
-            # Format with microseconds: "2025-11-20T14:35:49.644499"
+            # Input: "2025-11-20T14:35:49.644499"
             dt = datetime.strptime(eta_string, "%Y-%m-%dT%H:%M:%S.%f")
+            # Result: datetime(2025, 11, 20, 14, 35, 49, 644499)
+
         else:
-            # Format without microseconds: "2025-11-20T14:35:49"
+            # Input: "2025-11-20T14:35:49"
             dt = datetime.strptime(eta_string, "%Y-%m-%dT%H:%M:%S")
     except ValueError as e:
         print(f"WARNING: Could not parse ETA '{eta_string}': {e}")
         return 0  # Default to cell 0 if parsing fails
     
     # Calculate the time cell
-    hour = dt.hour
-    minute = dt.minute
+    hour = dt.hour # 14
+    minute = dt.minute # 35
     
     # Each hour has 2 cells: first half (0-29 min) and second half (30-59 min)
+    # Example: 14:35 falls in the 14:30-14:59 slot, which is cell 29
+    # cell = (14 * 2) + (1 if 35 >= 30 else 0) = 29
     cell = hour * 2
     if minute >= 30:
         cell += 1
@@ -164,10 +176,21 @@ def calculate_time_cell(eta_string: str) -> int:
 
 def get_cell_time_range(cell: int) -> Tuple[str, str]:
     """
-    Get the start and end time for a given time cell.
+    Given a cell number (e.g. 29), tells you the time window (e.g. ("14:30:00", "14:59:59")).
     
-    This is useful for querying historical prices - we need to find
+    We need this so we can query historical prices. We need to find
     prices that were active during a specific 30-minute window.
+
+    Example:
+        User arrives at 14:35 (cell 29)
+        We need yesterday's price "at 14:35"
+
+        Problem: Prices change throughout the day
+        - At 14:20: €1.739
+        - At 14:45: €1.749  <- Which one to use?
+
+        Solution: Get the time range for cell 29 -> "14:30:00" to "14:59:59"
+        Then query: "Give me the most recent price change before 14:59:59"
     
     Args:
         cell: Time cell number (0-47)
@@ -220,7 +243,7 @@ def match_coordinates_progressive(
         osm_lat: Latitude from route_stations.py
         osm_lon: Longitude from route_stations.py
         stations_df: DataFrame of all Tankerkoenig stations from Supabase
-        thresholds: List of distance thresholds to try (in meters)
+        thresholds: List of distance thresholds to try (in meters --> tries 25m, 50m, 100m)
     
     Returns:
         Dictionary with matched station info, or None if no match found
@@ -240,17 +263,54 @@ def match_coordinates_progressive(
     
     # Calculate distance from OSM point to every Tankerkoenig station
     # This uses the geodesic formula which accounts for Earth's curvature
+    # Geodesic: Calculates the real distance from the OSM station to every Tankerkoenig station.
+    # Alternative which would be wrong: Pythagorean distance (b/c it would assume Earth is flat)
+    # Result: A pandas Series with distances in meters, see below
     distances = stations_df.apply(
         lambda row: geodesic(osm_point, (row['latitude'], row['longitude'])).meters,
         axis=1
     )
     
     # Find the index of the closest station
-    closest_idx = distances.idxmin()
-    closest_distance = distances[closest_idx]
-    closest_station = stations_df.loc[closest_idx]
+        # Example:
+            # distances =
+            # 0      234.5   # Station 0 is 234.5 meters away
+            # 1      12.3    # Station 1 is 12.3 meters away <- Minimum
+            # 2      456.7   # Station 2 is 456.7 meters away
+            # ...
+            # 17650   8923.4 # Station 17650 is 8923.4 meters away
+
+    closest_idx = distances.idxmin() # Index from Supabase DF where distance is minimum --> Ex. returns 1
+    closest_distance = distances[closest_idx] # The actual distance value --> Ex. Returns 12.3
+    closest_station = stations_df.loc[closest_idx] # The station row --> Ex. Returns the whole row for station 1
     
+
+
+
+
     # Try each threshold until we find a match
+        # thresholds = [25, 50, 100] -> in meters
+
+    '''
+        Example:
+                Closest distance: 12.3 meters
+
+                1. Check 25m threshold: 12.3 <= 25? Yes
+                --> Return match with confidence "matched within 25m"
+
+                If it was 35m:
+                Check 25m: 35 <= 25? Np
+                Check 50m: 35 <= 50? Yes
+                --> Return match with confidence "matched within 50m"
+
+                If it was 150m:
+                Check 25m: NO
+                Check 50m: NO
+                Check 100m: NO
+                --> Return None (no match, too far away)        
+        
+        '''
+    
     for threshold in thresholds:
         if closest_distance <= threshold:
             return {
@@ -300,9 +360,9 @@ def load_all_stations_from_supabase() -> pd.DataFrame:
     
     print("Loading all stations from Supabase...")
     
-    # Load stations in batches (pagination)
+    # Goal: Loads all 17651 stations from Supabase in batches (because Supabase limits responses)
     all_stations = []
-    page_size = 1000
+    page_size = 1000 # each Supapbase page size is 1000 rows long
     
     for i in range(0, 20000, page_size):  # Max 20,000 stations expected
         result = supabase.table('stations').select('*').range(i, i + page_size - 1).execute()
@@ -310,11 +370,31 @@ def load_all_stations_from_supabase() -> pd.DataFrame:
         if not result.data:
             break  # No more data
             
-        all_stations.extend(result.data)
+        all_stations.extend(result.data) # Add to list
         
         # Progress indicator (every 5000 stations)
         if len(all_stations) % 5000 == 0:
             print(f"  Loaded {len(all_stations):,} stations...")
+
+            """
+            Example:
+            1. Loop iteration 1: i = 0
+                    result = supabase.table('stations').select('*').range(0, 999).execute()
+                    --> Gets stations 0-999 (first 1000)
+                    all_stations.extend(result.data)  # Add to list
+
+            2. Loop iteration 2: i = 1000
+                    result = supabase.table('stations').select('*').range(1000, 1999).execute()
+                    --> Gets stations 1000-1999 (next 1000)
+                    all_stations.extend(result.data)
+
+                    -->  ... continue until all stations loaded
+
+            3. Loop iteration 19: i = 18000
+                    result = supabase.table('stations').select('*').range(18000, 18999).execute()
+                    --> result.data is empty → break
+            
+            """
     
     # Convert to DataFrame
     stations_df = pd.DataFrame(all_stations)
@@ -330,10 +410,12 @@ def load_all_stations_from_supabase() -> pd.DataFrame:
         stations_df['longitude'].between(-180, 180)
     )
     
+    # to see in the output the number of excluded stations
     invalid_count = (~valid_mask).sum()
     if invalid_count > 0:
         print(f"  Filtered out {invalid_count} stations with invalid coordinates")
     
+    # cleaned df
     stations_df = stations_df[valid_mask].copy()
     
     print(f"Loaded {len(stations_df):,} valid stations from Supabase")
@@ -342,12 +424,12 @@ def load_all_stations_from_supabase() -> pd.DataFrame:
 
 
 def get_historical_price_for_station(
-    station_uuid: str,
-    target_date: datetime,
-    target_cell: int
+    station_uuid: str,          # e.g. "ca944555-1ee4-..."
+    target_date: datetime,      # e.g. datetime(2025, 11, 22)
+    target_cell: int            # e.g., 29 (which is 14:30-14:59)
 ) -> Dict[str, Optional[float]]:
     """
-    Get the price that was active for a station at a specific time cell on a specific date.
+    Get the price for a station at a specific time cell on a specific date.
     
     How fuel prices work:
     - Stations change prices multiple times per day
@@ -360,6 +442,17 @@ def get_historical_price_for_station(
     2. Filter to records before or during the target time cell
     3. Take the most recent one (that's the price that was active)
     
+        ### Example
+        Prices change multiple times per day:
+        Station A on 2025-11-22:
+        00:05 -> €1.739
+        06:30 -> €1.749
+        12:45 -> €1.729  <- Price increased!
+        18:20 -> €1.719
+
+        Question: What was the price at 14:30?
+        Answer: €1.729 (the most recent change before 14:30)
+
     Args:
         station_uuid: Tankerkoenig station UUID
         target_date: The date to look up (datetime object)
@@ -373,18 +466,23 @@ def get_historical_price_for_station(
     
     supabase = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
     
-    # Calculate the end time of the target cell
+    # 1. Calculate the time range for the target_cell (e.g. 29)
     # We want prices that were set BEFORE or AT this time
     _, end_time = get_cell_time_range(target_cell)
+        # Example:
+            # target_cell = 29
+            # Returns: ("14:30:00", "14:59:59")
+            # We only need end_time: "14:59:59"
     
-    # Build the datetime string for the query
-    # Format: "2025-11-19 14:59:59"
-    date_str = target_date.strftime("%Y-%m-%d")
-    end_datetime = f"{date_str} {end_time}"
-    start_datetime = f"{date_str} 00:00:00"
+    # 2. Build the datetime strings for the query
+    date_str = target_date.strftime("%Y-%m-%d")     # "2025-11-22"
+    end_datetime = f"{date_str} {end_time}"         # "2025-11-22 14:59:59"
+    start_datetime = f"{date_str} 00:00:00"         # "2025-11-22 00:00:00"
+
+        # Why start at 00:00:00?
+        # Because we need to see all price changes that happened on this day, up to 14:59:59, then pick the most recent one
     
-    # Query: Get all price changes for this station on this day, up to our target time
-    # Then take the most recent one
+    # 3. Query: Get all price changes for this station on this day, up to our target time, then take most recent one
     try:
         result = supabase.table('prices')\
             .select('date, e5, e10, diesel')\
@@ -395,10 +493,17 @@ def get_historical_price_for_station(
             .limit(1)\
             .execute()
         
+            #.eq('station_uuid', station_uuid)   # Only this station
+            #.gte('date', start_datetime)        # From 00:00:00
+            #.lte('date', end_datetime)          # Until 14:59:59
+            #.order('date', desc=True)           # Most recent first
+            #.limit(1)                           # Take only the first (most recent)
+
+    # 4. Return the result
         if result.data and len(result.data) > 0:
-            record = result.data[0]
+            record = result.data[0]              # The most recent price change (since we ordered in descending order)
             return {
-                'e5': record.get('e5'),
+                'e5': record.get('e5'),          # Price that was active at 14:30, e.g. 1.729
                 'e10': record.get('e10'),
                 'diesel': record.get('diesel')
             }
@@ -411,6 +516,8 @@ def get_historical_price_for_station(
         return {'e5': None, 'e10': None, 'diesel': None}
 
 
+####### Placeholder for future optimization ########
+# Currently not yet batched or used
 def get_historical_prices_batch(
     station_uuids: List[str],
     target_date: datetime,
@@ -459,8 +566,8 @@ def get_realtime_prices_batch(station_uuids: List[str]) -> Dict[str, Dict]:
     
     API Details:
     - Endpoint: /prices.php
-    - Limit: Maximum 10 stations per request
-    - Rate limit: Avoid more than 1 request per 5 minutes for automated systems
+    - Limit: Maximum 10 stations per request (Tankerkönig limits this)
+    - Rate limit: Avoid more than 1 request per 5 minutes for automated systems (Tankerkönig limits this)
     - We add a small delay between batches to be safe
     
     How it works:
@@ -563,14 +670,14 @@ def integrate_route_with_prices(
     - Tankerkoenig station info (UUID, official name, brand)
     - Time cell calculation
     - Current price (real-time from API or yesterday's from database)
-    - Historical prices (yesterday and 7 days ago)
+    - Historical lag prices (1d, 2d, 3d, 7d) for the prediction model
     
     Workflow:
     1. Load Tankerkoenig stations from Supabase (if not provided)
     2. For each station from route_stations.py:
        a. Match to Tankerkoenig station using coordinates
        b. Calculate time cell from ETA
-       c. Get historical prices from Supabase
+       c. Get historical prices from Supabase (4 lags: 1d, 2d, 3d, 7d)
        d. Get current price (API or yesterday's price)
     3. Return enriched data ready for the model
     
@@ -614,21 +721,34 @@ def integrate_route_with_prices(
                 "city": "Tuebingen",
                 "match_distance_m": 12.5,
                 
-                # Model inputs
+                # Model inputs (required by the prediction model)
                 "time_cell": 29,
                 "price_current_e5": 1.739,
                 "price_current_e10": 1.679,
                 "price_current_diesel": 1.599,
-                "price_yesterday_e5": 1.729,
-                "price_yesterday_e10": 1.669,
-                "price_yesterday_diesel": 1.589,
-                "price_7days_e5": 1.719,
-                "price_7days_e10": 1.659,
-                "price_7days_diesel": 1.579,
+                
+                # Historical lags (for the model: price_lag_1d, price_lag_2d, price_lag_3d, price_lag_7d)
+                "price_lag_1d_e5": 1.729,
+                "price_lag_1d_e10": 1.669,
+                "price_lag_1d_diesel": 1.589,
+                
+                "price_lag_2d_e5": 1.719,
+                "price_lag_2d_e10": 1.659,
+                "price_lag_2d_diesel": 1.579,
+                
+                "price_lag_3d_e5": 1.715,
+                "price_lag_3d_e10": 1.655,
+                "price_lag_3d_diesel": 1.575,
+                
+                "price_lag_7d_e5": 1.709,
+                "price_lag_7d_e10": 1.649,
+                "price_lag_7d_diesel": 1.569,
+                
                 "is_open": True
             },
             ...
         ]
+
     """
     print("\n" + "=" * 70)
     print("ROUTE-TANKERKOENIG INTEGRATION")
@@ -699,8 +819,11 @@ def integrate_route_with_prices(
     print("\nFetching historical prices from Supabase...")
     
     # Calculate dates for historical lookups
+    # the model needs: price_lag_1d, price_lag_2d, price_lag_3d, price_lag_7d
     today = datetime.now()
     yesterday = today - timedelta(days=1)
+    two_days_ago = today - timedelta(days=2)
+    three_days_ago = today - timedelta(days=3)
     seven_days_ago = today - timedelta(days=7)
     
     # Get prices for each station
@@ -708,17 +831,30 @@ def integrate_route_with_prices(
         uuid = station['station_uuid']
         cell = station['time_cell']
         
-        # Get yesterday's price at the same time cell
-        yesterday_prices = get_historical_price_for_station(uuid, yesterday, cell)
-        station['price_yesterday_e5'] = yesterday_prices['e5']
-        station['price_yesterday_e10'] = yesterday_prices['e10']
-        station['price_yesterday_diesel'] = yesterday_prices['diesel']
+        # Get all 4 lag prices required by the model
+        # price_lag_1d (yesterday)
+        prices_1d = get_historical_price_for_station(uuid, yesterday, cell)
+        station['price_lag_1d_e5'] = prices_1d['e5']
+        station['price_lag_1d_e10'] = prices_1d['e10']
+        station['price_lag_1d_diesel'] = prices_1d['diesel']
         
-        # Get price from 7 days ago at the same time cell
-        week_ago_prices = get_historical_price_for_station(uuid, seven_days_ago, cell)
-        station['price_7days_e5'] = week_ago_prices['e5']
-        station['price_7days_e10'] = week_ago_prices['e10']
-        station['price_7days_diesel'] = week_ago_prices['diesel']
+        # price_lag_2d (2 days ago)
+        prices_2d = get_historical_price_for_station(uuid, two_days_ago, cell)
+        station['price_lag_2d_e5'] = prices_2d['e5']
+        station['price_lag_2d_e10'] = prices_2d['e10']
+        station['price_lag_2d_diesel'] = prices_2d['diesel']
+        
+        # price_lag_3d (3 days ago)
+        prices_3d = get_historical_price_for_station(uuid, three_days_ago, cell)
+        station['price_lag_3d_e5'] = prices_3d['e5']
+        station['price_lag_3d_e10'] = prices_3d['e10']
+        station['price_lag_3d_diesel'] = prices_3d['diesel']
+        
+        # price_lag_7d (7 days ago)
+        prices_7d = get_historical_price_for_station(uuid, seven_days_ago, cell)
+        station['price_lag_7d_e5'] = prices_7d['e5']
+        station['price_lag_7d_e10'] = prices_7d['e10']
+        station['price_lag_7d_diesel'] = prices_7d['diesel']
     
     print(f"Retrieved historical prices for {len(matched_stations)} stations")
     
@@ -750,9 +886,9 @@ def integrate_route_with_prices(
         print("\nUsing yesterday's prices as current prices (demo mode)...")
         
         for station in matched_stations:
-            station['price_current_e5'] = station['price_yesterday_e5']
-            station['price_current_e10'] = station['price_yesterday_e10']
-            station['price_current_diesel'] = station['price_yesterday_diesel']
+            station['price_current_e5'] = station['price_lag_1d_e5']
+            station['price_current_e10'] = station['price_lag_1d_e10']
+            station['price_current_diesel'] = station['price_lag_1d_diesel']
             station['is_open'] = None  # Unknown in demo mode
     
     # Summary
@@ -764,7 +900,7 @@ def integrate_route_with_prices(
     # Count stations with complete price data
     complete_count = sum(
         1 for s in matched_stations 
-        if s['price_current_e5'] is not None and s['price_yesterday_e5'] is not None
+        if s['price_current_e5'] is not None and s['price_lag_1d_e5'] is not None
     )
     print(f"Stations with complete price data: {complete_count}")
     
@@ -868,9 +1004,8 @@ def get_fuel_prices_for_route(
     COMPLETE PIPELINE: From addresses to model-ready data.
     
     This is the ONE function you call for the full pipeline.
-    Perfect for Streamlit dashboard or production use.
     
-    What it does (everything automatically):
+    What it does:
     1. Geocode the start and end addresses
     2. Calculate the driving route
     3. Find fuel stations along the route
@@ -984,7 +1119,7 @@ def get_fuel_prices_for_route(
             print("    2. Buffer distance is too small (current: {}m)".format(buffer_meters))
             print("    3. Route is very short")
             print("    4. ORS API rate limit reached")
-            print("\n  TIP: Try running route_stations.py directly to verify it works.")
+            print("\n  Try running route_stations.py directly to verify it works.")
             return []
     except Exception as e:
         raise RuntimeError(f"Station search failed: {e}")
@@ -1017,17 +1152,16 @@ def get_fuel_prices_for_route(
 
 
 # =============================================================================
-# SECTION 8: INTEGRATION WITH route_stations.py (Legacy Examples)
+# SECTION 8: INTEGRATION WITH route_stations.py (Examples)
 # =============================================================================
 
 def run_full_integration_example():
     """
-    Example of running the full pipeline: route_stations.py -> integration -> model input.
+    Example of running the full pipeline: route_stations.py -> integration -> model input
     
     This shows how to import and use functions from route_stations.py together
     with this integration script.
     
-    Note: This requires route_stations.py to be importable.
     """
     print("\n" + "=" * 70)
     print("FULL INTEGRATION EXAMPLE")
