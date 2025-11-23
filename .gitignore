@@ -1,1 +1,3 @@
 .env
+# Large data files – do not commit
+*.parquet
