@@ -403,39 +403,46 @@ def ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, api_key, route
 
 
 # === Execution ===
+def main():
+    """
+    Command-line / direct-run entrypoint for testing the route pipeline.
+    When imported as a module (e.g. by Streamlit), this function is NOT executed.
+    """
+    # get Geocode of start and end addresses
+    start_lat, start_lon, start_label = ors_geocode_structured(
+        start_address, start_locality, start_country, ors_api_key
+    )
+    end_lat, end_lon, end_label = ors_geocode_structured(
+        end_address, end_locality, end_country, ors_api_key
+    )
 
-# get Geocode of start and end addresses
-start_lat, start_lon, start_label = ors_geocode_structured(
-    start_address, start_locality, start_country, ors_api_key
-)
-end_lat, end_lon, end_label = ors_geocode_structured(
-    end_address, end_locality, end_country, ors_api_key
-)
+    # Check results of structured geocoding search
+    print("\n--- Check GEOCODING RESULTS ---")
+    print(f"Start: {start_label}")
+    print(f" → lat = {start_lat:.6f}, lon = {start_lon:.6f}")
+    print(f"End: {end_label}")
+    print(f" → lat = {end_lat:.6f}, lon = {end_lon:.6f}")
 
-# Check results of structured geocoding search
-print("\n--- Check GEOCODING RESULTS ---")
-print(f"Start: {start_label}")
-print(f" → lat = {start_lat:.6f}, lon = {start_lon:.6f}")
-print(f"End: {end_label}")
-print(f" → lat = {end_lat:.6f}, lon = {end_lon:.6f}")
+    # get the route between two coordinates
+    route_coords_lonlat, route_km, route_min = ors_route_driving_car(
+        start_lat, start_lon, end_lat, end_lon, ors_api_key
+    )
 
-# get the route between two coordinates
-route_coords_lonlat, route_km, route_min = ors_route_driving_car(
-    start_lat, start_lon, end_lat, end_lon, ors_api_key
-)
+    print("\n--- Check ROUTE ---")
+    print(f"Route: {route_km:.1f} km")
+    print(f"Duration: {route_min:.0f} min")
+    print(f"Number of points unthinned list: {len(route_coords_lonlat)} coordinates along the route")
 
-print("\n--- Check ROUTE ---")
-print(f"Route: {route_km:.1f} km")
-print(f"Duration: {route_min:.0f} min")
-print(f"Number of points unthinned list: {len(route_coords_lonlat)} coordinates along the route")
+    # get data of fuel stations along the route
+    stations = ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, ors_api_key, route_km)
 
-# get data of fuel stations along the route
-stations = ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, ors_api_key, route_km)
+    stations_with_eta = estimate_arrival_times(stations, route_coords_lonlat, route_km, route_min)
 
-stations_with_eta = estimate_arrival_times(stations, route_coords_lonlat, route_km, route_min)
+    print("\n--- Stations with ETA ---")
+    for s in stations_with_eta:
+        print(f"{s.get('name','Unnamed')} → lat={s.get('lat',0.0):.5f}, lon={s.get('lon',0.0):.5f}, distance={s.get('distance',0.0)} m, "
+            f"along={s.get('distance_along_m',0.0):.0f} m, "
+            f"share={s.get('fraction_of_route',0.0):.1%}, ETA={s.get('eta','-')}")
 
-print("\n--- Stations with ETA ---")
-for s in stations_with_eta:
-    print(f"{s.get('name','Unnamed')} → lat={s.get('lat',0.0):.5f}, lon={s.get('lon',0.0):.5f}, distance={s.get('distance',0.0)} m, "
-          f"along={s.get('distance_along_m',0.0):.0f} m, "
-          f"share={s.get('fraction_of_route',0.0):.1%}, ETA={s.get('eta','-')}")
+if __name__ == "__main__":
+    main()
