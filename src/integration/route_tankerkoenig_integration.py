@@ -916,13 +916,13 @@ def integrate_route_with_prices(
 def run_example():
     """
     Run an example integration using sample data.
-    
+
     This demonstrates how to use the integration function and shows the output format.
     """
     print("\n" + "=" * 70)
     print("EXAMPLE: Route-Tankerkoenig Integration")
     print("=" * 70)
-    
+
     # Example output from route_stations.py
     # This is what you would get from running route_stations.py
     example_stations_with_eta = [
@@ -930,7 +930,7 @@ def run_example():
             "name": "Aral",
             "lat": 48.51279,
             "lon": 9.07341,
-            "distance": 45.70855075,
+            "distance": 23.84822881,
             "distance_along_m": 3058,
             "fraction_of_route": 0.201,
             "eta": "2025-11-20T14:35:49.644499"
@@ -939,7 +939,7 @@ def run_example():
             "name": "Esso",
             "lat": 48.49228,
             "lon": 9.20297,
-            "distance": 33.79514482,
+            "distance": 46.4373612,
             "distance_along_m": 13494,
             "fraction_of_route": 0.887,
             "eta": "2025-11-20T14:50:46.836178"
@@ -954,38 +954,44 @@ def run_example():
             "eta": "2025-11-20T14:50:16.412891"
         }
     ]
-    
-    # Run integration in demo mode (no API calls)
+
+    # Run integration in demo mode (no real-time API calls)
     model_input = integrate_route_with_prices(
         stations_with_eta=example_stations_with_eta,
         use_realtime=False  # Use historical data only
     )
-    
+
     # Display results
     if model_input:
         print("\n" + "-" * 70)
         print("MODEL INPUT DATA (first station):")
         print("-" * 70)
-        
+
         first = model_input[0]
         print(f"OSM Name: {first['osm_name']}")
         print(f"TK Name: {first['tk_name']}")
         print(f"Brand: {first['brand']}")
         print(f"Time Cell: {first['time_cell']}")
         print(f"Match Distance: {first['match_distance_m']} m")
+
+        # Use the actual field names produced by integrate_route_with_prices
         print(f"Current E5: {first['price_current_e5']}")
-        print(f"Yesterday E5: {first['price_yesterday_e5']}")
-        print(f"7 Days E5: {first['price_7days_e5']}")
-        
+        print(f"Lag 1d E5: {first['price_lag_1d_e5']}")
+        print(f"Lag 7d E5: {first['price_lag_7d_e5']}")
+
         print("\n" + "-" * 70)
         print("ALL STATIONS SUMMARY:")
         print("-" * 70)
-        
-        for station in model_input:
-            print(f"{station['tk_name']} ({station['brand']}) - "
-                  f"Cell {station['time_cell']}, "
-                  f"E5: {station['price_current_e5']}")
-    
+
+        print(f"Number of stations: {len(model_input)}")
+        complete = sum(
+            1 for s in model_input
+            if s['price_current_e5'] is not None and s['price_lag_1d_e5'] is not None
+        )
+        print(f"Stations with complete price data: {complete}")
+    else:
+        print("No stations returned by integrate_route_with_prices().")
+
     return model_input
 
 
