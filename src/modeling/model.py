@@ -9,23 +9,34 @@ The trained models are expected to be stored as .joblib files in:
 
     src/modeling/models/
 
-    - fuel_price_model_ARDL_e5.joblib
-    - fuel_price_model_ARDL_e10.joblib
-    - fuel_price_model_ARDL_diesel.joblib
+For each fuel type we now have 5 ARDL models for different horizons (in
+30-minute time cells):
+
+    - h0: daily-only model (no intraday price):
+        fuel_price_model_ARDL_{fuel}_h0_daily.joblib
+
+    - h1..h4: models that additionally use today's current price as an
+      intraday feature, for 1–4 cells ahead:
+
+        fuel_price_model_ARDL_{fuel}_h1_1cell.joblib
+        fuel_price_model_ARDL_{fuel}_h2_2cell.joblib
+        fuel_price_model_ARDL_{fuel}_h3_3cell.joblib
+        fuel_price_model_ARDL_{fuel}_h4_4cell.joblib
 
 Each model must implement a scikit-learn style `.predict(X)` interface, where
-`X` is a pandas DataFrame with the four columns:
+`X` is a pandas DataFrame with:
 
-    ['price_lag_1d', 'price_lag_2d', 'price_lag_3d', 'price_lag_7d']
+    - horizons h1–h4:    daily lags + current price for that fuel
+    - horizon  h0:       daily lags only
 
-This is exactly what `predict.py` will prepare.
+The horizon logic (which model to use) is handled in `predict.py`.
 """
 
 from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 
 import joblib
 
@@ -37,17 +48,33 @@ import joblib
 # Allowed fuel types in the system
 FUEL_TYPES = ("e5", "e10", "diesel")
 
-# Mapping from fuel type to joblib filename inside src/modeling/models/
-MODEL_FILENAMES: Dict[str, str] = {
-    "e5": "fuel_price_model_ARDL_e5.joblib",
-    "e10": "fuel_price_model_ARDL_e10.joblib",
-    "diesel": "fuel_price_model_ARDL_diesel.joblib",
-}
-
 # Base directory of this file (src/modeling/)
 _THIS_DIR = Path(__file__).resolve().parent
 # Directory where the .joblib files reside
 _MODELS_DIR = _THIS_DIR / "models"
+
+
+def _build_filename(fuel_type: str, horizon: int) -> str:
+    """
+    Build the expected joblib filename for a given fuel and horizon.
+
+    Horizon is the number of 30-minute cells ahead:
+
+        0 -> daily-only model (no intraday cell):  h0_daily
+        1..4 -> models using current price for 1..4 cells ahead: h{h}_{h}cell
+    """
+    if horizon == 0:
+        suffix = "h0_daily"
+    else:
+        suffix = f"h{horizon}_{horizon}cell"
+    return f"fuel_price_model_ARDL_{fuel_type}_{suffix}.joblib"
+
+
+# Pre-compute the filename mapping for all fuels and horizons (0..4)
+MODEL_FILENAMES_HORIZON: Dict[Tuple[str, int], str] = {}
+for ft in FUEL_TYPES:
+    for h in range(0, 5):
+        MODEL_FILENAMES_HORIZON[(ft, h)] = _build_filename(ft, h)
 
 
 # ---------------------------------------------------------------------------
@@ -67,37 +94,42 @@ def _normalise_fuel_type(fuel_type: str) -> str:
     ft = fuel_type.lower().strip()
     if ft not in FUEL_TYPES:
         valid = ", ".join(FUEL_TYPES)
-        raise ValueError(f"Unsupported fuel_type '{fuel_type}'. "
-                         f"Expected one of: {valid}")
+        raise ValueError(
+            f"Unsupported fuel_type '{fuel_type}'. Expected one of: {valid}"
+        )
     return ft
 
 
-def get_model_path(fuel_type: str) -> Path:
+def get_model_path_for_horizon(fuel_type: str, horizon: int) -> Path:
     """
-    Return the full filesystem path to the joblib file for a given fuel type.
+    Return the filesystem path to the joblib file for a fuel + horizon.
 
     Parameters
     ----------
     fuel_type : str
         One of 'e5', 'e10', 'diesel' (case-insensitive).
+    horizon : int
+        Number of 30-minute cells ahead. Values outside [0, 4] are
+        automatically clipped to this range.
 
     Returns
     -------
     Path
         Path object pointing to the .joblib file.
-
-    Raises
-    ------
-    ValueError
-        If the fuel_type is not supported.
-    FileNotFoundError
-        If the expected joblib file does not exist.
     """
     ft = _normalise_fuel_type(fuel_type)
+    h = int(horizon)
+    if h < 0:
+        h = 0
+    if h > 4:
+        h = 4
+
     try:
-        filename = MODEL_FILENAMES[ft]
+        filename = MODEL_FILENAMES_HORIZON[(ft, h)]
     except KeyError as exc:
-        raise ValueError(f"No model filename configured for fuel_type '{ft}'") from exc
+        raise ValueError(
+            f"No model filename configured for fuel_type='{ft}', horizon={h}"
+        ) from exc
 
     path = _MODELS_DIR / filename
     if not path.is_file():
@@ -108,42 +140,56 @@ def get_model_path(fuel_type: str) -> Path:
     return path
 
 
+def get_model_path(fuel_type: str) -> Path:
+    """
+    Backwards-compatible helper: return the *daily-only* model path (horizon=0).
+
+    Existing code that does not know about horizons can still call this.
+    """
+    return get_model_path_for_horizon(fuel_type, horizon=0)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-@lru_cache(maxsize=len(FUEL_TYPES))
-def load_model(fuel_type: str) -> Any:
+@lru_cache(maxsize=len(FUEL_TYPES) * 5)
+def load_model_for_horizon(fuel_type: str, horizon: int) -> Any:
     """
-    Load and cache the model for a specific fuel type.
+    Load and cache the model for a specific fuel type and horizon.
 
     The model is loaded only once per process thanks to the LRU cache.
-    Subsequent calls with the same fuel_type return the already loaded object.
 
     Parameters
     ----------
     fuel_type : str
         One of 'e5', 'e10', 'diesel' (case-insensitive).
+    horizon : int
+        Number of 30-minute cells ahead (0..4, will be clipped).
 
     Returns
     -------
     Any
-        The deserialised model object (e.g. a scikit-learn regressor).
+        The deserialised model object.
     """
-    path = get_model_path(fuel_type)
-    # joblib.load will unpickle the model. The environment must have the
-    # required libraries installed (e.g. statsmodels/scikit-learn).
+    path = get_model_path_for_horizon(fuel_type, horizon)
     model = joblib.load(path)
     return model
 
 
+@lru_cache(maxsize=len(FUEL_TYPES))
+def load_model(fuel_type: str) -> Any:
+    """
+    Backwards-compatible wrapper for the horizon-0 (daily-only) model.
+
+    If you explicitly want horizon-specific models, call
+    `load_model_for_horizon(fuel_type, horizon)` instead.
+    """
+    return load_model_for_horizon(fuel_type, horizon=0)
+
+
 def load_all_models() -> Dict[str, Any]:
     """
-    Convenience helper to load all models at once.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Mapping from fuel type ('e5', 'e10', 'diesel') to the loaded model.
+    Convenience helper to load the horizon-0 models for all fuels at once.
     """
     return {ft: load_model(ft) for ft in FUEL_TYPES}

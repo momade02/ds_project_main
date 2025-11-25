@@ -1,245 +1,371 @@
 """
-Prediction utilities for fuel price models.
+Prediction helpers for fuel price models.
 
-This module connects the integration layer with the trained models:
+This module takes the list of station dictionaries produced by the
+integration pipeline and:
 
-    - It receives the output from
-      `src.integration.route_tankerkoenig_integration.get_fuel_prices_for_route`
-      (a list of dictionaries, one per station).
+  1. For each station and fuel, decides which horizon model (h0..h4) to use.
+  2. Builds the feature vector with the **generic** column names the models
+     were trained on (price_lag_1d, ..., price_lag_7d, price_lag_kcell).
+  3. Calls the corresponding ARDL model.
+  4. Writes the prediction back into the station dict.
 
-    - It prepares model features for each fuel type (E5, E10, Diesel) by
-      selecting and renaming the four lag columns the ARDL models were trained
-      on.
+Conceptually, the decision is now **minutes-based**:
 
-    - It calls the corresponding model's `.predict(X)` method and attaches
-      the predictions back to the original list of station dicts.
+    minutes_ahead = (eta_utc - now_utc) in minutes
 
-The same functions work for:
+* If minutes_ahead <= ETA_THRESHOLD_MIN (default: 10 min) and a current
+  price is available, we simply use the current price (no model call).
 
-    - The *test environment* (example stations coming from `run_example()`)
-    - The *real system* (stations coming from `get_fuel_prices_for_route()`
-      once ORS POI returns stations again)
+* If no current price is available, we fall back to the **daily-only**
+  model (h0), which uses only daily lags.
 
-No database or API access happens here – everything operates purely on
-in-memory Python objects.
+* Otherwise (arrival genuinely in the future and current price exists),
+  we map minutes_ahead to a discrete horizon h:
+
+      h_raw = ceil(minutes_ahead / 30)
+      if 1 <= h_raw <= 4 -> h = h_raw  (intraday horizons)
+      if h_raw > 4       -> h = 0      (daily-only; too far ahead)
+
+For historical / demo cases without ETA we fall back to the older
+cell-based logic, using:
+
+    cells_ahead = station.time_cell - current_time_cell
+
+clipped to horizons {1,2,3,4} with >4 cells again mapped to h=0.
 """
 
 from __future__ import annotations
 
-from typing import List, Dict, Optional
+from datetime import datetime, timezone
+import math
+from typing import Any, Dict, List, Optional
 
-import numpy as np
 import pandas as pd
 
-from .model import load_model, FUEL_TYPES
+from .model import FUEL_TYPES, load_model_for_horizon
 
 
 # ---------------------------------------------------------------------------
-# Feature preparation
+# Helper functions
 # ---------------------------------------------------------------------------
 
-def prepare_model_input(model_input_list: List[Dict], fuel_type: str) -> pd.DataFrame:
-    """
-    Convert integration output to a model-ready DataFrame for a given fuel type.
+def _normalise_fuel_type(fuel_type: str) -> str:
+    """Lower-case and validate fuel type."""
+    if fuel_type is None:
+        raise ValueError("fuel_type must not be None")
 
-    This is the programmatic version of the helper previously shown in
-    `simple_usage_guide.ipynb`. It:
-
-        1) Converts the list of station dicts into a DataFrame
-        2) Selects the four lag columns for the specified fuel
-        3) Renames them to generic names that match the training data
-
-    Parameters
-    ----------
-    model_input_list : list of dict
-        Output from `get_fuel_prices_for_route()` or `run_example()`.
-    fuel_type : str
-        One of 'e5', 'e10', or 'diesel' (case-insensitive).
-
-    Returns
-    -------
-    pandas.DataFrame
-        DataFrame with four columns:
-
-            ['price_lag_1d', 'price_lag_2d', 'price_lag_3d', 'price_lag_7d']
-
-        Rows correspond to the stations in `model_input_list` in the same
-        order, including rows with missing values (NaN) if some lags are
-        missing. The prediction functions will handle missing rows.
-    """
-    if not model_input_list:
-        # Empty route / no stations – return empty DataFrame with correct schema
-        return pd.DataFrame(
-            columns=["price_lag_1d", "price_lag_2d", "price_lag_3d", "price_lag_7d"]
-        )
-
-    df = pd.DataFrame(model_input_list)
-
-    fuel_type = fuel_type.lower().strip()
-    if fuel_type not in FUEL_TYPES:
+    ft = fuel_type.lower().strip()
+    if ft not in FUEL_TYPES:
         valid = ", ".join(FUEL_TYPES)
-        raise ValueError(f"Unsupported fuel_type '{fuel_type}'. Expected one of: {valid}")
-
-    cols = [
-        f"price_lag_1d_{fuel_type}",
-        f"price_lag_2d_{fuel_type}",
-        f"price_lag_3d_{fuel_type}",
-        f"price_lag_7d_{fuel_type}",
-    ]
-
-    missing_cols = [c for c in cols if c not in df.columns]
-    if missing_cols:
-        raise KeyError(
-            f"Missing expected columns for fuel_type '{fuel_type}': {missing_cols}. "
-            "Check that the integration layer produced all lag columns."
+        raise ValueError(
+            f"Unsupported fuel_type '{fuel_type}'. Expected one of: {valid}"
         )
+    return ft
 
-    # Select and rename columns to the feature names used in training
-    model_features = df[cols].copy()
-    model_features.columns = [
-        "price_lag_1d",
-        "price_lag_2d",
-        "price_lag_3d",
-        "price_lag_7d",
-    ]
 
-    return model_features
+def _get_current_time_cell(now: Optional[datetime] = None) -> int:
+    """
+    Compute the current 30-minute time cell (0..47), **in UTC**.
+
+    If `now` is provided and timezone-aware, it is converted to UTC.
+    If `now` is naive (no tzinfo), we treat it as already being in UTC.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    else:
+        if now.tzinfo is not None:
+            now = now.astimezone(timezone.utc)
+        # else: assume `now` is already in UTC
+
+    return now.hour * 2 + (1 if now.minute >= 30 else 0)
+
+
+def _clip_horizon(cells_ahead: int) -> int:
+    """
+    Map the number of 30-minute blocks ahead to a supported horizon.
+
+    This is used only as a **fallback** when ETA is not available.
+
+    Rules
+    -----
+    * cells_ahead <= 0      -> 0  (daily-only model, no intraday feature)
+    * 1 <= cells_ahead <= 4 -> that horizon (h1..h4)
+    * cells_ahead > 4       -> 0  (fallback to daily-only model)
+    """
+    if cells_ahead <= 0:
+        return 0
+    if cells_ahead > 4:
+        return 0
+    return cells_ahead
+
+
+def _has_daily_lags(station: Dict[str, Any], fuel: str) -> bool:
+    """
+    Check whether all required daily lag features for a given fuel are present.
+
+    We require: price_lag_1d_{fuel}, price_lag_2d_{fuel},
+                price_lag_3d_{fuel}, price_lag_7d_{fuel}.
+    """
+    for suffix in ("1d", "2d", "3d", "7d"):
+        key = f"price_lag_{suffix}_{fuel}"
+        if station.get(key) is None:
+            return False
+    return True
+
+
+# Threshold in minutes within which we treat the station as "now"
+# instead of running a model in the same 30-min block.
+ETA_THRESHOLD_MIN = 10.0
+
+
+def _minutes_to_arrival(eta_value: Any, now: Optional[datetime]) -> Optional[float]:
+    """
+    Compute minutes from `now` until `eta_value`.
+
+    `eta_value` may be a datetime or an ISO-8601 string (with or without
+    timezone). We normalise both to UTC. On any parsing problem we return
+    None and let the caller fall back to a simpler rule.
+    """
+    if eta_value is None or now is None:
+        return None
+
+    # Normalise "now" to UTC (same convention as _get_current_time_cell)
+    if now.tzinfo is not None:
+        now_utc = now.astimezone(timezone.utc)
+    else:
+        now_utc = now  # treat naive datetime as already UTC
+
+    try:
+        if isinstance(eta_value, datetime):
+            eta_dt = eta_value
+        else:
+            s = str(eta_value).strip()
+            # Strip trailing "Z" if present
+            if s.endswith("Z"):
+                s = s[:-1]
+            eta_dt = datetime.fromisoformat(s)
+
+        if eta_dt.tzinfo is not None:
+            eta_dt = eta_dt.astimezone(timezone.utc)
+        else:
+            # Assume same timezone as now_utc (UTC)
+            eta_dt = eta_dt.replace(tzinfo=timezone.utc)
+
+        delta_min = (eta_dt - now_utc).total_seconds() / 60.0
+        return max(delta_min, 0.0)
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
-# Core prediction helpers
+# Core prediction logic
 # ---------------------------------------------------------------------------
 
 def _predict_single_fuel(
-    model_input: List[Dict],
+    model_input_list: List[Dict[str, Any]],
     fuel_type: str,
     prediction_key: Optional[str] = None,
-) -> List[Dict]:
+    now: Optional[datetime] = None,
+) -> List[Dict[str, Any]]:
     """
-    Internal helper: run prediction for a single fuel type and attach results.
+    Predict prices for one fuel type and write results into the station dicts.
+
+    Additionally, this function annotates each station with debug information:
+
+        debug_<fuel>_current_time_cell   : int (0..47)
+        debug_<fuel>_cells_ahead_raw     : int or None
+        debug_<fuel>_minutes_ahead       : float or None
+        debug_<fuel>_horizon_used        : int in {0..4} or None
+        debug_<fuel>_used_current_price  : bool
 
     Parameters
     ----------
-    model_input : list of dict
-        Stations with lag price information.
-    fuel_type : str
-        One of 'e5', 'e10', 'diesel' (case-insensitive).
-    prediction_key : str, optional
-        Name of the key under which the prediction shall be stored in each
-        station dict. If None, defaults to 'pred_price_{fuel_type}'.
+    model_input_list :
+        List of station dictionaries produced by the integration pipeline.
+    fuel_type :
+        'e5', 'e10' or 'diesel' (case-insensitive).
+    prediction_key :
+        Optional custom key name to store the prediction. If None, a default
+        of the form 'pred_price_{fuel}' is used.
+    now :
+        Optional reference time. Mainly for testing. If None, uses current
+        time (UTC convention as in `_get_current_time_cell`).
 
     Returns
     -------
     list of dict
-        The same list object that was passed in, but with each station dict
-        extended by the prediction key.
+        The same list, modified in-place with predictions and debug fields.
     """
-    if prediction_key is None:
-        prediction_key = f"pred_price_{fuel_type.lower()}"
+    if not model_input_list:
+        return model_input_list
 
-    if not model_input:
-        # Nothing to do – return as is
-        return model_input
+    ft = _normalise_fuel_type(fuel_type)
+    pred_key = prediction_key or f"pred_price_{ft}"
 
-    # Build DataFrame of features
-    features = prepare_model_input(model_input, fuel_type)
-    if features.empty:
-        # No features → cannot predict
-        for station in model_input:
-            station[prediction_key] = None
-        return model_input
+    # Time bookkeeping
+    current_time_cell = _get_current_time_cell(now)
+    current_price_key = f"price_current_{ft}"
 
-    # Determine which rows have complete data (no NaNs in the four lag columns)
-    complete_mask = features.notna().all(axis=1)
-    if not complete_mask.any():
-        # No station has full lag information – attach None everywhere
-        for station in model_input:
-            station[prediction_key] = None
-        return model_input
+    daily_cols_generic = ["price_lag_1d", "price_lag_2d", "price_lag_3d", "price_lag_7d"]
 
-    # Load the model for this fuel type
-    model = load_model(fuel_type)
+    # Debug field names
+    debug_ct_key = f"debug_{ft}_current_time_cell"
+    debug_ca_key = f"debug_{ft}_cells_ahead_raw"
+    debug_ma_key = f"debug_{ft}_minutes_ahead"
+    debug_h_key = f"debug_{ft}_horizon_used"
+    debug_ucp_key = f"debug_{ft}_used_current_price"
 
-    # Predict only for rows with complete data
-    X_complete = features[complete_mask]
-    preds = model.predict(X_complete)
+    # Attach current time cell for all stations (useful for debugging)
+    for station in model_input_list:
+        station[debug_ct_key] = current_time_cell
 
-    # Ensure we have a 1-D iterable of floats
-    preds = np.asarray(preds).ravel()
+    for station in model_input_list:
+        # Ensure prediction key exists, default None
+        if pred_key not in station:
+            station[pred_key] = None
 
-    # Attach predictions back to the original list
-    # We iterate over indices so that order is preserved.
-    pred_idx = 0
-    for i, station in enumerate(model_input):
-        if complete_mask.iloc[i]:
-            value = float(preds[pred_idx])
-            pred_idx += 1
+        time_cell = station.get("time_cell")
+        if time_cell is None:
+            continue
+
+        # Need all daily lags for this fuel
+        if not _has_daily_lags(station, ft):
+            continue
+
+        current_price = station.get(current_price_key)
+        cells_ahead_raw = time_cell - current_time_cell
+        station[debug_ca_key] = cells_ahead_raw
+
+        # Compute minutes to arrival (may be None for historical/demo)
+        minutes_to_arrival = _minutes_to_arrival(station.get("eta"), now)
+        station[debug_ma_key] = minutes_to_arrival
+
+        # ------------------------------------------------------------------
+        # Case 1: arrival very soon -> use current price instead of model
+        # ------------------------------------------------------------------
+        use_current_price = False
+        if current_price is not None:
+            if minutes_to_arrival is not None:
+                # Refined rule: treat as "now" if arrival is within threshold
+                if minutes_to_arrival <= ETA_THRESHOLD_MIN:
+                    use_current_price = True
+            else:
+                # Historical / demo path without ETA: fall back to old rule
+                if cells_ahead_raw <= 0:
+                    use_current_price = True
+
+        if use_current_price:
+            try:
+                station[pred_key] = float(current_price)
+                station[debug_ucp_key] = True
+                station[debug_h_key] = None
+            except (TypeError, ValueError):
+                station[pred_key] = None
+            continue
+
+        # ------------------------------------------------------------------
+        # Case 2: need to run a model -> decide horizon + feature columns
+        # ------------------------------------------------------------------
+        if current_price is None:
+            # No current price: daily-only model (h0)
+            horizon = 0
+            feature_cols = daily_cols_generic
         else:
-            # Incomplete feature set for this station – no prediction
-            value = None
-        station[prediction_key] = value
+            # We have a current price and arrival is sufficiently far ahead.
+            if minutes_to_arrival is not None:
+                # Minutes-based horizon selection.
+                # h_raw is the number of 30-min blocks ahead, rounded up.
+                h_raw = math.ceil(minutes_to_arrival / 30.0)
 
-    return model_input
+                if h_raw <= 0:
+                    # Defensive; in practice minutes_to_arrival > ETA_THRESHOLD_MIN.
+                    horizon = 1
+                elif 1 <= h_raw <= 4:
+                    horizon = h_raw
+                else:
+                    # Too far ahead (> 4 blocks ~ 2h): fall back to daily-only.
+                    horizon = 0
+            else:
+                # Fallback if ETA is missing: use cell-based logic.
+                cells_ahead = max(1, cells_ahead_raw)
+                horizon = _clip_horizon(cells_ahead)
+
+            if horizon == 0:
+                feature_cols = daily_cols_generic
+            else:
+                intraday_col = f"price_lag_{horizon}cell"
+                feature_cols = daily_cols_generic + [intraday_col]
+
+        station[debug_h_key] = horizon
+
+        # Build feature values mapped to generic names
+        values: List[float] = []
+
+        for suffix in ("1d", "2d", "3d", "7d"):
+            key = f"price_lag_{suffix}_{ft}"  # e.g. price_lag_1d_e5
+            values.append(station.get(key))
+
+        if horizon > 0:
+            # For horizons 1..4 we use the observed current price as
+            # the intraday proxy feature (price_lag_kcell).
+            values.append(current_price)
+
+        if any(v is None for v in values):
+            # Incomplete feature vector; skip prediction for this station
+            continue
+
+        X = pd.DataFrame([values], columns=feature_cols)
+        model = load_model_for_horizon(ft, horizon)
+        pred = model.predict(X)
+
+        try:
+            station[pred_key] = float(pred[0])
+        except (TypeError, ValueError, IndexError):
+            station[pred_key] = None
+
+    return model_input_list
 
 
 # ---------------------------------------------------------------------------
-# Public prediction API
+# Public API
 # ---------------------------------------------------------------------------
 
 def predict_for_fuel(
-    model_input: List[Dict],
+    model_input_list: List[Dict[str, Any]],
     fuel_type: str,
     prediction_key: Optional[str] = None,
-) -> List[Dict]:
+    now: Optional[datetime] = None,
+) -> List[Dict[str, Any]]:
     """
-    Public wrapper to obtain predictions for a single fuel type.
-
-    Typical usage (after integration):
-
-    >>> from src.integration.route_tankerkoenig_integration import get_fuel_prices_for_route
-    >>> from src.modeling.predict import predict_for_fuel
-    >>> model_input = get_fuel_prices_for_route(..., use_realtime=False)
-    >>> model_input = predict_for_fuel(model_input, "e5")
-
-    Parameters
-    ----------
-    model_input : list of dict
-        Output from `get_fuel_prices_for_route()` or `run_example()`.
-    fuel_type : str
-        One of 'e5', 'e10', 'diesel' (case-insensitive).
-    prediction_key : str, optional
-        Custom key name for predictions inside each station dict. If omitted,
-        defaults to 'pred_price_{fuel_type}'.
-
-    Returns
-    -------
-    list of dict
-        Same list with an extra field per station containing the prediction.
+    Public wrapper to predict prices for a single fuel type.
     """
-    return _predict_single_fuel(model_input, fuel_type, prediction_key)
+    return _predict_single_fuel(
+        model_input_list=model_input_list,
+        fuel_type=fuel_type,
+        prediction_key=prediction_key,
+        now=now,
+    )
 
 
-def predict_all_fuels(model_input: List[Dict]) -> List[Dict]:
+def predict_all_fuels(
+    model_input_list: List[Dict[str, Any]],
+    now: Optional[datetime] = None,
+) -> List[Dict[str, Any]]:
     """
-    Convenience function to predict prices for all supported fuel types.
+    Predict prices for all configured fuel types (E5, E10, Diesel).
 
-    This function sequentially calls `predict_for_fuel` for 'e5', 'e10' and
-    'diesel', storing predictions in the keys:
+    Adds the following keys to each station dict:
 
-        - 'pred_price_e5'
-        - 'pred_price_e10'
-        - 'pred_price_diesel'
-
-    Parameters
-    ----------
-    model_input : list of dict
-        Output from `get_fuel_prices_for_route()` or `run_example()`.
-
-    Returns
-    -------
-    list of dict
-        The same list, augmented with prediction fields for each fuel type.
+        pred_price_e5
+        pred_price_e10
+        pred_price_diesel
     """
-    for fuel in FUEL_TYPES:
-        predict_for_fuel(model_input, fuel)
-    return model_input
+    for ft in FUEL_TYPES:
+        _predict_single_fuel(
+            model_input_list=model_input_list,
+            fuel_type=ft,
+            prediction_key=None,
+            now=now,
+        )
+    return model_input_list
