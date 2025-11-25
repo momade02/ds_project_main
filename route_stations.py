@@ -19,6 +19,7 @@ import pyproj
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 from datetime import datetime, timedelta
+import googlemaps
 
 # Theoretical user Input
 # Hardcoded addresses
@@ -61,18 +62,19 @@ ors_base = "https://api.openrouteservice.org"
 
 def environment_check():
     """
-    Check if the ORS_API_KEY environment variable is set.
+    Check if the GOOGLE_MAPS_API_KEY environment variable is set.
     Raises SystemExit if not set.
 
     Returns:
-        ors_api_key (str): The ORS API key from environment variable
+        google_api_key (str): The Google Maps API key from environment variable
     """
+    load_dotenv()
 
-    # check if ors_api_key is set in environment variables
-    ors_api_key = os.getenv("ORS_API_KEY")
-    if not ors_api_key:
-        raise SystemExit("Please set your ORS_API_KEY environment variable first!")
-    return ors_api_key
+    # check if google api key is set in environment variables
+    google_api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+    if not google_api_key:
+        raise SystemExit("Please set your GOOGLE_MAPS_API_KEY environment variable first!")
+    return google_api_key
 
 def determine_segments(total_length_km, buffer_m):
     """
@@ -226,38 +228,31 @@ def estimate_arrival_times(stations, route_coords_lonlat, total_distance_km, tot
 # Function for structured geocoding search
 def ors_geocode_structured(street, city, country, api_key):
     """
-    Geocode a structured address using ORS.
-    
+    Geocode a structured address using googlemaps.Client.
+
     Inputs:
         street (str): Street address
         city (str): City name
         country (str): Country name
         api_key (str): ORS API key
     Returns:
-        lat (float): Latitude of the address
-        lon (float): Longitude of the address
-        label (str): Formatted address label, for detail see ORS docs
+        lat (float), lon (float), label (str)
     """
+    client = googlemaps.Client(key=api_key)
+    address = f"{street}, {city}, {country}"
+    results = client.geocode(address)
 
-    url = f"{ors_base}/geocode/search/structured"
-    params = {
-        "api_key": api_key,
-        "address": street,
-        "locality": city,
-        "country": country,
-        "size": 1
-    }
-    response = requests.get(url, params=params)
-    response.raise_for_status()
-    data = response.json()
-
-    features = data.get("features", [])
-    if not features:
+    if not results:
         raise ValueError(f"No results for {street}, {city}, {country}")
 
-    feature = features[0]
-    lon, lat = feature["geometry"]["coordinates"]
-    label = feature["properties"].get("label", "Unknown")
+    top = results[0]
+    loc = top.get("geometry", {}).get("location", {})
+    lat = loc.get("lat")
+    lon = loc.get("lng")
+    label = top.get("formatted_address", address)
+
+    if lat is None or lon is None:
+        raise ValueError(f"Geocoding returned no coordinates for {address}")
 
     return lat, lon, label
 
@@ -409,14 +404,14 @@ def main():
     When imported as a module (e.g. by Streamlit), this function is NOT executed.
     """
     # get ORS API key from environment variable
-    ors_api_key = environment_check()
+    google_api_key = environment_check()
 
     # get Geocode of start and end addresses
     start_lat, start_lon, start_label = ors_geocode_structured(
-        start_address, start_locality, start_country, ors_api_key
+        start_address, start_locality, start_country, google_api_key
     )
     end_lat, end_lon, end_label = ors_geocode_structured(
-        end_address, end_locality, end_country, ors_api_key
+        end_address, end_locality, end_country, google_api_key
     )
 
     # Check results of structured geocoding search
