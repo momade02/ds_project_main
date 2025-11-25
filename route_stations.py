@@ -377,11 +377,9 @@ def ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, api_key, route
 
     all_stations = []
     futures = []
-    submit_delay = 0.2
 
     with ThreadPoolExecutor(max_workers=min(4, len(route_segments))) as executor:
         for seg in route_segments:
-            time.sleep(submit_delay)
             print(f"Segment {route_segments.index(seg)} -> coords: {len(seg)}, approx payload bytes: {len(seg)*32}")
             futures.append(
                 executor.submit(
