@@ -20,14 +20,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 from datetime import datetime, timedelta
 
-# Load .env
-env_path = Path(__file__).with_name(".env")
-
-if env_path.exists():
-    load_dotenv(env_path)
-else:
-    raise SystemExit(f"Error: .env file does not exist. Path: {env_path}")
-
 # Theoretical user Input
 # Hardcoded addresses
 if route_scenario == "short":
@@ -64,13 +56,23 @@ buffer_meters = 300  # buffer width in meters
 # OpenRouteService API configuration
 ors_base = "https://api.openrouteservice.org"
 
-# check if ors_api_key is set in environment variables
-ors_api_key = os.getenv("ORS_API_KEY")
-if not ors_api_key:
-    raise SystemExit("Please set your ORS_API_KEY environment variable first!")
-
 # === helper functions ===
 # # Functions that help main functions.
+
+def environment_check():
+    """
+    Check if the ORS_API_KEY environment variable is set.
+    Raises SystemExit if not set.
+
+    Returns:
+        ors_api_key (str): The ORS API key from environment variable
+    """
+
+    # check if ors_api_key is set in environment variables
+    ors_api_key = os.getenv("ORS_API_KEY")
+    if not ors_api_key:
+        raise SystemExit("Please set your ORS_API_KEY environment variable first!")
+    return ors_api_key
 
 def determine_segments(total_length_km, buffer_m):
     """
@@ -408,6 +410,9 @@ def main():
     Command-line / direct-run entrypoint for testing the route pipeline.
     When imported as a module (e.g. by Streamlit), this function is NOT executed.
     """
+    # get ORS API key from environment variable
+    ors_api_key = environment_check()
+
     # get Geocode of start and end addresses
     start_lat, start_lon, start_label = ors_geocode_structured(
         start_address, start_locality, start_country, ors_api_key
