@@ -226,7 +226,7 @@ def estimate_arrival_times(stations, route_coords_lonlat, total_distance_km, tot
 # Functions to interact with OpenRouteService (ORS) API.
 
 # Function for structured geocoding search
-def ors_geocode_structured(street, city, country, api_key):
+def google_geocode_structured(street, city, country, api_key):
     """
     Geocode a structured address using googlemaps.Client.
 
@@ -234,7 +234,7 @@ def ors_geocode_structured(street, city, country, api_key):
         street (str): Street address
         city (str): City name
         country (str): Country name
-        api_key (str): ORS API key
+        api_key (str): Google Maps API key
     Returns:
         lat (float), lon (float), label (str)
     """
@@ -257,39 +257,50 @@ def ors_geocode_structured(street, city, country, api_key):
     return lat, lon, label
 
 # Function to get route between two coordinates
-def ors_route_driving_car(start_lat, start_lon, end_lat, end_lon, api_key):
+def google_route_driving_car(start_lat, start_lon, end_lat, end_lon, api_key, departure_time="now"):
     """
-    Get driving route between two coordinates using ORS.
+    Get driving route between two coordinates using Google Directions API.
 
     Inputs:
         start_lat (float): Start latitude
         start_lon (float): Start longitude
         end_lat (float): End latitude
         end_lon (float): End longitude
-        api_key (str): ORS API key
+        api_key (str): Google Maps API key
+        departure_time (datetime|None): Desired departure time (UTC). If None, set to now.
     Returns:
         coords_lonlat (list): List of [lon, lat] coordinates along the route
         distance_km (float): Total distance of the route in kilometers
         duration_min (float): Total duration of the route in minutes
     """
-    
-    url = f"{ors_base}/v2/directions/driving-car/geojson"
-    body = {
-        "coordinates": [[start_lon, start_lat], [end_lon, end_lat]],
-        "instructions": False  # just need geometry, distance, duration
-    }
-    headers = {"Authorization": api_key, "Content-Type": "application/json"}
-    r = requests.post(url, headers=headers, data=json.dumps(body))
-    r.raise_for_status()
-    data = r.json()
 
-    feat = data["features"][0]
-    props = feat.get("properties", {})
-    summary = props.get("summary", {})  # distance (m), duration (s)
-    coords_lonlat = feat["geometry"]["coordinates"]  # [[lon,lat], ...]
+    client = googlemaps.Client(key=api_key)
 
-    distance_km = (summary.get("distance") or 0.0) / 1000.0
-    duration_min = (summary.get("duration") or 0.0) / 60.0
+    directions = client.directions(
+        origin=(start_lat, start_lon),
+        destination=(end_lat, end_lon),
+        mode="driving",
+        alternatives=False,
+        departure_time=departure_time
+    )
+
+    if not directions:
+        raise ValueError("No route found by Google Directions API.")
+
+    route = directions[0]
+
+    # total distance (m) and duration (s)
+    distance_m = sum(leg.get("distance", {}).get("value", 0) for leg in route.get("legs", []))
+    duration_s = sum(leg.get("duration", {}).get("value", 0) for leg in route.get("legs", []))
+
+    # prefer overview_polyline for geometry (expected to be present)
+    overview = route.get("overview_polyline", {}).get("points")
+    points = googlemaps.convert.decode_polyline(overview)
+      #  convert to list of {"lat":..., "lng":...} for simplify_route
+    coords_lonlat = [[p["lng"], p["lat"]] for p in points]
+
+    distance_km = distance_m / 1000.0
+    duration_min = duration_s / 60.0
 
     return coords_lonlat, distance_km, duration_min
 
@@ -407,10 +418,10 @@ def main():
     google_api_key = environment_check()
 
     # get Geocode of start and end addresses
-    start_lat, start_lon, start_label = ors_geocode_structured(
+    start_lat, start_lon, start_label = google_geocode_structured(
         start_address, start_locality, start_country, google_api_key
     )
-    end_lat, end_lon, end_label = ors_geocode_structured(
+    end_lat, end_lon, end_label = google_geocode_structured(
         end_address, end_locality, end_country, google_api_key
     )
 
@@ -422,8 +433,8 @@ def main():
     print(f" → lat = {end_lat:.6f}, lon = {end_lon:.6f}")
 
     # get the route between two coordinates
-    route_coords_lonlat, route_km, route_min = ors_route_driving_car(
-        start_lat, start_lon, end_lat, end_lon, ors_api_key
+    route_coords_lonlat, route_km, route_min = google_route_driving_car(
+        start_lat, start_lon, end_lat, end_lon, google_api_key
     )
 
     print("\n--- Check ROUTE ---")
