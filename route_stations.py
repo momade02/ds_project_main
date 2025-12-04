@@ -13,14 +13,15 @@ from pathlib import Path
 import json
 import requests
 from dotenv import load_dotenv
-from shapely.geometry import LineString, Point
+from shapely.geometry import LineString
 from shapely.ops import transform, substring
 import pyproj
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import time
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import googlemaps
 import polyline
+import time
 
 # Theoretical user Input
 # Hardcoded addresses
@@ -77,151 +78,97 @@ def environment_check():
         raise SystemExit("Please set your GOOGLE_MAPS_API_KEY environment variable first!")
     return google_api_key
 
-def determine_segments(total_length_km, buffer_m):
-    """
-    Determine appropriate segment length in meters for route segmentation, based on ORS API and developers constraints.
+# def validate_route_inputs(start_address, start_locality, end_address, end_locality):
+#     """
+#     Validate that the start and end addresses and localities are non-empty strings and not identical.
+#     Returns cleaned (stripped) values as a tuple:
+#         (start_address, start_locality, end_address, end_locality)
+#     Raises:
+#         TypeError, ValueError
+#     """
+#     def clean(value, name):
+#         v = value.strip()
+#         if not v:
+#             raise ValueError(f"{name} must not be empty")
+#         if len(v) < 2:
+#             raise ValueError(f"{name} is too short")
+#         return v
+        
+#     clean(start_address, "start_address")
+#     clean(start_locality, "start_locality")
+#     clean(end_address, "end_address")
+#     clean(end_locality, "end_locality")
 
-    Inputs:
-        total_length_km (float): Total length of the route in kilometers
-        buffer_m (float): Buffer width in meters
-    Returns:
-        segment_length_m (float): Length of each segment in meters
-    """
+#     # normalize for comparison (casefold for robust case-insensitive compare)
+#     def normalized(addr, loc):
+#         return f"{addr}, {loc}".casefold()
 
-    max_segments = 12  # 12, so user can request a new route every 12 seconds
-    max_segment_length = 240  # km, from the docs with a little safety margin
-    max_area_km2 = 49         # km^2, from the docs with a little safety margin
+#     if normalized(s_addr, s_loc) == normalized(e_addr, e_loc):
+#         raise ValueError("Start and end address/locality must not be identical")
 
-    if buffer_m <= 0:
-        raise ValueError("buffer_m must be > 0")
-    elif buffer_m > 1000:
-        raise ValueError("buffer_m must be <= 1000")
+#     return s_addr, s_loc, e_addr, e_loc
 
-    for segments in range(1, max_segments + 1):
-        L = total_length_km / segments  # segment length in km
+# def simplify_route(coords_lonlat, tolerance=0.0002):
+#       #  tolerance ~22m
+#     """
+#     Simplify a route by reducing the number of points using the Ramer-Douglas-Peucker algorithm.
 
-        # Constraint 1: segment length
-        if L > max_segment_length:
-            continue
+#     Inputs:
+#         coords_lonlat (list): List of [lon, lat] coordinates along the route
+#         tolerance (float): Tolerance for simplification, smaller values retain more points
+#     Returns:
+#         simplified_coords (list): Simplified list of [lon, lat] coordinates
+#     """
 
-        # Constraint 2: area
-        area = 2 * L * (buffer_m / 1000)
-        if area > max_area_km2:
-            continue
+#     line = LineString(coords_lonlat)
+#     simplified = line.simplify(tolerance, preserve_topology=False)
 
-        return L * 1000 # return segment length in meters
+#     print(f"Simplified route from {len(coords_lonlat)} to {len(simplified.coords)} points")
 
-    raise ValueError(
-        f"Cannot satisfy API constraints with buffer={buffer_m}m and total route length={total_length_km} km. "
-        "Try a smaller buffer or a shorter route."
-    )
+#     return list(simplified.coords)
 
-def simplify_route(coords_lonlat, tolerance=0.0002):
-      #  tolerance ~22m
-    """
-    Simplify a route by reducing the number of points using the Ramer-Douglas-Peucker algorithm.
+# def segment_route(coords_lonlat, segment_length_m):
+#     """
+#     Segment a route into smaller segments of specified length in meters.
 
-    Inputs:
-        coords_lonlat (list): List of [lon, lat] coordinates along the route
-        tolerance (float): Tolerance for simplification, smaller values retain more points
-    Returns:
-        simplified_coords (list): Simplified list of [lon, lat] coordinates
-    """
+#     Inputs:
+#         coords_lonlat (list): List of [lon, lat] coordinates along the route
+#         segment_length_m (float): Length of each segment in meters
+#     Returns:
+#         segments_lonlat (list): List of segments, each segment is a list of [lon, lat] coordinates
+#     """
 
-    line = LineString(coords_lonlat)
-    simplified = line.simplify(tolerance, preserve_topology=False)
+#     line = LineString(coords_lonlat)
 
-    print(f"Simplified route from {len(coords_lonlat)} to {len(simplified.coords)} points")
+#     # transormer for WGS 84 (EPSG:4326) to UTM zone 32N (EPSG:32632)
+#     project_to_utm = pyproj.Transformer.from_crs(crs_from =
+#         "EPSG:4326", crs_to = "EPSG:32632", always_xy = True
+#     ).transform
 
-    return list(simplified.coords)
+#     # transformer back
+#     project_to_lonlat = pyproj.Transformer.from_crs(
+#         "EPSG:32632", "EPSG:4326", always_xy=True
+#     ).transform
 
-def segment_route(coords_lonlat, segment_length_m):
-    """
-    Segment a route into smaller segments of specified length in meters.
+#     line_m = transform(project_to_utm, line)
 
-    Inputs:
-        coords_lonlat (list): List of [lon, lat] coordinates along the route
-        segment_length_m (float): Length of each segment in meters
-    Returns:
-        segments_lonlat (list): List of segments, each segment is a list of [lon, lat] coordinates
-    """
+#     segments_m = []
+#     total_length = line_m.length
 
-    line = LineString(coords_lonlat)
-
-    # transormer for WGS 84 (EPSG:4326) to UTM zone 32N (EPSG:32632)
-    project_to_utm = pyproj.Transformer.from_crs(crs_from =
-        "EPSG:4326", crs_to = "EPSG:32632", always_xy = True
-    ).transform
-
-    # transformer back
-    project_to_lonlat = pyproj.Transformer.from_crs(
-        "EPSG:32632", "EPSG:4326", always_xy=True
-    ).transform
-
-    line_m = transform(project_to_utm, line)
-
-    segments_m = []
-    total_length = line_m.length
-
-    start = 0
-    while start < total_length:
-        end = start + segment_length_m
-        seg = substring(line_m, start, end)
-        segments_m.append(seg)
-        start = end
+#     start = 0
+#     while start < total_length:
+#         end = start + segment_length_m
+#         seg = substring(line_m, start, end)
+#         segments_m.append(seg)
+#         start = end
     
-    segments_lonlat = []
-    for seg in segments_m:
-        seg_lonlat = transform(project_to_lonlat, seg)
-        coords = list(seg_lonlat.coords)
-        segments_lonlat.append([[lon, lat] for (lon, lat) in coords])
+#     segments_lonlat = []
+#     for seg in segments_m:
+#         seg_lonlat = transform(project_to_lonlat, seg)
+#         coords = list(seg_lonlat.coords)
+#         segments_lonlat.append([[lon, lat] for (lon, lat) in coords])
     
-    return segments_lonlat
-
-def estimate_arrival_times(stations, route_coords_lonlat, total_distance_km, total_duration_min, departure_time=None):
-    """
-    Augments each station with:
-      - distance_along_m: meters from the start along the route (projected)
-      - fraction_of_route: fraction of the total route (0..1)
-      - eta: estimated time of arrival
-
-    Args:
-        stations (list): list of dicts containing 'lat' and 'lon'
-        route_coords_lonlat (list): [[lon, lat], ...] route coordinates
-        total_distance_km (float): total route length in km (from ors_route_driving_car)
-        total_duration_min (float): total route duration in minutes (from ors_route_driving_car)
-        departure_time (datetime|None): departure time. If None, current time is used
-
-    Returns:
-        list: copied station dicts with added fields
-    """
-
-    if departure_time is None:
-        departure_time = datetime.utcnow()
-
-    project_to_utm = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:32632", always_xy=True).transform
-    line = LineString(route_coords_lonlat)
-    line_m = transform(project_to_utm, line)
-    total_length_m = total_distance_km * 1000.0
-
-    results = []
-    for s in stations:
-        pt = Point(s["lon"], s["lat"])
-        pt_m = transform(project_to_utm, pt)
-        dist_along = line_m.project(pt_m)
-        fraction = dist_along / total_length_m
-        offset_seconds = fraction * (total_duration_min * 60.0)
-        eta = departure_time + timedelta(seconds=offset_seconds)
-
-        s_copy = s.copy()
-        s_copy.update({
-            "distance_along_m": float(dist_along),
-            "fraction_of_route": float(fraction),
-            "eta": eta.isoformat()
-        })
-        results.append(s_copy)
-
-    return results
+#     return segments_lonlat
 
 def parse_duration(d):
     """
@@ -295,14 +242,15 @@ def google_route_driving_car(start_lat, start_lon, end_lat, end_lon, api_key, de
         destination=(end_lat, end_lon),
         mode="driving",
         alternatives=False,
-        departure_time=departure_time
+        departure_time=departure_time,
+        traffic_model="best_guess"
     )
 
     if not directions:
         raise ValueError("No route found by Google Directions API.")
 
     if departure_time == "now":
-        departure_time = datetime.utcnow()
+        departure_time = datetime.now(ZoneInfo("Europe/Berlin"))
 
     route = directions[0]
 
@@ -321,7 +269,7 @@ def google_route_driving_car(start_lat, start_lon, end_lat, end_lon, api_key, de
 
     return coords_lonlat, distance_km, duration_min, departure_time
 
-def google_places_single_segment(segment_coords, api_key, original_distance_km, original_duration_min, departure_time, timeout_seconds = 30):
+def google_places_fuel_along_route(segment_coords, api_key, original_distance_km, original_duration_min, departure_time, timeout_seconds = 30):
     """
     Get fuel stations along a route segment using Google Places Text Search (Search Along Route).
 
@@ -349,191 +297,100 @@ def google_places_single_segment(segment_coords, api_key, original_distance_km, 
         "X-Goog-FieldMask": (
             "places.displayName,places.location,"
             "routingSummaries.legs.distanceMeters,"
-            "routingSummaries.legs.duration"
+            "routingSummaries.legs.duration,"
+            "nextPageToken"
         ),
     }
-    body = {
+    base_body = {
         "textQuery": "gas station",
         "languageCode": "de",
         "searchAlongRouteParameters": {
             "polyline": {
                 "encodedPolyline": encoded_poly
+                }
+            },
+        "routingParameters": {
+            "travelMode": "DRIVE",
             }
-        },
-        # if we want to specify origin for routing parameters, we can do it here
-        # could be useful for segmentation later
-        # "routingParameters": {
-        #     "origin": {
-        #         "location": {
-        #             "latLng": {
-        #                 "latitude": origin_lat,
-        #                 "longitude": origin_lon,
-        #             }
-        #         }
-        #     },
-        # }
-    }
+        }    
 
-    try:
-        r = requests.post(url, headers=headers, json=body, timeout=timeout_seconds)
-        r.raise_for_status()
-        data = r.json()
-    except requests.Timeout:
-        raise TimeoutError(
-            f"Google Places Search Along Route timed out after {timeout_seconds} seconds."
-        )
-
+    # we'll collect results across pages
     stations = []
+    page_token = None
 
-    places = data.get("places", [])
-    routing_summaries = data.get("routingSummaries", [])
-    for place, routing in zip(places, routing_summaries):
-        legs = routing.get("legs", [])
-
-        # Leg 0: Origin -> A
-        leg_OA = legs[0]
-        D_OA = leg_OA["distanceMeters"]
-        T_OA = parse_duration(leg_OA["duration"])
-
-        # Leg 1: A -> Destination
-        leg_AD = legs[1]
-        D_AD = leg_AD["distanceMeters"]
-        T_AD = parse_duration(leg_AD["duration"])
-
-        # Origin -> A -> Destination
-        D_OAD = D_OA + D_AD
-        T_OAD = T_OA + T_AD
-
-        # detour compared to original route
-        detour_distance_km = D_OAD/1000.0 - original_distance_km
-        detour_duration_min = T_OAD/60.0 - original_duration_min
-
-        loc = place.get("location", {})
-        lat = loc.get("latitude")
-        lon = loc.get("longitude")
-        if lat is None or lon is None:
-            continue
+    while True:
         
-        eta = departure_time + timedelta(seconds = T_OA)
+        body = dict(base_body)
 
-        stations.append({
-            "name": place.get("displayName", {}).get("text") or "Unnamed",
-            "lat": lat,
-            "lon": lon,
-            "detour_distance_km": detour_distance_km,
-            "detour_duration_min": detour_duration_min,
-            "distance_along_m": D_OA,
-            "eta": eta.isoformat()
-        })
+        if page_token:
+            # request the next page
+            body["pageToken"] = page_token
 
-    print(f"Found {len(stations)} stations. \n")
-
-    return stations
-
-
-# Function to get fuel stations (POIs) along a route segment using ORS /pois endpoint
-def ors_pois_single_segment(segment_coords, buffer_meters, api_key, timeout_seconds):
-    """
-    Get fuel stations (category ID 596) along a driving route using ORS /pois endpoint.
-    """
-    
-    url = f"{ors_base}/pois"
-    body = {
-        "request": "pois",
-        "geometry": {
-            "buffer": buffer_meters,
-            "geojson": {
-                "type": "LineString",
-                "coordinates": segment_coords  # [lon, lat] from the route segment
-            }
-        },
-        "filters": {
-            "category_ids": [596]  # 596 = Fuel (gas stations)
-        }
-    }
-    headers = {"Authorization": api_key, "Content-Type": "application/json"}
-    
-    try:
-        r = requests.post(url, headers=headers, data=json.dumps(body), timeout=timeout_seconds)
-
-        # for debugging purposes, print status code and reason, delete later
-        print("\n Delete later \n Status code:", r.status_code, "Reason:", r.reason)
-        # print(r.text)
-        r.raise_for_status()
-        pois_data = r.json()
-
-    except requests.Timeout:
-          #  catches timeout exception
-        raise TimeoutError(f"ORS /pois request timed out after {timeout_seconds} seconds.")
-
-    stations = []
-    for feature in pois_data.get("features", []):
-        props = feature.get("properties", {})
-        tags = props.get("osm_tags", {})
-        name = tags.get("name") or tags.get("brand") or "Unnamed"
-        lon, lat = feature["geometry"]["coordinates"]
-        distance = props.get("distance") or 0.0
-          #  distance in meters from the route (as the crow flies? Nothing can be found in ORS docs)
-          #  can implement distance calculation with shapely if needed
-        stations.append({"name": name, "lat": lat, "lon": lon, "distance": distance})
-
-    return stations
-
-# Function to get fuel stations (POIs) along a route using ORS /pois endpoint
-def ors_pois_fuel_along_route(route_coords_lonlat, buffer_meters, api_key, route_length_km, timeout_seconds=90):
-    """
-    Get fuel stations (category ID 596) along a driving route using ORS /pois endpoint.
-    If the route is long, it segments the route and runs multiple requests in parallel.
-
-    Inputs:
-        route_coords_lonlat (list): List of [lon, lat] coordinates along the route
-        buffer_meters (float): Search radius (buffer) around the route in meters
-        api_key (str): ORS API key
-        timeout_seconds (int|float): max seconds to wait for the ORS server
-
-    Returns:
-        stations (list): List of fuel stations with 'name', 'lat', 'lon', 'distance'
-    """
-
-    # call helper function to reduce number of points along the route
-    route_coords_lonlat = simplify_route(route_coords_lonlat)
-
-    # call helper function to segment the route if needed
-    route_segments = segment_route(route_coords_lonlat, segment_length_m=determine_segments(route_length_km, buffer_meters))
-
-    if len(route_segments) == 1:
-        return ors_pois_single_segment(
-            route_segments[0], buffer_meters, api_key, timeout_seconds
-        )
-
-    print(f"Running {len(route_segments)} segment requests in parallel...")
-
-    all_stations = []
-    futures = []
-
-    with ThreadPoolExecutor(max_workers=min(4, len(route_segments))) as executor:
-        for seg in route_segments:
-            print(f"Segment {route_segments.index(seg)} -> coords: {len(seg)}, approx payload bytes: {len(seg)*32}")
-            futures.append(
-                executor.submit(
-                    ors_pois_single_segment,
-                    seg, buffer_meters, api_key, timeout_seconds
-                )
+        try:
+            r = requests.post(url, headers=headers, json=body, timeout=timeout_seconds)
+            r.raise_for_status()
+            print(f"\n Google Places Search Along Route status code: {r.status_code} Reason: {r.reason}")
+            data = r.json()
+        except requests.Timeout:
+            raise TimeoutError(
+                f"Google Places Search Along Route timed out after {timeout_seconds} seconds."
             )
 
-        for f in as_completed(futures):
-            all_stations.extend(f.result())
+        places = data.get("places", [])
+        routing_summaries = data.get("routingSummaries", [])
 
-    unique = {}
-    for s in all_stations:
-        key = (s["lat"], s["lon"])
-        if key not in unique:
-            unique[key] = s
+        for place, routing in zip(places, routing_summaries):
+            legs = routing.get("legs", [])
 
-    print(f"Finished parallel POI search. Found total: {len(unique)} fuel stations.")
+            # Leg 0: Origin -> A
+            leg_OA = legs[0]
+            D_OA = leg_OA["distanceMeters"]
+            T_OA = parse_duration(leg_OA["duration"])
 
-    return list(unique.values())
+            # Leg 1: A -> Destination
+            leg_AD = legs[1]
+            D_AD = leg_AD["distanceMeters"]
+            T_AD = parse_duration(leg_AD["duration"])
 
+            # Origin -> A -> Destination
+            D_OAD = D_OA + D_AD
+            T_OAD = T_OA + T_AD
+
+            # detour compared to original route
+            detour_distance_km = D_OAD/1000.0 - original_distance_km
+            detour_duration_min = T_OAD/60.0 - original_duration_min
+
+            loc = place.get("location", {})
+            lat = loc.get("latitude")
+            lon = loc.get("longitude")
+            if lat is None or lon is None:
+                continue
+
+            eta = departure_time + timedelta(seconds = T_OA)
+
+            stations.append({
+                "name": place.get("displayName", {}).get("text") or "Unnamed",
+                "lat": lat,
+                "lon": lon,
+                "detour_distance_km": detour_distance_km,
+                "detour_duration_min": detour_duration_min,
+                "distance_along_m": D_OA,
+                "eta": eta.isoformat()
+            })
+
+        # pagination: check for nextPageToken and loop if present
+        next_token = data.get("nextPageToken")
+        if next_token:
+            # Could maybe be deleted later
+            time.sleep(0.2)
+            page_token = next_token
+            # continue to fetch next page
+        else:
+            break
+
+    print(f"\n Found {len(stations)} stations (all pages).")
+
+    return stations
 
 # === Execution ===
 def main():
@@ -570,23 +427,16 @@ def main():
     print(f"Number of points unthinned list: {len(route_coords_lonlat)} coordinates along the route")
 
     # get data of fuel stations along the route
-    stations_with_eta = google_places_single_segment(route_coords_lonlat, google_api_key, route_km, route_min, departure_time)
-
-    # stations_with_eta = estimate_arrival_times(stations, route_coords_lonlat, route_km, route_min)
+    stations_with_eta = google_places_fuel_along_route(route_coords_lonlat, google_api_key, route_km, route_min, departure_time)
 
     print("\n--- Stations with ETA ---")
     for s in stations_with_eta[:5]:
         print(f"{s.get('name')} → lat={s.get('lat'):.5f}, lon={s.get('lon'):.5f}, "
             f"detour_distance={s.get('detour_distance_km'):.3f} km, "
-            f"detour_duration={s.get('detour_duration_min'):.2f} min,"
-            f" distance_along_route={s.get('distance_along_m'):.0f} m,"
-            f" ETA={s.get('eta')}"
+            f"detour_duration={s.get('detour_duration_min'):.2f} min, "
+            f"distance from start to station={s.get('distance_along_m'):.0f} m, "
+            f"ETA={s.get('eta')} \n"
               )
-
-    # for s in stations_with_eta:
-    #     print(f"{s.get('name','Unnamed')} → lat={s.get('lat',0.0):.5f}, lon={s.get('lon',0.0):.5f}, distance={s.get('distance',0.0)} m, "
-    #         f"along={s.get('distance_along_m',0.0):.0f} m, "
-    #         f"share={s.get('fraction_of_route',0.0):.1%}, ETA={s.get('eta','-')}")
 
 if __name__ == "__main__":
     main()
