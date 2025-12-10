@@ -120,6 +120,7 @@ def _describe_price_basis(
 def _build_ranking_dataframe(
     stations: List[Dict[str, Any]],
     fuel_code: str,
+    debug_mode: bool = False,
 ) -> pd.DataFrame:
     """
     Build a DataFrame with the most relevant columns for ranking display.
@@ -147,24 +148,42 @@ def _build_ranking_dataframe(
 
     rows = []
     for s in stations:
-        rows.append(
-            {
-                "Station name": s.get("tk_name") or s.get("osm_name"),
-                "Brand": s.get("brand"),
-                "City": s.get("city"),
-                "OSM name": s.get("osm_name"),
-                "Fraction of route": s.get("fraction_of_route"),
-                "Distance along route [m]": s.get("distance_along_m"),
-                # human-readable explanation based on debug_* fields
-                "Price basis": _describe_price_basis(s, fuel_code),
-                f"Current {fuel_code.upper()} price": s.get(current_key),
-                f"Lag 1d {fuel_code.upper()}": s.get(lag1_key),
-                f"Lag 2d {fuel_code.upper()}": s.get(lag2_key),
-                f"Lag 3d {fuel_code.upper()}": s.get(lag3_key),
-                f"Lag 7d {fuel_code.upper()}": s.get(lag7_key),
-                f"Predicted {fuel_code.upper()} price": s.get(pred_key),
-            }
-        )
+        row = {
+            "Station name": s.get("tk_name") or s.get("osm_name"),
+            "Brand": s.get("brand"),
+            "City": s.get("city"),
+            "OSM name": s.get("osm_name"),
+            "Fraction of route": s.get("fraction_of_route"),
+            "Distance along route [m]": s.get("distance_along_m"),
+            # human-readable explanation based on debug_* fields
+            "Price basis": _describe_price_basis(s, fuel_code),
+            f"Current {fuel_code.upper()} price": s.get(current_key),
+            f"Lag 1d {fuel_code.upper()}": s.get(lag1_key),
+            f"Lag 2d {fuel_code.upper()}": s.get(lag2_key),
+            f"Lag 3d {fuel_code.upper()}": s.get(lag3_key),
+            f"Lag 7d {fuel_code.upper()}": s.get(lag7_key),
+            f"Predicted {fuel_code.upper()} price": s.get(pred_key),
+        }
+
+        if debug_mode:
+            # Raw diagnostic fields from the prediction layer
+            row[f"DEBUG current_time_cell_{fuel_code}"] = s.get(
+                f"debug_{fuel_code}_current_time_cell"
+            )
+            row[f"DEBUG cells_ahead_raw_{fuel_code}"] = s.get(
+                f"debug_{fuel_code}_cells_ahead_raw"
+            )
+            row[f"DEBUG minutes_to_arrival_{fuel_code}"] = s.get(
+                f"debug_{fuel_code}_minutes_to_arrival"
+            )
+            row[f"DEBUG horizon_used_{fuel_code}"] = s.get(
+                f"debug_{fuel_code}_horizon_used"
+            )
+            row[f"DEBUG eta_utc_{fuel_code}"] = s.get(
+                f"debug_{fuel_code}_eta_utc"
+            )
+
+        rows.append(row)
 
     df = pd.DataFrame(rows)
 
@@ -301,6 +320,11 @@ This UI wraps the existing pipeline:
     end_address = st.sidebar.text_input(
         "End address (optional)", value="Charlottenstraße 45"
     )
+    # Optional diagnostics
+    debug_mode = st.sidebar.checkbox(
+        "Debug mode (show pipeline diagnostics)", value=False
+    )
+
 
     run_clicked = st.sidebar.button("Run recommender")
 
@@ -366,7 +390,7 @@ This UI wraps the existing pipeline:
         "model forecast and how far ahead that forecast looks."
     )
 
-    df_ranked = _build_ranking_dataframe(ranked, fuel_code)
+    df_ranked = _build_ranking_dataframe(ranked, fuel_code, debug_mode=debug_mode)
     if df_ranked.empty:
         st.info("No stations with valid predictions to display.")
     else:

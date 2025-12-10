@@ -795,7 +795,24 @@ def get_all_historical_lags_single_query(
                 key = (uuid, lag_date.date())
                 if key in station_date_prices:
                     results[uuid][lag_name] = station_date_prices[key]
-        
+
+        # Diagnostics: warn if we have no historical prices at all for a station
+        for uuid in station_uuids:
+            all_none = True
+            for lag_name in ("1d", "2d", "3d", "7d"):
+                lag_prices = results[uuid].get(lag_name, {})
+                if any(
+                    lag_prices.get(fuel) is not None
+                    for fuel in ("e5", "e10", "diesel")
+                ):
+                    all_none = False
+                    break
+            if all_none:
+                print(
+                    f"  WARNING: No historical prices found for station {uuid} "
+                    f"for any of the lag days (1d/2d/3d/7d)."
+                )
+
         return results
         
     except Exception as e:
@@ -814,9 +831,26 @@ def get_all_historical_lags_single_query(
                 "1d": prices_1d.get(uuid, {'e5': None, 'e10': None, 'diesel': None}),
                 "2d": prices_2d.get(uuid, {'e5': None, 'e10': None, 'diesel': None}),
                 "3d": prices_3d.get(uuid, {'e5': None, 'e10': None, 'diesel': None}),
-                "7d": prices_7d.get(uuid, {'e5': None, 'e10': None, 'diesel': None})
+                "7d": prices_7d.get(uuid, {'e5': None, 'e10': None, 'diesel': None}),
             }
-        
+
+        # Diagnostics: warn if we have no historical prices at all for a station
+        for uuid, lag_dict in results.items():
+            all_none = True
+            for lag_name in ("1d", "2d", "3d", "7d"):
+                lag_prices = lag_dict.get(lag_name, {})
+                if any(
+                    lag_prices.get(fuel) is not None
+                    for fuel in ("e5", "e10", "diesel")
+                ):
+                    all_none = False
+                    break
+            if all_none:
+                print(
+                    f"  WARNING (fallback): No historical prices found for station {uuid} "
+                    f"for any of the lag days (1d/2d/3d/7d)."
+                )
+
         return results
 
 
