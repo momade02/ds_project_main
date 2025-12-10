@@ -3,18 +3,18 @@ Streamlit UI for the route-aware fuel price recommender.
 
 Two environments
 ----------------
-1) Test mode (example route, no ORS calls)
+1) Test mode (example route, no Google calls)
    - Uses `run_example()` from `route_tankerkoenig_integration`.
 
-2) Real route (full ORS + Supabase + TankerkÃ¶nig pipeline)
+2) Real route (Google route + Supabase + Tankerkönig pipeline)
    - Uses `get_fuel_prices_for_route(...)`.
-   - Always uses real-time TankerkÃ¶nig prices.
+   - Always uses real-time Tankerkönig prices.
 
 High-level pipeline in both modes
 ---------------------------------
-integration (route + station prices)
-    -> ARDL models with horizon logic (in `src.modeling.predict`)
-    -> decision layer (ranking & best station in `src.decision.recommender`)
+integration (route → stations → historical + real-time prices)
+    → ARDL models with horizon logic (in `src.modeling.predict`)
+    → decision layer (ranking & best station in `src.decision.recommender`)
 """
 
 from __future__ import annotations
@@ -96,7 +96,7 @@ def _describe_price_basis(
 
     if used_current:
         # Now reflects the refined rule with the ETA threshold
-        return "Current price (arrival in â‰² 10 min)"
+        return "Current price (arrival in ≤ 10 min)"
 
     if horizon is None:
         # No explicit horizon; either we could not model or we only used daily info.
@@ -168,7 +168,7 @@ def _build_ranking_dataframe(
 
     df = pd.DataFrame(rows)
 
-    # Only these columns are numeric prices â€“ do NOT touch "Price basis"
+    # Only these columns are numeric prices – do NOT touch "Price basis"
     numeric_price_cols = [
         f"Current {fuel_code.upper()} price",
         f"Lag 1d {fuel_code.upper()}",
@@ -263,7 +263,7 @@ def main() -> None:
         """
 This UI wraps the existing pipeline:
 
-- **Integration** (route â†’ stations â†’ historical + real-time prices)
+- **Integration** (route → stations → historical + real-time prices)
 - **ARDL prediction models** for E5, E10 and Diesel (15 models total)
 - **Decision layer** to rank and recommend stations along the route
         """
@@ -274,7 +274,7 @@ This UI wraps the existing pipeline:
 
     env_label = st.sidebar.radio(
         "Environment",
-        options=["Test mode (example route)", "Real route (ORS pipeline)"],
+        options=["Test mode (example route)", "Real route (Google pipeline)"],
         index=1,
     )
 
@@ -289,17 +289,17 @@ This UI wraps the existing pipeline:
     st.sidebar.markdown("### Route settings (real mode)")
 
     start_locality = st.sidebar.text_input(
-        "Start locality (city/town)", value="TÃ¼bingen"
+        "Start locality (city/town)", value="Tübingen"
     )
     start_address = st.sidebar.text_input(
-        "Start address (optional)", value="WilhelmstraÃŸe 32"
+        "Start address (optional)", value="Wilhelmstraße 32"
     )
 
     end_locality = st.sidebar.text_input(
         "End locality (city/town)", value="Reutlingen"
     )
     end_address = st.sidebar.text_input(
-        "End address (optional)", value="CharlottenstraÃŸe 45"
+        "End address (optional)", value="Charlottenstraße 45"
     )
 
     run_clicked = st.sidebar.button("Run recommender")
@@ -319,7 +319,7 @@ This UI wraps the existing pipeline:
             st.error(f"Error while running example integration: {exc}")
             return
     else:
-        st.subheader("Mode: Real route (ORS pipeline with real-time prices)")
+        st.subheader("Mode: Real route (Google pipeline with real-time prices)")
 
         if not start_locality or not end_locality:
             st.error("Please provide at least start and end localities (cities/towns).")
@@ -331,7 +331,7 @@ This UI wraps the existing pipeline:
                 end_locality=end_locality,
                 start_address=start_address,
                 end_address=end_address,
-                use_realtime=True,  # always use current TankerkÃ¶nig prices
+                use_realtime=True,  # always use current Tankerkönig prices
             )
         except Exception as exc:
             st.error(f"Error while running real route pipeline: {exc}")
@@ -359,7 +359,7 @@ This UI wraps the existing pipeline:
     # ----------------------------------------------------------------------
     # Full ranking table
     # ----------------------------------------------------------------------
-    st.markdown("### Ranking of stations (cheapest â†’ most expensive)")
+    st.markdown("### Ranking of stations (cheapest → most expensive)")
     st.caption(
         "The **Price basis** column shows whether the recommendation uses the "
         "observed current price (arrival still in this 30-minute block) or a "
