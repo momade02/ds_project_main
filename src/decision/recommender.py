@@ -20,6 +20,7 @@ the functions below will work.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Dict, List, Any
 
 from src.modeling.model import FUEL_TYPES
@@ -61,12 +62,17 @@ def _normalise_fuel_type(fuel_type: str) -> str:
     return ft
 
 
-def _ensure_predictions(model_input: List[Dict[str, Any]], fuel_type: str) -> None:
+def _ensure_predictions(
+    model_input: List[Dict[str, Any]],
+    fuel_type: str,
+    *,
+    now: datetime | None = None,
+) -> None:
     """
     Ensure that ARDL predictions exist for the given fuel type.
 
     If the prediction key is missing entirely or all values are None,
-    this function calls `predict_for_fuel` to compute them in-place.
+    this function calls :func:`predict_for_fuel` to compute them in-place.
 
     Parameters
     ----------
@@ -74,6 +80,10 @@ def _ensure_predictions(model_input: List[Dict[str, Any]], fuel_type: str) -> No
         List of station dictionaries produced by the integration pipeline.
     fuel_type :
         Fuel type string, e.g. 'e5', 'e10', 'diesel'.
+    now :
+        Optional "now" in UTC to be passed down into `predict_for_fuel`,
+        so that all ETA-based horizon decisions within one ranking call
+        share the same reference time.
     """
     if not model_input:
         return
@@ -88,7 +98,7 @@ def _ensure_predictions(model_input: List[Dict[str, Any]], fuel_type: str) -> No
 
     if not has_any_prediction:
         # This mutates model_input in-place
-        predict_for_fuel(model_input, ft, prediction_key=pred_key)
+        predict_for_fuel(model_input, ft, prediction_key=pred_key, now=now)
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +108,7 @@ def _ensure_predictions(model_input: List[Dict[str, Any]], fuel_type: str) -> No
 def rank_stations_by_predicted_price(
     model_input: List[Dict[str, Any]],
     fuel_type: str,
+    now: datetime | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Rank stations along the route by predicted price for a given fuel type.
@@ -106,19 +117,19 @@ def rank_stations_by_predicted_price(
     -------------
     1. Lowest predicted price (for the chosen fuel) is best.
     2. If prices are equal, prefer stations earlier on the route
-       (smaller `fraction_of_route`).
-    3. If still tied, prefer smaller `distance_along_m`
+       (smaller ``fraction_of_route``).
+    3. If still tied, prefer smaller ``distance_along_m``
        (slightly shorter absolute distance along the route).
-
-    All of these fields are expected to be present in the station
-    dictionaries produced by the integration layer.
 
     Parameters
     ----------
     model_input :
         List of station dictionaries produced by the integration pipeline.
     fuel_type :
-        One of 'e5', 'e10', 'diesel' (case-insensitive).
+        One of ``'e5'``, ``'e10'``, ``'diesel'`` (case-insensitive).
+    now :
+        Optional timestamp representing "now" in UTC. If omitted, the
+        current time is taken at the moment of the call.
 
     Returns
     -------
@@ -133,8 +144,12 @@ def rank_stations_by_predicted_price(
     ft = _normalise_fuel_type(fuel_type)
     pred_key = _prediction_key(ft)
 
+    # Use a single "now" for all stations within this ranking call
+    if now is None:
+        now = datetime.now(timezone.utc)
+
     # Make sure we have predictions for this fuel
-    _ensure_predictions(model_input, ft)
+    _ensure_predictions(model_input, ft, now=now)
 
     # Filter stations with valid predictions
     valid_stations: List[Dict[str, Any]] = [
@@ -160,6 +175,7 @@ def rank_stations_by_predicted_price(
 def recommend_best_station(
     model_input: List[Dict[str, Any]],
     fuel_type: str,
+    now: datetime | None = None,
 ) -> Dict[str, Any] | None:
     """
     Select the single best station for a given fuel type.
@@ -172,16 +188,19 @@ def recommend_best_station(
     model_input :
         List of station dictionaries produced by the integration pipeline.
     fuel_type :
-        One of 'e5', 'e10', 'diesel' (case-insensitive).
+        One of ``'e5'``, ``'e10'``, ``'diesel'`` (case-insensitive).
+    now :
+        Optional timestamp representing "now" in UTC. If omitted, the
+        current time is taken at the moment of the call.
 
     Returns
     -------
     dict or None
         The station dict that minimises predicted price for the chosen fuel
-        (subject to the tie-breaking rules), or None if no valid prediction
-        is available.
+        (subject to the tie-breaking rules), or ``None`` if no valid
+        prediction is available.
     """
-    ranked = rank_stations_by_predicted_price(model_input, fuel_type)
+    ranked = rank_stations_by_predicted_price(model_input, fuel_type, now=now)
     if not ranked:
         return None
     return ranked[0]
