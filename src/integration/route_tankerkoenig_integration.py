@@ -1132,10 +1132,53 @@ def integrate_route_with_prices(
     match_elapsed = time_module.time() - match_start
     print(f"Matched: {len(matched_stations)}, Unmatched: {unmatched_count} (took {match_elapsed:.1f}s)")
     
+    # -----------------------------------------------------------------
+    # DEDUPLICATION: collapse multiple Google places → one TK station
+    # -----------------------------------------------------------------
+    # It is common that Google Places returns several entries for the
+    # same physical station (different names / entrances, etc.). After
+    # matching, these all share the same `station_uuid`. We keep only
+    # one entry per Tankerkoenig station, preferring:
+    #   1. smaller detour_distance_km (if available),
+    #   2. then smaller distance_along_m as tie-breaker.
+    dedup_by_uuid: Dict[str, Dict] = {}
+
+    def _dedup_metric(s: Dict) -> tuple:
+        """Smaller tuple = better candidate."""
+        detour = s.get("detour_distance_km")
+        dist_along = s.get("distance_along_m", float("inf"))
+        # If detour is missing, treat as worse than any with detour info
+        if detour is None:
+            return (1, dist_along)
+        return (0, detour, dist_along)
+
+    for s in matched_stations:
+        uuid = s.get("station_uuid")
+        if uuid is None:
+            # Should not happen, but keep as unique entry
+            dedup_by_uuid[id(s)] = s
+            continue
+
+        existing = dedup_by_uuid.get(uuid)
+        if existing is None:
+            dedup_by_uuid[uuid] = s
+        else:
+            if _dedup_metric(s) < _dedup_metric(existing):
+                dedup_by_uuid[uuid] = s
+
+    deduped_stations = list(dedup_by_uuid.values())
+    if len(deduped_stations) != len(matched_stations):
+        print(
+            f"Deduplication: {len(matched_stations)} matched entries "
+            f"collapsed into {len(deduped_stations)} unique Tankerkoenig stations."
+        )
+
+    matched_stations = deduped_stations
+
     if not matched_stations:
-        print("ERROR: No stations matched. Cannot proceed.")
+        print("ERROR: No stations matched after deduplication. Cannot proceed.")
         return []
-    
+
     # =================================================================
     # STEP 3: Get historical prices from Supabase (BATCH QUERIES)
     # =================================================================

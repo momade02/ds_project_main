@@ -159,6 +159,22 @@ def rank_stations_by_predicted_price(
     if not valid_stations:
         return []
 
+    # Optional safety: ensure at most one entry per station_uuid.
+    # If duplicates exist, keep the one with the lowest predicted price.
+    by_uuid: Dict[str, Dict[str, Any]] = {}
+    for s in valid_stations:
+        uuid = s.get("station_uuid")
+        if uuid is None:
+            # No UUID (should not happen) – treat as unique using object id
+            by_uuid[id(s)] = s
+            continue
+
+        existing = by_uuid.get(uuid)
+        if existing is None or s.get(pred_key, float("inf")) < existing.get(pred_key, float("inf")):
+            by_uuid[uuid] = s
+
+    unique_stations = list(by_uuid.values())
+
     def sort_key(station: Dict[str, Any]):
         # Predicted price (primary key)
         price = station.get(pred_key, float("inf"))
@@ -168,7 +184,7 @@ def rank_stations_by_predicted_price(
         dist = station.get("distance_along_m", float("inf"))
         return (price, frac, dist)
 
-    ranked = sorted(valid_stations, key=sort_key)
+    ranked = sorted(unique_stations, key=sort_key)
     return ranked
 
 
