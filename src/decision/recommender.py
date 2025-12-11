@@ -198,8 +198,9 @@ def _compute_economic_metrics(
 
     detour_km, detour_min = _get_detour_metrics(station)
 
-    # Extra fuel for detour
-    detour_fuel_l = detour_km * (consumption_l_per_100km / 100.0)
+    # Extra fuel for detour (keep two-decimal precision for UI clarity)
+    raw_detour_fuel_l = detour_km * (consumption_l_per_100km / 100.0)
+    detour_fuel_l = round(raw_detour_fuel_l, 2)
 
     # Cost of that extra fuel (use station's own price)
     detour_fuel_cost_eur = detour_fuel_l * pA
