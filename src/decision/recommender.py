@@ -258,18 +258,27 @@ def rank_stations_by_predicted_price(
 
     Two modes
     ---------
-    1. **Economic mode** (if `litres_to_refuel` and `consumption_l_per_100km`
-       are both provided):
-       - apply hard caps on `detour_distance_km` and `detour_duration_min`,
-       - compute net savings vs a baseline on-route price,
-       - drop stations with `net_saving < min_net_saving_eur`,
-       - rank by descending net saving, then by earlier position on the route.
+    1. Economic mode (if ``litres_to_refuel`` and ``consumption_l_per_100km``
+       are both provided and strictly positive):
 
-    2. **Price-only mode** (fallback):
-       - rank by lowest predicted price,
-       - tie-break by `fraction_of_route` then `distance_along_m`.
+       * apply hard caps on ``detour_distance_km`` and ``detour_duration_min``,
+       * compute net savings vs. a baseline on–route price,
+       * drop stations with ``net_saving < min_net_saving_eur``,
+       * rank by descending net saving, then by position along the route.
 
-    All rankings operate on unique `station_uuid`s (deduplication safety).
+       If no station passes the ``min_net_saving_eur`` threshold but there
+       are stations that satisfy the detour caps, we still return a ranking
+       of the *feasible* stations by net saving (which may be <= 0). This
+       avoids silently reverting to a global cheapest–price ranking and keeps
+       the detour caps and economic interpretation consistent for the UI.
+
+    2. Price–only mode (fallback when economic parameters are missing or no
+       baseline can be computed):
+
+       * rank by lowest predicted price,
+       * tie–break by ``fraction_of_route`` and then ``distance_along_m``.
+
+    All rankings operate on unique ``station_uuid``s (deduplication safety).
     """
     if not model_input:
         return []
@@ -288,28 +297,27 @@ def rank_stations_by_predicted_price(
     valid_stations: List[Dict[str, Any]] = [
         s for s in model_input if s.get(pred_key) is not None
     ]
-
     if not valid_stations:
         return []
 
-    # Optional safety: ensure at most one entry per station_uuid.
-    # If duplicates exist, keep the one with the lowest predicted price.
+    # Deduplicate by station_uuid, keeping the variant with the lowest price
     by_uuid: Dict[str, Dict[str, Any]] = {}
     for s in valid_stations:
         uuid = s.get("station_uuid")
         if uuid is None:
-            # No UUID (should not happen) – treat as unique using object id
             by_uuid[id(s)] = s
             continue
 
         existing = by_uuid.get(uuid)
-        if existing is None or s.get(pred_key, float("inf")) < existing.get(pred_key, float("inf")):
+        if existing is None or s.get(pred_key, float("inf")) < existing.get(
+            pred_key, float("inf")
+        ):
             by_uuid[uuid] = s
 
     unique_stations = list(by_uuid.values())
 
     # ------------------------------------------------------------------
-    # Decide whether we can use the economic detour logic
+    # Economic mode (if we have litres + consumption)
     # ------------------------------------------------------------------
     economic_mode = (
         litres_to_refuel is not None
@@ -325,7 +333,7 @@ def rank_stations_by_predicted_price(
         if max_detour_min is None:
             max_detour_min = DEFAULT_MAX_DETOUR_MIN
 
-        # Baseline price (on-route)
+        # Baseline price (on–route)
         baseline_price = _find_baseline_price(
             unique_stations,
             pred_key,
@@ -343,11 +351,13 @@ def rank_stations_by_predicted_price(
             econ_breakeven_key = f"econ_breakeven_liters_{ft}"
 
             economic_candidates: List[Dict[str, Any]] = []
+            feasible_stations: List[Dict[str, Any]] = []
 
             for s in unique_stations:
                 detour_km, detour_min = _get_detour_metrics(s)
 
-                # Hard cap filter
+                # Hard–cap filter: only consider stations within the user's
+                # max detour distance and time.
                 if abs(detour_km) > max_detour_km or abs(detour_min) > max_detour_min:
                     continue
 
@@ -360,7 +370,7 @@ def rank_stations_by_predicted_price(
                     value_of_time_per_hour=float(value_of_time_per_hour),
                 )
 
-                # Attach metrics to station dict for later use in UI
+                # Attach metrics to station dict for later use in the UI
                 s[baseline_key] = baseline_price
                 s[econ_gross_key] = metrics["gross_saving_eur"]
                 s[econ_detour_fuel_key] = metrics["detour_fuel_l"]
@@ -368,6 +378,8 @@ def rank_stations_by_predicted_price(
                 s[econ_time_cost_key] = metrics["time_cost_eur"]
                 s[econ_net_key] = metrics["net_saving_eur"]
                 s[econ_breakeven_key] = metrics["breakeven_liters"]
+
+                feasible_stations.append(s)
 
                 net = metrics["net_saving_eur"]
                 if net is None:
@@ -378,34 +390,41 @@ def rank_stations_by_predicted_price(
                 economic_candidates.append(s)
 
             if economic_candidates:
-                # Rank by descending net saving, then earlier on route
+                # Rank by descending net saving, then earlier on the route
                 def econ_sort_key(station: Dict[str, Any]):
                     net = station.get(econ_net_key, float("-inf"))
                     frac = station.get("fraction_of_route", float("inf"))
                     dist = station.get("distance_along_m", float("inf"))
-                    # Negative net first component because we want descending
+                    # Negative first component because we want descending net saving
                     return (-net, frac, dist)
 
-                ranked_econ = sorted(economic_candidates, key=econ_sort_key)
-                return ranked_econ
-        # If we cannot compute a baseline or no economic candidates survive,
-        # we fall back to the classical price-only ranking.
+                return sorted(economic_candidates, key=econ_sort_key)
+
+            if feasible_stations:
+                # No station meets the min_net_saving_eur threshold, but there
+                # *are* stations within the detour caps. Return a ranking of
+                # those feasible stations by (possibly negative) net saving.
+                def feasible_sort_key(station: Dict[str, Any]):
+                    net = station.get(econ_net_key, float("-inf"))
+                    frac = station.get("fraction_of_route", float("inf"))
+                    dist = station.get("distance_along_m", float("inf"))
+                    return (-net, frac, dist)
+
+                return sorted(feasible_stations, key=feasible_sort_key)
+        # If we cannot compute a baseline at all, fall through to price-only
+        # ranking below.
 
     # ------------------------------------------------------------------
     # Fallback: classical price-only ranking
     # ------------------------------------------------------------------
     def sort_key(station: Dict[str, Any]):
-        # Predicted price (primary key)
         price = station.get(pred_key, float("inf"))
-        # Fraction of route (0 = start, 1 = end)
         frac = station.get("fraction_of_route", float("inf"))
-        # Absolute distance along route in metres
         dist = station.get("distance_along_m", float("inf"))
         return (price, frac, dist)
 
     ranked = sorted(unique_stations, key=sort_key)
     return ranked
-
 
 def recommend_best_station(
     model_input: List[Dict[str, Any]],
