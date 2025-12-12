@@ -38,6 +38,19 @@ from typing import List, Dict, Any, Optional
 import pandas as pd
 import streamlit as st
 
+from functools import lru_cache
+
+@lru_cache(maxsize=1)
+def _load_env_once() -> None:
+    """Load local .env once for local runs. No-op in deployments."""
+    try:
+        from dotenv import load_dotenv, find_dotenv
+        load_dotenv(find_dotenv(usecwd=True), override=False)
+    except Exception:
+        pass
+
+_load_env_once()
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))

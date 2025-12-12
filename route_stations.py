@@ -17,7 +17,6 @@ import os
 from pathlib import Path
 import json
 import requests
-from dotenv import load_dotenv
 from shapely.geometry import LineString
 from shapely.ops import transform, substring
 import pyproj
@@ -60,17 +59,16 @@ buffer_meters = 300  # buffer width in meters
 
 
 def environment_check() -> str:
-    """Return the Google Maps API key from environment.
+    """Return the Google Maps API key from the environment.
 
-    Kept compatible with local runs by calling load_dotenv().
+    Side-effect free by design: no dotenv loading happens here.
+    Load .env in the application entrypoint (Streamlit/CLI), not in helpers.
     """
-    load_dotenv()
-
     google_api_key = os.getenv("GOOGLE_MAPS_API_KEY")
     if not google_api_key:
         raise ConfigError(
             user_message="Google Maps API key is not configured.",
-            remediation="Set GOOGLE_MAPS_API_KEY in your environment (or .env) and restart the app.",
+            remediation="Set GOOGLE_MAPS_API_KEY in your environment (or load it via .env in the entrypoint) and restart.",
             details="Missing environment variable: GOOGLE_MAPS_API_KEY",
         )
     return google_api_key
@@ -357,6 +355,14 @@ def main():
     Command-line / direct-run entrypoint for testing the route pipeline.
     When imported as a module (e.g. by Streamlit), this function is NOT executed.
     """
+
+    # Local development convenience: load .env here (entrypoint only).
+    try:
+        from dotenv import load_dotenv, find_dotenv
+        load_dotenv(find_dotenv(usecwd=True), override=False)
+    except Exception:
+        pass
+
     google_api_key = environment_check()
 
     # geocode start and end addresses

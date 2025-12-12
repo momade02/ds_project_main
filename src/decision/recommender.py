@@ -35,8 +35,8 @@ from src.modeling.predict import predict_for_fuel
 
 # What counts as "on route" when we search for the baseline price:
 # very small detour only (essentially the direct route).
-ONROUTE_MAX_DETOUR_KM = 0.5
-ONROUTE_MAX_DETOUR_MIN = 3.0
+ONROUTE_MAX_DETOUR_KM = 1
+ONROUTE_MAX_DETOUR_MIN = 5.0
 
 # Hard safety caps for detours. These are defaults; they can be
 # overridden via function arguments.

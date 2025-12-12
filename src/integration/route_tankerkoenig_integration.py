@@ -112,19 +112,17 @@ except ImportError as e:
 # SECTION 1.2: LOAD API KEYS AND CREDENTIALS
 # =============================================================================
 
-# Use environment_check() from route_stations.py to validate Google API key
-# This replaces the old hardcoded load_dotenv() approach
+# Use environment_check() from route_stations.py to validate Google API key.
+# Side-effect free: environment loading is done by entrypoints (Streamlit/CLI).
 try:
     if _ROUTE_FUNCTIONS_IMPORTED:
         GOOGLE_API_KEY = environment_check()
     else:
-        from dotenv import load_dotenv
-        load_dotenv()
         GOOGLE_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
         if not GOOGLE_API_KEY:
             raise ConfigError(
                 user_message="Google Maps API key is not configured.",
-                remediation="Set GOOGLE_MAPS_API_KEY in your environment (or .env) and restart the app.",
+                remediation="Set GOOGLE_MAPS_API_KEY in your environment (or load it via .env in the entrypoint) and restart.",
                 details="Missing environment variable: GOOGLE_MAPS_API_KEY",
             )
 except ConfigError:
@@ -136,10 +134,6 @@ except Exception as exc:
         details=str(exc),
     ) from exc
 
-# Supabase credentials for database access
-# These are loaded from .env file
-from dotenv import load_dotenv
-load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY")
@@ -1405,108 +1399,108 @@ def get_fuel_prices_for_route(
     print(f"Route: {start_locality} → {end_locality}")
     print(f"Mode: {'REAL-TIME' if use_realtime else 'HISTORICAL (demo)'}")
     
-# ================================================================
-# STEP 1: Geocode addresses to get coordinates
-# ================================================================
-try:
-    start_lat, start_lon, start_label = google_geocode_structured(
-        start_address, start_locality, "Germany", GOOGLE_API_KEY
-    )
-    end_lat, end_lon, end_label = google_geocode_structured(
-        end_address, end_locality, "Germany", GOOGLE_API_KEY
-    )
-except ConfigError:
-    # Raised by environment_check() (or your own config checks) and should
-    # be shown to the user as-is.
-    raise
-except Exception as exc:
-    raise ExternalServiceError(
-        user_message="Failed to geocode the start or destination.",
-        remediation="Check the address/city inputs. If the issue persists, verify Google API quota/billing.",
-        details=str(exc),
-    ) from exc
+    # ================================================================
+    # STEP 1: Geocode addresses to get coordinates
+    # ================================================================
+    try:
+        start_lat, start_lon, start_label = google_geocode_structured(
+            start_address, start_locality, "Germany", GOOGLE_API_KEY
+        )
+        end_lat, end_lon, end_label = google_geocode_structured(
+            end_address, end_locality, "Germany", GOOGLE_API_KEY
+        )
+    except ConfigError:
+        # Raised by environment_check() (or your own config checks) and should
+        # be shown to the user as-is.
+        raise
+    except Exception as exc:
+        raise ExternalServiceError(
+            user_message="Failed to geocode the start or destination.",
+            remediation="Check the address/city inputs. If the issue persists, verify Google API quota/billing.",
+            details=str(exc),
+        ) from exc
 
 
-# ================================================================
-# STEP 2: Calculate route between start and end
-# ================================================================
-try:
-    # Note: google_route_driving_car returns (route_coords, route_km, route_min, departure_time)
-    route_coords, route_km, route_min, departure_time = google_route_driving_car(
-        start_lat, start_lon, end_lat, end_lon, GOOGLE_API_KEY
-    )
-except Exception as exc:
-    raise ExternalServiceError(
-        user_message="Failed to compute a driving route between start and destination.",
-        remediation="Try simpler inputs (only city names) or verify Google routing API availability/quota.",
-        details=str(exc),
-    ) from exc
+    # ================================================================
+    # STEP 2: Calculate route between start and end
+    # ================================================================
+    try:
+        # Note: google_route_driving_car returns (route_coords, route_km, route_min, departure_time)
+        route_coords, route_km, route_min, departure_time = google_route_driving_car(
+            start_lat, start_lon, end_lat, end_lon, GOOGLE_API_KEY
+        )
+    except Exception as exc:
+        raise ExternalServiceError(
+            user_message="Failed to compute a driving route between start and destination.",
+            remediation="Try simpler inputs (only city names) or verify Google routing API availability/quota.",
+            details=str(exc),
+        ) from exc
 
-# Optional but recommended: sanity check the returned values
-if not route_coords or route_km is None or route_min is None:
-    raise DataQualityError(
-        user_message="The route service returned an incomplete route result.",
-        remediation="Try different start/end locations or retry later.",
-        details=f"route_coords={bool(route_coords)}, route_km={route_km}, route_min={route_min}",
-    )
-
-
-# ================================================================
-# STEP 3: Find fuel stations along the route
-# ================================================================
-try:
-    stations = google_places_fuel_along_route(
-        route_coords,
-        GOOGLE_API_KEY,
-        route_km,
-        route_min,
-        departure_time,
-    )
-except Exception as exc:
-    raise ExternalServiceError(
-        user_message="Failed to retrieve fuel stations along the route.",
-        remediation="Retry later or check Google Places quota/billing. Also consider using larger cities as inputs.",
-        details=str(exc),
-    ) from exc
-
-if not stations:
-    raise DataQualityError(
-        user_message="No fuel stations were found along this route.",
-        remediation="Try a longer route, different cities, or relax constraints (detour limits).",
-        details="google_places_fuel_along_route returned an empty list.",
-    )
-
-# google_places_fuel_along_route already includes ETAs
-stations_with_eta = stations
+    # Optional but recommended: sanity check the returned values
+    if not route_coords or route_km is None or route_min is None:
+        raise DataQualityError(
+            user_message="The route service returned an incomplete route result.",
+            remediation="Try different start/end locations or retry later.",
+            details=f"route_coords={bool(route_coords)}, route_km={route_km}, route_min={route_min}",
+        )
 
 
-# ================================================================
-# STEP 4: Run the integration (match stations + get prices)
-# ================================================================
-try:
-    model_input = integrate_route_with_prices(
-        stations_with_eta=stations_with_eta,
-        use_realtime=use_realtime,
-    )
-except Exception as exc:
-    # This step typically fails due to:
-    # - Supabase connectivity / permissions (DataAccessError would be ideal if you wrap internally)
-    # - Tankerkönig realtime failures (ExternalServiceError would be ideal if you wrap internally)
-    # For now: map unknown errors conservatively to DataAccessError with actionable remediation.
-    raise DataAccessError(
-        user_message="Failed to match stations to the database and/or fetch price data.",
-        remediation="Check Supabase credentials/connectivity. If realtime prices are enabled, also check Tankerkönig availability.",
-        details=str(exc),
-    ) from exc
+    # ================================================================
+    # STEP 3: Find fuel stations along the route
+    # ================================================================
+    try:
+        stations = google_places_fuel_along_route(
+            route_coords,
+            GOOGLE_API_KEY,
+            route_km,
+            route_min,
+            departure_time,
+        )
+    except Exception as exc:
+        raise ExternalServiceError(
+            user_message="Failed to retrieve fuel stations along the route.",
+            remediation="Retry later or check Google Places quota/billing. Also consider using larger cities as inputs.",
+            details=str(exc),
+        ) from exc
 
-if not model_input:
-    raise DataQualityError(
-        user_message="No stations could be matched to Tankerkönig or enriched with price data.",
-        remediation="Try a different route or disable strict constraints. Also verify the station database is up to date.",
-        details="integrate_route_with_prices returned an empty result.",
-    )
+    if not stations:
+        raise DataQualityError(
+            user_message="No fuel stations were found along this route.",
+            remediation="Try a longer route, different cities, or relax constraints (detour limits).",
+            details="google_places_fuel_along_route returned an empty list.",
+        )
 
-return model_input
+    # google_places_fuel_along_route already includes ETAs
+    stations_with_eta = stations
+
+
+    # ================================================================
+    # STEP 4: Run the integration (match stations + get prices)
+    # ================================================================
+    try:
+        model_input = integrate_route_with_prices(
+            stations_with_eta=stations_with_eta,
+            use_realtime=use_realtime,
+        )
+    except Exception as exc:
+        # This step typically fails due to:
+        # - Supabase connectivity / permissions (DataAccessError would be ideal if you wrap internally)
+        # - Tankerkönig realtime failures (ExternalServiceError would be ideal if you wrap internally)
+        # For now: map unknown errors conservatively to DataAccessError with actionable remediation.
+        raise DataAccessError(
+            user_message="Failed to match stations to the database and/or fetch price data.",
+            remediation="Check Supabase credentials/connectivity. If realtime prices are enabled, also check Tankerkönig availability.",
+            details=str(exc),
+        ) from exc
+
+    if not model_input:
+        raise DataQualityError(
+            user_message="No stations could be matched to Tankerkönig or enriched with price data.",
+            remediation="Try a different route or disable strict constraints. Also verify the station database is up to date.",
+            details="integrate_route_with_prices returned an empty result.",
+        )
+
+    return model_input
 
 
 # =============================================================================
