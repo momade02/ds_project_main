@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo
 import googlemaps
 import polyline
 import time
+from src.app.app_errors import ConfigError
 
 
 # Hardcoded addresses for local testing only
@@ -59,21 +60,20 @@ buffer_meters = 300  # buffer width in meters
 
 
 def environment_check() -> str:
-    """
-    Check if the GOOGLE_MAPS_API_KEY environment variable is set.
-    Raises SystemExit if not set.
+    """Return the Google Maps API key from environment.
 
-    Returns
-    -------
-    str
-        The Google Maps API key from environment variable.
+    Kept compatible with local runs by calling load_dotenv().
     """
     load_dotenv()
+
     google_api_key = os.getenv("GOOGLE_MAPS_API_KEY")
     if not google_api_key:
-        raise SystemExit("Please set your GOOGLE_MAPS_API_KEY environment variable first!")
+        raise ConfigError(
+            user_message="Google Maps API key is not configured.",
+            remediation="Set GOOGLE_MAPS_API_KEY in your environment (or .env) and restart the app.",
+            details="Missing environment variable: GOOGLE_MAPS_API_KEY",
+        )
     return google_api_key
-
 
 def parse_duration(d: str) -> float:
     """

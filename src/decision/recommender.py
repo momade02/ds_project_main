@@ -36,7 +36,7 @@ from src.modeling.predict import predict_for_fuel
 # What counts as "on route" when we search for the baseline price:
 # very small detour only (essentially the direct route).
 ONROUTE_MAX_DETOUR_KM = 0.5
-ONROUTE_MAX_DETOUR_MIN = 1.0
+ONROUTE_MAX_DETOUR_MIN = 3.0
 
 # Hard safety caps for detours. These are defaults; they can be
 # overridden via function arguments.
@@ -335,13 +335,39 @@ def rank_stations_by_predicted_price(
         and consumption_l_per_100km > 0
     )
 
-    if economic_mode:
-        # Hard caps: if not explicitly provided, use defaults
-        if max_detour_km is None:
-            max_detour_km = DEFAULT_MAX_DETOUR_KM
-        if max_detour_min is None:
-            max_detour_min = DEFAULT_MAX_DETOUR_MIN
+    # ------------------------------------------------------------------
+    # Detour feasibility caps (apply in BOTH modes)
+    # ------------------------------------------------------------------
+    # Backwards-compatible behaviour:
+    # - In economic mode we always apply detour caps (defaults if missing).
+    # - In price-only mode we only apply caps if the caller provided at least
+    #   one of them (max_detour_km or max_detour_min).
+    apply_detour_caps = economic_mode or (max_detour_km is not None) or (max_detour_min is not None)
 
+    if apply_detour_caps:
+        # Fill missing caps with defaults (and harden against bad types)
+        try:
+            max_detour_km = float(max_detour_km) if max_detour_km is not None else float(DEFAULT_MAX_DETOUR_KM)
+        except (TypeError, ValueError):
+            max_detour_km = float(DEFAULT_MAX_DETOUR_KM)
+
+        try:
+            max_detour_min = float(max_detour_min) if max_detour_min is not None else float(DEFAULT_MAX_DETOUR_MIN)
+        except (TypeError, ValueError):
+            max_detour_min = float(DEFAULT_MAX_DETOUR_MIN)
+
+        # Filter stations outside the user's feasibility constraints
+        capped: List[Dict[str, Any]] = []
+        for s in unique_stations:
+            detour_km, detour_min = _get_detour_metrics(s)
+            if detour_km <= max_detour_km and detour_min <= max_detour_min:
+                capped.append(s)
+
+        unique_stations = capped
+        if not unique_stations:
+            return []
+
+    if economic_mode:
         # Baseline price (on–route)
         baseline_price = _find_baseline_price(
             unique_stations,
@@ -349,6 +375,7 @@ def rank_stations_by_predicted_price(
             onroute_max_detour_km=onroute_max_detour_km,
             onroute_max_detour_min=onroute_max_detour_min,
         )
+
 
         if baseline_price is not None:
             baseline_key = f"econ_baseline_price_{ft}"

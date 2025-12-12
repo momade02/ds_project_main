@@ -26,6 +26,8 @@ This UI additionally implements an economic detour decision:
 
 from __future__ import annotations
 
+from app_errors import AppError, ConfigError, ExternalServiceError, DataAccessError, DataQualityError, PredictionError
+
 # ---------------------------------------------------------------------------
 # Make sure the project root (containing the `src` package) is on sys.path
 # ---------------------------------------------------------------------------
@@ -507,16 +509,30 @@ def _display_best_station(
             )
 
         # ------------------------------------------------------------
-        # Global comparison (upper-bound): recommended vs worst ON-ROUTE
+        # Global comparison (upper-bound + typical): chosen vs ON-ROUTE spread
         # ------------------------------------------------------------
         if ranked_stations and litres_to_refuel is not None and litres_to_refuel > 0:
             pred_key = f"pred_price_{fuel_code}"
             econ_detour_fuel_cost_key = f"econ_detour_fuel_cost_eur_{fuel_code}"
             econ_time_cost_key = f"econ_time_cost_eur_{fuel_code}"
 
-            # Collect on-route stations (strict "main route" definition)
-            onroute_prices = []
-            onroute_station_for_price = {}
+            # Define "on-route" for the global comparison block.
+            # If imported constants are extremely strict (or 0), fall back to a sensible,
+            # user-comprehensible definition of "essentially on the route".
+            ONROUTE_KM_TH = (
+                float(ONROUTE_MAX_DETOUR_KM)
+                if (ONROUTE_MAX_DETOUR_KM is not None and float(ONROUTE_MAX_DETOUR_KM) > 0)
+                else 0.5
+            )
+            ONROUTE_MIN_TH = (
+                float(ONROUTE_MAX_DETOUR_MIN)
+                if (ONROUTE_MAX_DETOUR_MIN is not None and float(ONROUTE_MAX_DETOUR_MIN) > 0)
+                else 3.0
+            )
+
+            # Collect on-route stations (based on clamped extra detour)
+            onroute_prices: List[float] = []
+            onroute_station_for_price: Dict[float, Dict[str, Any]] = {}
 
             for s in ranked_stations:
                 p = s.get(pred_key)
@@ -539,10 +555,18 @@ def _display_best_station(
                 km = max(km, 0.0)
                 mins = max(mins, 0.0)
 
-                if km <= ONROUTE_MAX_DETOUR_KM and mins <= ONROUTE_MAX_DETOUR_MIN:
+                if km <= ONROUTE_KM_TH and mins <= ONROUTE_MIN_TH:
                     pf = float(p)
                     onroute_prices.append(pf)
                     onroute_station_for_price[pf] = s
+
+            # Explain why the block might not show (print once)
+            if debug_mode:
+                st.caption(
+                    f"DEBUG (global block): on-route thresholds km≤{ONROUTE_KM_TH:.2f}, "
+                    f"min≤{ONROUTE_MIN_TH:.1f}; onroute_prices={len(onroute_prices)} "
+                    f"(from ranked_stations={len(ranked_stations)})."
+                )
 
             # Only show if we have a meaningful on-route set
             if len(onroute_prices) >= 2 and best_station.get(pred_key) is not None:
@@ -553,14 +577,27 @@ def _display_best_station(
 
                 chosen_price = float(best_station[pred_key])
 
-                gross_vs_worst = (onroute_worst - chosen_price) * float(litres_to_refuel)
-
                 detour_fuel_cost_used = float(best_station.get(econ_detour_fuel_cost_key) or 0.0)
                 time_cost_used = float(best_station.get(econ_time_cost_key) or 0.0)
+
+                # Gross + net vs references
+                gross_vs_worst = (onroute_worst - chosen_price) * float(litres_to_refuel)
                 net_vs_worst = gross_vs_worst - detour_fuel_cost_used - time_cost_used
 
+                gross_vs_median = (onroute_median - chosen_price) * float(litres_to_refuel)
+                net_vs_median = gross_vs_median - detour_fuel_cost_used - time_cost_used
+
+                gross_vs_best = (onroute_best - chosen_price) * float(litres_to_refuel)
+                net_vs_best = gross_vs_best - detour_fuel_cost_used - time_cost_used
+
                 worst_station = onroute_station_for_price.get(onroute_worst, {})
-                worst_name = worst_station.get("name") or worst_station.get("station_name") or "Worst on-route station"
+                worst_name = (
+                    worst_station.get("tk_name")
+                    or worst_station.get("osm_name")
+                    or worst_station.get("name")
+                    or worst_station.get("station_name")
+                    or "Worst on-route station"
+                )
 
                 st.subheader("Potential savings versus on-route price spread")
 
@@ -572,14 +609,6 @@ def _display_best_station(
                 with col3:
                     st.metric("On-route worst price", _format_price(onroute_worst))
 
-                # Compute comparisons against on-route references
-                gross_vs_best = (onroute_best - chosen_price) * float(litres_to_refuel)
-                net_vs_best = gross_vs_best - detour_fuel_cost_used - time_cost_used
-
-                gross_vs_median = (onroute_median - chosen_price) * float(litres_to_refuel)
-                net_vs_median = gross_vs_median - detour_fuel_cost_used - time_cost_used
-
-                # Row 2: chosen vs worst (upper-bound story)
                 col4, col5, col6 = st.columns(3)
                 with col4:
                     st.metric("Chosen station price", _format_price(chosen_price))
@@ -588,7 +617,6 @@ def _display_best_station(
                 with col6:
                     st.metric("Net saving vs on-route worst", _format_eur(net_vs_worst))
 
-                # Row 3: chosen vs median (typical counterfactual)
                 col7, col8, col9 = st.columns(3)
                 with col7:
                     st.metric("Gross saving vs on-route median", _format_eur(gross_vs_median))
@@ -598,37 +626,21 @@ def _display_best_station(
                     st.metric("Net saving vs on-route best", _format_eur(net_vs_best))
 
                 st.caption(
-                    f"On-route stations are defined as ≤ {ONROUTE_MAX_DETOUR_KM:.1f} km and ≤ {ONROUTE_MAX_DETOUR_MIN:.1f} min extra detour "
-                    f"(n = {len(onroute_prices)}). The “worst on-route” comparison is an upper-bound scenario; actual savings depend on which "
-                    f"on-route station you would otherwise choose. Worst on-route station here: **{worst_name}**."
-                )
-
-                st.caption(
-                    "Interpretation: 'vs worst' is an upper-bound savings scenario, 'vs median' is a typical on-route reference, "
-                    "and 'vs best' is a lower-bound (what you could achieve without detouring if you chose the best on-route station)."
+                    f"On-route stations are defined here as ≤ {ONROUTE_KM_TH:.2f} km and ≤ {ONROUTE_MIN_TH:.1f} min extra detour "
+                    f"(n = {len(onroute_prices)}). The “vs worst” comparison is an upper-bound scenario; “vs median” is a typical "
+                    f"on-route reference; “vs best” is a lower-bound. Worst on-route station: **{worst_name}**."
                 )
 
                 if debug_mode:
                     st.caption(
                         "Debug note: This block uses predicted prices at each station's arrival time (pred_price_*), consistent with the ranking logic."
                     )
-
-        if breakeven_liters is not None:
-            breakeven_txt = _format_liters(breakeven_liters)
-        else:
-            breakeven_txt = "Not applicable (not cheaper than baseline)"
-
-        if litres_to_refuel is not None and litres_to_refuel > 0:
-            st.caption(
-                f"Assuming you refuel **{_format_liters(litres_to_refuel)}**, "
-                f"this detour yields a net saving of {_format_eur(net_saving)}. "
-                f"You would need at least {breakeven_txt} here for the detour "
-                "to break even."
-            )
-        else:
-            st.caption(
-                f"Break-even refuelling amount for this detour: {breakeven_txt}."
-            )
+            else:
+                if debug_mode:
+                    st.warning(
+                        "Global comparison block not shown because fewer than 2 stations qualified as 'on-route' "
+                        f"(thresholds km≤{ONROUTE_KM_TH:.2f}, min≤{ONROUTE_MIN_TH:.1f})."
+                    )
 
 
 # ---------------------------------------------------------------------------
@@ -680,14 +692,14 @@ whether a detour is economically worthwhile.
         "Start locality (city/town)", value="Tübingen"
     )
     start_address = st.sidebar.text_input(
-        "Start address (optional)", value="Wilhelmstraße 32"
+        "Start address (optional)", value=""
     )
 
     end_locality = st.sidebar.text_input(
-        "End locality (city/town)", value="Reutlingen"
+        "End locality (city/town)", value="Sindelfingen"
     )
     end_address = st.sidebar.text_input(
-        "End address (optional)", value="Charlottenstraße 45"
+        "End address (optional)", value=""
     )
 
     # Detour economics
@@ -702,7 +714,7 @@ whether a detour is economically worthwhile.
     )
     consumption_l_per_100km = st.sidebar.number_input(
         "Car consumption (L/100 km)",
-        min_value=2.0,
+        min_value=0.0,
         max_value=30.0,
         value=7.0,
         step=0.5,
@@ -718,7 +730,7 @@ whether a detour is economically worthwhile.
         "Maximum extra distance (km)",
         min_value=0.5,
         max_value=200.0,
-        value=10.0,
+        value=5.0,
         step=0.5,
     )
     max_detour_min = st.sidebar.number_input(
@@ -772,8 +784,16 @@ whether a detour is economically worthwhile.
                 end_address=end_address,
                 use_realtime=True,  # always use current Tankerkönig prices
             )
+        except AppError as exc:
+            st.error(exc.user_message)
+            if exc.remediation:
+                st.info(exc.remediation)
+            # Optional: show technical details only if you want.
+            # st.caption(exc.details)
+            return
         except Exception as exc:
-            st.error(f"Error while running real route pipeline: {exc}")
+            st.error("Unexpected error. Please try again. If it persists, check logs.")
+            st.caption(str(exc))
             return
 
     if not stations:

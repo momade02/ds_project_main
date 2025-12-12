@@ -40,6 +40,8 @@ from typing import Dict, Any, Tuple
 
 import joblib
 
+from src.app.app_errors import PredictionError
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -173,7 +175,20 @@ def load_model_for_horizon(fuel_type: str, horizon: int) -> Any:
         The deserialised model object.
     """
     path = get_model_path_for_horizon(fuel_type, horizon)
-    model = joblib.load(path)
+    try:
+        model = joblib.load(path)
+    except FileNotFoundError as exc:
+        raise PredictionError(
+            user_message="Prediction model files are missing.",
+            remediation="Ensure the trained .joblib files exist in src/modeling/models/ (or update the configured model path).",
+            details=f"Missing model file: {path}",
+        ) from exc
+    except Exception as exc:
+        raise PredictionError(
+            user_message="Failed to load the prediction model.",
+            remediation="Check model files and Python dependencies (joblib / sklearn versions).",
+            details=f"Model load error for {fuel_type=} {horizon=}: {exc}",
+        ) from exc
     return model
 
 
