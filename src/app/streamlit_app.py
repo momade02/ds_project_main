@@ -203,6 +203,30 @@ def _build_ranking_dataframe(
 
     rows = []
     for s in stations:
+        # --- 1. PRE-CALCULATE VALUES ---
+        
+        # Detour geometry
+        # The raw route delta can be slightly negative due to routing/rounding artefacts.
+        # For user-facing "detour" we display *extra* distance/time (clamped to >= 0),
+        # consistent with the economics layer.
+        _raw_detour_km = s.get("detour_distance_km")
+        _raw_detour_min = s.get("detour_duration_min")
+
+        try:
+            _raw_detour_km_f = float(_raw_detour_km) if _raw_detour_km is not None else 0.0
+        except (TypeError, ValueError):
+            _raw_detour_km_f = 0.0
+
+        try:
+            _raw_detour_min_f = float(_raw_detour_min) if _raw_detour_min is not None else 0.0
+        except (TypeError, ValueError):
+            _raw_detour_min_f = 0.0
+
+        # Clamp for display (extra detour only)
+        _detour_km_display = max(_raw_detour_km_f, 0.0)
+        _detour_min_display = max(_raw_detour_min_f, 0.0)
+
+        # --- 2. BUILD THE DICTIONARY ---
         row = {
             "Station name": s.get("tk_name") or s.get("osm_name"),
             "Brand": s.get("brand"),
@@ -210,9 +234,11 @@ def _build_ranking_dataframe(
             "OSM name": s.get("osm_name"),
             "Fraction of route": s.get("fraction_of_route"),
             "Distance along route [m]": s.get("distance_along_m"),
-            # Detour geometry
-            "Detour distance [km]": s.get("detour_distance_km"),
-            "Detour time [min]": s.get("detour_duration_min"),
+            
+            # Insert the pre-calculated values here
+            "Detour distance [km]": _detour_km_display,
+            "Detour time [min]": _detour_min_display,
+            
             # human-readable explanation based on debug_* fields
             "Price basis": _describe_price_basis(s, fuel_code),
             f"Current {fuel_code.upper()} price": s.get(current_key),
@@ -234,6 +260,9 @@ def _build_ranking_dataframe(
             row["Break-even litres"] = s.get(econ_breakeven_key)
 
         if debug_mode:
+            # Raw signed deltas from routing (can be negative)
+            row["DEBUG raw detour distance [km]"] = _raw_detour_km_f
+            row["DEBUG raw detour time [min]"] = _raw_detour_min_f
             # Raw diagnostic fields from the prediction layer
             row[f"DEBUG current_time_cell_{fuel_code}"] = s.get(
                 f"debug_{fuel_code}_current_time_cell"
@@ -279,6 +308,17 @@ def _build_ranking_dataframe(
         df["Detour time [min]"] = df["Detour time [min]"].map(
             lambda v: "-" if pd.isna(v) else f"{float(v):.1f}"
         )
+
+    # Format raw routing deltas (debug-only)
+    if "DEBUG raw detour distance [km]" in df.columns:
+        df["DEBUG raw detour distance [km]"] = df["DEBUG raw detour distance [km]"].map(
+            lambda v: "-" if pd.isna(v) else f"{float(v):.1f}"
+        )
+    if "DEBUG raw detour time [min]" in df.columns:
+        df["DEBUG raw detour time [min]"] = df["DEBUG raw detour time [min]"].map(
+            lambda v: "-" if pd.isna(v) else f"{float(v):.1f}"
+        )
+
     if "Gross saving [€]" in df.columns:
         df["Gross saving [€]"] = df["Gross saving [€]"].map(_format_eur)
     if "Detour fuel [L]" in df.columns:
@@ -332,6 +372,20 @@ def _display_best_station(
 
     detour_km = best_station.get("detour_distance_km")
     detour_min = best_station.get("detour_duration_min")
+
+    # Clamp for display (extra detour only), consistent with the economics layer
+    try:
+        detour_km_f = float(detour_km) if detour_km is not None else 0.0
+    except (TypeError, ValueError):
+        detour_km_f = 0.0
+
+    try:
+        detour_min_f = float(detour_min) if detour_min is not None else 0.0
+    except (TypeError, ValueError):
+        detour_min_f = 0.0
+
+    detour_km = max(detour_km_f, 0.0)
+    detour_min = max(detour_min_f, 0.0)
 
     frac_str = "-" if frac is None else f"{float(frac):.3f}"
     if dist_m is None:
