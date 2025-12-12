@@ -47,6 +47,8 @@ from src.integration.route_tankerkoenig_integration import (
 from src.decision.recommender import (
     recommend_best_station,
     rank_stations_by_predicted_price,
+    ONROUTE_MAX_DETOUR_KM,
+    ONROUTE_MAX_DETOUR_MIN,
 )
 
 
@@ -341,6 +343,9 @@ def _display_best_station(
     best_station: Dict[str, Any],
     fuel_code: str,
     litres_to_refuel: Optional[float] = None,
+    *,
+    ranked_stations: Optional[List[Dict[str, Any]]] = None,
+    debug_mode: bool = False,
 ) -> None:
     """
     Render a panel with information about the recommended station,
@@ -479,6 +484,134 @@ def _display_best_station(
                 "Net saving",
                 _format_eur(net_saving),
             )
+        
+        # Trust note: very small extra distance can still imply meaningful extra time
+        # due to routing penalties (turns, access roads, traffic controls) and because
+        # baseline vs via-station routes are separate routing solutions.
+        try:
+            _detour_km_disp = float(detour_km) if detour_km is not None else 0.0
+        except (TypeError, ValueError):
+            _detour_km_disp = 0.0
+
+        try:
+            _detour_min_disp = float(detour_min) if detour_min is not None else 0.0
+        except (TypeError, ValueError):
+            _detour_min_disp = 0.0
+
+        if _detour_km_disp < 0.2 and _detour_min_disp > 3.0:
+            st.info(
+                "Note: Even if the extra detour distance is very small, the extra detour time can be larger "
+                "due to routing/time penalties (turns, access roads, traffic controls) and because the baseline "
+                "route and the via-station route are computed separately. Distance and time therefore do not "
+                "need to scale linearly."
+            )
+
+        # ------------------------------------------------------------
+        # Global comparison (upper-bound): recommended vs worst ON-ROUTE
+        # ------------------------------------------------------------
+        if ranked_stations and litres_to_refuel is not None and litres_to_refuel > 0:
+            pred_key = f"pred_price_{fuel_code}"
+            econ_detour_fuel_cost_key = f"econ_detour_fuel_cost_eur_{fuel_code}"
+            econ_time_cost_key = f"econ_time_cost_eur_{fuel_code}"
+
+            # Collect on-route stations (strict "main route" definition)
+            onroute_prices = []
+            onroute_station_for_price = {}
+
+            for s in ranked_stations:
+                p = s.get(pred_key)
+                if p is None:
+                    continue
+
+                # Use the same "extra detour" definition as the economics layer (clamped)
+                raw_km = s.get("detour_distance_km")
+                raw_min = s.get("detour_duration_min")
+
+                try:
+                    km = float(raw_km) if raw_km is not None else 0.0
+                except (TypeError, ValueError):
+                    km = 0.0
+                try:
+                    mins = float(raw_min) if raw_min is not None else 0.0
+                except (TypeError, ValueError):
+                    mins = 0.0
+
+                km = max(km, 0.0)
+                mins = max(mins, 0.0)
+
+                if km <= ONROUTE_MAX_DETOUR_KM and mins <= ONROUTE_MAX_DETOUR_MIN:
+                    pf = float(p)
+                    onroute_prices.append(pf)
+                    onroute_station_for_price[pf] = s
+
+            # Only show if we have a meaningful on-route set
+            if len(onroute_prices) >= 2 and best_station.get(pred_key) is not None:
+                onroute_series = pd.Series(onroute_prices)
+                onroute_best = float(onroute_series.min())
+                onroute_median = float(onroute_series.median())
+                onroute_worst = float(onroute_series.max())
+
+                chosen_price = float(best_station[pred_key])
+
+                gross_vs_worst = (onroute_worst - chosen_price) * float(litres_to_refuel)
+
+                detour_fuel_cost_used = float(best_station.get(econ_detour_fuel_cost_key) or 0.0)
+                time_cost_used = float(best_station.get(econ_time_cost_key) or 0.0)
+                net_vs_worst = gross_vs_worst - detour_fuel_cost_used - time_cost_used
+
+                worst_station = onroute_station_for_price.get(onroute_worst, {})
+                worst_name = worst_station.get("name") or worst_station.get("station_name") or "Worst on-route station"
+
+                st.subheader("Potential savings versus on-route price spread")
+
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("On-route best price", _format_price(onroute_best))
+                with col2:
+                    st.metric("On-route median price", _format_price(onroute_median))
+                with col3:
+                    st.metric("On-route worst price", _format_price(onroute_worst))
+
+                # Compute comparisons against on-route references
+                gross_vs_best = (onroute_best - chosen_price) * float(litres_to_refuel)
+                net_vs_best = gross_vs_best - detour_fuel_cost_used - time_cost_used
+
+                gross_vs_median = (onroute_median - chosen_price) * float(litres_to_refuel)
+                net_vs_median = gross_vs_median - detour_fuel_cost_used - time_cost_used
+
+                # Row 2: chosen vs worst (upper-bound story)
+                col4, col5, col6 = st.columns(3)
+                with col4:
+                    st.metric("Chosen station price", _format_price(chosen_price))
+                with col5:
+                    st.metric("Gross saving vs on-route worst", _format_eur(gross_vs_worst))
+                with col6:
+                    st.metric("Net saving vs on-route worst", _format_eur(net_vs_worst))
+
+                # Row 3: chosen vs median (typical counterfactual)
+                col7, col8, col9 = st.columns(3)
+                with col7:
+                    st.metric("Gross saving vs on-route median", _format_eur(gross_vs_median))
+                with col8:
+                    st.metric("Net saving vs on-route median", _format_eur(net_vs_median))
+                with col9:
+                    st.metric("Net saving vs on-route best", _format_eur(net_vs_best))
+
+                st.caption(
+                    f"On-route stations are defined as ≤ {ONROUTE_MAX_DETOUR_KM:.1f} km and ≤ {ONROUTE_MAX_DETOUR_MIN:.1f} min extra detour "
+                    f"(n = {len(onroute_prices)}). The “worst on-route” comparison is an upper-bound scenario; actual savings depend on which "
+                    f"on-route station you would otherwise choose. Worst on-route station here: **{worst_name}**."
+                )
+
+                st.caption(
+                    "Interpretation: 'vs worst' is an upper-bound savings scenario, 'vs median' is a typical on-route reference, "
+                    "and 'vs best' is a lower-bound (what you could achieve without detouring if you chose the best on-route station)."
+                )
+
+                if debug_mode:
+                    st.caption(
+                        "Debug note: This block uses predicted prices at each station's arrival time (pred_price_*), consistent with the ranking logic."
+                    )
 
         if breakeven_liters is not None:
             breakeven_txt = _format_liters(breakeven_liters)
@@ -681,7 +814,13 @@ whether a detour is economically worthwhile.
         max_detour_min=max_detour_min,
         min_net_saving_eur=min_net_saving_eur,
     )
-    _display_best_station(best_station, fuel_code, litres_to_refuel=litres_to_refuel)
+    _display_best_station(
+        best_station,
+        fuel_code,
+        litres_to_refuel=litres_to_refuel,
+        ranked_stations=ranked,
+        debug_mode=debug_mode,
+    )
 
     # ----------------------------------------------------------------------
     # Full ranking table
