@@ -116,11 +116,11 @@ def _format_min(x: Any) -> str:
 
 
 def _format_liters(x: Any) -> str:
-    """Format litres with one decimal."""
+    """Format litres with two decimals (or '-' for missing)."""
     try:
         if x is None:
             return "-"
-        return f"{float(x):.1f} L"
+        return f"{float(x):.2f} L"
     except (TypeError, ValueError):
         return "-"
 
@@ -291,9 +291,9 @@ def _build_ranking_dataframe(
         df["Net saving [€]"] = df["Net saving [€]"].map(_format_eur)
     if "Break-even litres" in df.columns:
         df["Break-even litres"] = df["Break-even litres"].map(
-            lambda v: "-" if v is None or pd.isna(v) else f"{float(v):.1f}"
+            lambda v: "-" if v is None or pd.isna(v) else f"{float(v):.2f}"
         )
-
+        
     return df
 
 

@@ -110,6 +110,11 @@ def _ensure_predictions(
 def _get_detour_metrics(station: Dict[str, Any]) -> tuple[float, float]:
     """
     Return (detour_distance_km, detour_duration_min) with sane defaults.
+
+    Important: For economics we interpret "detour" as *extra* distance/time
+    compared to the baseline route. Small negative values can occur due to
+    routing/rounding artefacts; we clamp them to 0.0 to avoid confusing
+    negative fuel and negative break-even outputs.
     """
     detour_km = station.get("detour_distance_km")
     detour_min = station.get("detour_duration_min")
@@ -123,6 +128,10 @@ def _get_detour_metrics(station: Dict[str, Any]) -> tuple[float, float]:
         detour_min_f = float(detour_min) if detour_min is not None else 0.0
     except (TypeError, ValueError):
         detour_min_f = 0.0
+
+    # Clamp: "detour" = extra distance/time (never negative for economics/UI)
+    detour_km_f = max(detour_km_f, 0.0)
+    detour_min_f = max(detour_min_f, 0.0)
 
     return detour_km_f, detour_min_f
 
@@ -174,13 +183,11 @@ def _compute_economic_metrics(
     """
     Compute economic detour metrics for a single station.
 
-    Returns a dict with keys:
-        gross_saving_eur
-        detour_fuel_l
-        detour_fuel_cost_eur
-        time_cost_eur
-        net_saving_eur
-        breakeven_liters
+    Notes
+    -----
+    * Detour distance/time are clamped to >= 0 in _get_detour_metrics.
+    * We compute costs using *unrounded* detour litres for accuracy.
+    * We still return detour_fuel_l rounded to 2 decimals for display.
     """
     price = station.get(pred_key)
     if price is None:
@@ -193,17 +200,17 @@ def _compute_economic_metrics(
             "breakeven_liters",
         )}
 
-    pA = float(price)
-    pB = float(baseline_price)
+    pA = float(price)           # station price
+    pB = float(baseline_price)  # baseline on-route price
 
     detour_km, detour_min = _get_detour_metrics(station)
 
-    # Extra fuel for detour (keep two-decimal precision for UI clarity)
+    # Extra fuel for detour (raw for computations, rounded only for display)
     raw_detour_fuel_l = detour_km * (consumption_l_per_100km / 100.0)
-    detour_fuel_l = round(raw_detour_fuel_l, 2)
+    detour_fuel_l_display = round(raw_detour_fuel_l, 2)
 
-    # Cost of that extra fuel (use station's own price)
-    detour_fuel_cost_eur = detour_fuel_l * pA
+    # Cost of that extra fuel (use raw litres for accuracy)
+    detour_fuel_cost_eur = raw_detour_fuel_l * pA
 
     # Time cost (if value_of_time_per_hour > 0)
     if value_of_time_per_hour > 0.0:
@@ -217,16 +224,18 @@ def _compute_economic_metrics(
     # Net saving
     net_saving_eur = gross_saving_eur - detour_fuel_cost_eur - time_cost_eur
 
-    # Break-even litres: amount that would make net_saving exactly zero.
-    # Only meaningful if this station is cheaper than baseline (pB > pA).
+    # Break-even litres: litres required so that net_saving becomes 0.
+    # Only meaningful if station is cheaper than baseline (pB > pA).
     if pB > pA:
         breakeven_liters = (detour_fuel_cost_eur + time_cost_eur) / (pB - pA)
+        # Numerical safety (should already be >= 0 due to clamped detours)
+        breakeven_liters = max(float(breakeven_liters), 0.0)
     else:
         breakeven_liters = None
 
     return {
         "gross_saving_eur": gross_saving_eur,
-        "detour_fuel_l": detour_fuel_l,
+        "detour_fuel_l": detour_fuel_l_display,
         "detour_fuel_cost_eur": detour_fuel_cost_eur,
         "time_cost_eur": time_cost_eur,
         "net_saving_eur": net_saving_eur,
