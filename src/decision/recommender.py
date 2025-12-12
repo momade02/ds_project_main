@@ -426,6 +426,7 @@ def rank_stations_by_predicted_price(
     ranked = sorted(unique_stations, key=sort_key)
     return ranked
 
+
 def recommend_best_station(
     model_input: List[Dict[str, Any]],
     fuel_type: str,
