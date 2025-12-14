@@ -118,14 +118,10 @@ def _has_daily_lags(station: Dict[str, Any], fuel: str) -> bool:
 # instead of running a model in the same 30-min block.
 ETA_THRESHOLD_MIN = 10.0
 
-
-def _minutes_to_arrival(eta_value: Any, now: Optional[datetime]) -> Optional[float]:
+def _parse_eta_to_utc(eta_value: Any, now: Optional[datetime]) -> Optional[datetime]:
     """
-    Compute minutes from `now` until `eta_value`.
-
-    `eta_value` may be a datetime or an ISO-8601 string (with or without
-    timezone). We normalise both to UTC. On any parsing problem we return
-    None and let the caller fall back to a simpler rule.
+    Parse ETA value (datetime or ISO string) and return a timezone-normalised
+    UTC datetime. Returns None if parsing fails or if `now` is None.
     """
     if eta_value is None or now is None:
         return None
@@ -141,7 +137,6 @@ def _minutes_to_arrival(eta_value: Any, now: Optional[datetime]) -> Optional[flo
             eta_dt = eta_value
         else:
             s = str(eta_value).strip()
-            # Strip trailing "Z" if present
             if s.endswith("Z"):
                 s = s[:-1]
             eta_dt = datetime.fromisoformat(s)
@@ -149,13 +144,33 @@ def _minutes_to_arrival(eta_value: Any, now: Optional[datetime]) -> Optional[flo
         if eta_dt.tzinfo is not None:
             eta_dt = eta_dt.astimezone(timezone.utc)
         else:
-            # Assume same timezone as now_utc (UTC)
             eta_dt = eta_dt.replace(tzinfo=timezone.utc)
 
-        delta_min = (eta_dt - now_utc).total_seconds() / 60.0
-        return max(delta_min, 0.0)
+        return eta_dt
     except Exception:
         return None
+
+def _minutes_to_arrival(eta_value: Any, now: Optional[datetime]) -> Optional[float]:
+    """
+    Compute minutes from `now` until `eta_value`, using UTC-normalised datetimes.
+
+    This function delegates parsing to `_parse_eta_to_utc`. On any parsing
+    problem we return None and let the caller fall back to a simpler rule.
+    """
+    if eta_value is None or now is None:
+        return None
+
+    if now.tzinfo is not None:
+        now_utc = now.astimezone(timezone.utc)
+    else:
+        now_utc = now
+
+    eta_utc = _parse_eta_to_utc(eta_value, now)
+    if eta_utc is None:
+        return None
+
+    delta_min = (eta_utc - now_utc).total_seconds() / 60.0
+    return max(delta_min, 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +230,8 @@ def _predict_single_fuel(
     debug_ma_key = f"debug_{ft}_minutes_ahead"
     debug_h_key = f"debug_{ft}_horizon_used"
     debug_ucp_key = f"debug_{ft}_used_current_price"
+    debug_eta_key = f"debug_{ft}_eta_utc"
+    debug_mta_key = f"debug_{ft}_minutes_to_arrival"
 
     # Attach current time cell for all stations (useful for debugging)
     for station in model_input_list:
@@ -238,8 +255,14 @@ def _predict_single_fuel(
         station[debug_ca_key] = cells_ahead_raw
 
         # Compute minutes to arrival (may be None for historical/demo)
-        minutes_to_arrival = _minutes_to_arrival(station.get("eta"), now)
+        eta_value = station.get("eta")
+        minutes_to_arrival = _minutes_to_arrival(eta_value, now)
         station[debug_ma_key] = minutes_to_arrival
+        station[debug_mta_key] = minutes_to_arrival  # explicit alias
+
+        # Store parsed ETA in UTC for inspection (if available)
+        eta_utc = _parse_eta_to_utc(eta_value, now)
+        station[debug_eta_key] = eta_utc.isoformat() if eta_utc is not None else None
 
         # ------------------------------------------------------------------
         # Case 1: arrival very soon -> use current price instead of model

@@ -66,6 +66,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 from geopy.distance import geodesic
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from src.app.app_errors import ConfigError, ExternalServiceError, DataAccessError, DataQualityError
 
 # Flag to track if route_stations.py functions were successfully imported
 _ROUTE_FUNCTIONS_IMPORTED = False
@@ -111,30 +112,28 @@ except ImportError as e:
 # SECTION 1.2: LOAD API KEYS AND CREDENTIALS
 # =============================================================================
 
-# Use environment_check() from route_stations.py to validate Google API key
-# This replaces the old hardcoded load_dotenv() approach
+# Use environment_check() from route_stations.py to validate Google API key.
+# Side-effect free: environment loading is done by entrypoints (Streamlit/CLI).
 try:
     if _ROUTE_FUNCTIONS_IMPORTED:
-        # environment_check() will:
-        # 1. Load .env file
-        # 2. Check if GOOGLE_MAPS_API_KEY is set
-        # 3. Return the API key or raise SystemExit if not found
         GOOGLE_API_KEY = environment_check()
     else:
-        # Fallback if route_stations.py not available
-        from dotenv import load_dotenv
-        load_dotenv()
         GOOGLE_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
         if not GOOGLE_API_KEY:
-            print("WARNING: GOOGLE_MAPS_API_KEY not set!")
-except Exception as e:
-    print(f"WARNING: Could not load Google API key: {e}")
-    GOOGLE_API_KEY = None
+            raise ConfigError(
+                user_message="Google Maps API key is not configured.",
+                remediation="Set GOOGLE_MAPS_API_KEY in your environment (or load it via .env in the entrypoint) and restart.",
+                details="Missing environment variable: GOOGLE_MAPS_API_KEY",
+            )
+except ConfigError:
+    raise
+except Exception as exc:
+    raise ConfigError(
+        user_message="Failed to initialize Google API configuration.",
+        remediation="Check your environment variables and restart the app.",
+        details=str(exc),
+    ) from exc
 
-# Supabase credentials for database access
-# These are loaded from .env file
-from dotenv import load_dotenv
-load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY")
@@ -795,7 +794,24 @@ def get_all_historical_lags_single_query(
                 key = (uuid, lag_date.date())
                 if key in station_date_prices:
                     results[uuid][lag_name] = station_date_prices[key]
-        
+
+        # Diagnostics: warn if we have no historical prices at all for a station
+        for uuid in station_uuids:
+            all_none = True
+            for lag_name in ("1d", "2d", "3d", "7d"):
+                lag_prices = results[uuid].get(lag_name, {})
+                if any(
+                    lag_prices.get(fuel) is not None
+                    for fuel in ("e5", "e10", "diesel")
+                ):
+                    all_none = False
+                    break
+            if all_none:
+                print(
+                    f"  WARNING: No historical prices found for station {uuid} "
+                    f"for any of the lag days (1d/2d/3d/7d)."
+                )
+
         return results
         
     except Exception as e:
@@ -814,9 +830,26 @@ def get_all_historical_lags_single_query(
                 "1d": prices_1d.get(uuid, {'e5': None, 'e10': None, 'diesel': None}),
                 "2d": prices_2d.get(uuid, {'e5': None, 'e10': None, 'diesel': None}),
                 "3d": prices_3d.get(uuid, {'e5': None, 'e10': None, 'diesel': None}),
-                "7d": prices_7d.get(uuid, {'e5': None, 'e10': None, 'diesel': None})
+                "7d": prices_7d.get(uuid, {'e5': None, 'e10': None, 'diesel': None}),
             }
-        
+
+        # Diagnostics: warn if we have no historical prices at all for a station
+        for uuid, lag_dict in results.items():
+            all_none = True
+            for lag_name in ("1d", "2d", "3d", "7d"):
+                lag_prices = lag_dict.get(lag_name, {})
+                if any(
+                    lag_prices.get(fuel) is not None
+                    for fuel in ("e5", "e10", "diesel")
+                ):
+                    all_none = False
+                    break
+            if all_none:
+                print(
+                    f"  WARNING (fallback): No historical prices found for station {uuid} "
+                    f"for any of the lag days (1d/2d/3d/7d)."
+                )
+
         return results
 
 
@@ -1132,10 +1165,53 @@ def integrate_route_with_prices(
     match_elapsed = time_module.time() - match_start
     print(f"Matched: {len(matched_stations)}, Unmatched: {unmatched_count} (took {match_elapsed:.1f}s)")
     
+    # -----------------------------------------------------------------
+    # DEDUPLICATION: collapse multiple Google places → one TK station
+    # -----------------------------------------------------------------
+    # It is common that Google Places returns several entries for the
+    # same physical station (different names / entrances, etc.). After
+    # matching, these all share the same `station_uuid`. We keep only
+    # one entry per Tankerkoenig station, preferring:
+    #   1. smaller detour_distance_km (if available),
+    #   2. then smaller distance_along_m as tie-breaker.
+    dedup_by_uuid: Dict[str, Dict] = {}
+
+    def _dedup_metric(s: Dict) -> tuple:
+        """Smaller tuple = better candidate."""
+        detour = s.get("detour_distance_km")
+        dist_along = s.get("distance_along_m", float("inf"))
+        # If detour is missing, treat as worse than any with detour info
+        if detour is None:
+            return (1, dist_along)
+        return (0, detour, dist_along)
+
+    for s in matched_stations:
+        uuid = s.get("station_uuid")
+        if uuid is None:
+            # Should not happen, but keep as unique entry
+            dedup_by_uuid[id(s)] = s
+            continue
+
+        existing = dedup_by_uuid.get(uuid)
+        if existing is None:
+            dedup_by_uuid[uuid] = s
+        else:
+            if _dedup_metric(s) < _dedup_metric(existing):
+                dedup_by_uuid[uuid] = s
+
+    deduped_stations = list(dedup_by_uuid.values())
+    if len(deduped_stations) != len(matched_stations):
+        print(
+            f"Deduplication: {len(matched_stations)} matched entries "
+            f"collapsed into {len(deduped_stations)} unique Tankerkoenig stations."
+        )
+
+    matched_stations = deduped_stations
+
     if not matched_stations:
-        print("ERROR: No stations matched. Cannot proceed.")
+        print("ERROR: No stations matched after deduplication. Cannot proceed.")
         return []
-    
+
     # =================================================================
     # STEP 3: Get historical prices from Supabase (BATCH QUERIES)
     # =================================================================
@@ -1323,81 +1399,107 @@ def get_fuel_prices_for_route(
     print(f"Route: {start_locality} → {end_locality}")
     print(f"Mode: {'REAL-TIME' if use_realtime else 'HISTORICAL (demo)'}")
     
-    # =================================================================
+    # ================================================================
     # STEP 1: Geocode addresses to get coordinates
-    # =================================================================
-    print("\nStep 1: Geocoding addresses...")
-    
-    # Get coordinates for start location
-    start_lat, start_lon, start_label = google_geocode_structured(
-        start_address, start_locality, "Germany", GOOGLE_API_KEY
-    )
-    
-    # Get coordinates for end location
-    end_lat, end_lon, end_label = google_geocode_structured(
-        end_address, end_locality, "Germany", GOOGLE_API_KEY
-    )
-    
-    print(f"  Start: {start_label} ({start_lat:.5f}, {start_lon:.5f})")
-    print(f"  End: {end_label} ({end_lat:.5f}, {end_lon:.5f})")
-    
-    # =================================================================
+    # ================================================================
+    try:
+        start_lat, start_lon, start_label = google_geocode_structured(
+            start_address, start_locality, "Germany", GOOGLE_API_KEY
+        )
+        end_lat, end_lon, end_label = google_geocode_structured(
+            end_address, end_locality, "Germany", GOOGLE_API_KEY
+        )
+    except ConfigError:
+        # Raised by environment_check() (or your own config checks) and should
+        # be shown to the user as-is.
+        raise
+    except Exception as exc:
+        raise ExternalServiceError(
+            user_message="Failed to geocode the start or destination.",
+            remediation="Check the address/city inputs. If the issue persists, verify Google API quota/billing.",
+            details=str(exc),
+        ) from exc
+
+
+    # ================================================================
     # STEP 2: Calculate route between start and end
-    # =================================================================
-    print("\nStep 2: Calculating route...")
-    
-    # Get route coordinates, distance, duration, and departure time
-    # Note: google_route_driving_car returns 4 values (updated by A)
-    route_coords, route_km, route_min, departure_time = google_route_driving_car(
-        start_lat, start_lon, end_lat, end_lon, GOOGLE_API_KEY
-    )
-    
-    print(f"  Distance: {route_km:.1f} km")
-    print(f"  Duration: {route_min:.0f} min")
-    
-    # =================================================================
+    # ================================================================
+    try:
+        # Note: google_route_driving_car returns (route_coords, route_km, route_min, departure_time)
+        route_coords, route_km, route_min, departure_time = google_route_driving_car(
+            start_lat, start_lon, end_lat, end_lon, GOOGLE_API_KEY
+        )
+    except Exception as exc:
+        raise ExternalServiceError(
+            user_message="Failed to compute a driving route between start and destination.",
+            remediation="Try simpler inputs (only city names) or verify Google routing API availability/quota.",
+            details=str(exc),
+        ) from exc
+
+    # Optional but recommended: sanity check the returned values
+    if not route_coords or route_km is None or route_min is None:
+        raise DataQualityError(
+            user_message="The route service returned an incomplete route result.",
+            remediation="Try different start/end locations or retry later.",
+            details=f"route_coords={bool(route_coords)}, route_km={route_km}, route_min={route_min}",
+        )
+
+
+    # ================================================================
     # STEP 3: Find fuel stations along the route
-    # =================================================================
-    print("\nStep 3: Finding fuel stations along route...")
-    
-    # Find stations using Google Places API
-    # Note: departure_time is already calculated by google_route_driving_car
-    stations = google_places_fuel_along_route(
-        route_coords,
-        GOOGLE_API_KEY,
-        route_km,
-        route_min,
-        departure_time
-    )
-    
-    print(f"  Found {len(stations)} stations (with ETAs)")
-    
+    # ================================================================
+    try:
+        stations = google_places_fuel_along_route(
+            route_coords,
+            GOOGLE_API_KEY,
+            route_km,
+            route_min,
+            departure_time,
+        )
+    except Exception as exc:
+        raise ExternalServiceError(
+            user_message="Failed to retrieve fuel stations along the route.",
+            remediation="Retry later or check Google Places quota/billing. Also consider using larger cities as inputs.",
+            details=str(exc),
+        ) from exc
+
     if not stations:
-        print("  WARNING: No fuel stations found along this route")
-        return []
-    
-    # Note: google_places_fuel_along_route already includes ETAs,
-    # so we can skip the separate estimate_arrival_times step
+        raise DataQualityError(
+            user_message="No fuel stations were found along this route.",
+            remediation="Try a longer route, different cities, or relax constraints (detour limits).",
+            details="google_places_fuel_along_route returned an empty list.",
+        )
+
+    # google_places_fuel_along_route already includes ETAs
     stations_with_eta = stations
-    
-    # =================================================================
+
+
+    # ================================================================
     # STEP 4: Run the integration (match stations + get prices)
-    # =================================================================
-    print("\nStep 4: Matching to Tankerkoenig database and fetching prices...")
-    
-    model_input = integrate_route_with_prices(
-        stations_with_eta=stations_with_eta,
-        use_realtime=use_realtime
-    )
-    
-    # =================================================================
-    # DONE!
-    # =================================================================
-    print("\n" + "=" * 70)
-    print("PIPELINE COMPLETE")
-    print("=" * 70)
-    print(f"Total stations with complete data: {len(model_input)}")
-    
+    # ================================================================
+    try:
+        model_input = integrate_route_with_prices(
+            stations_with_eta=stations_with_eta,
+            use_realtime=use_realtime,
+        )
+    except Exception as exc:
+        # This step typically fails due to:
+        # - Supabase connectivity / permissions (DataAccessError would be ideal if you wrap internally)
+        # - Tankerkönig realtime failures (ExternalServiceError would be ideal if you wrap internally)
+        # For now: map unknown errors conservatively to DataAccessError with actionable remediation.
+        raise DataAccessError(
+            user_message="Failed to match stations to the database and/or fetch price data.",
+            remediation="Check Supabase credentials/connectivity. If realtime prices are enabled, also check Tankerkönig availability.",
+            details=str(exc),
+        ) from exc
+
+    if not model_input:
+        raise DataQualityError(
+            user_message="No stations could be matched to Tankerkönig or enriched with price data.",
+            remediation="Try a different route or disable strict constraints. Also verify the station database is up to date.",
+            details="integrate_route_with_prices returned an empty result.",
+        )
+
     return model_input
 
 
