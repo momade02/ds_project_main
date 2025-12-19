@@ -37,6 +37,7 @@ from typing import List, Dict, Any, Optional
 
 import pandas as pd
 import streamlit as st
+import pydeck as pdk
 
 from functools import lru_cache
 
@@ -70,6 +71,134 @@ from src.decision.recommender import (
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
+
+def _create_map_visualization(
+    route_coords: List[List[float]],
+    stations: List[Dict[str, Any]],
+    best_station_uuid: Optional[str] = None,
+) -> pdk.Deck:
+    """
+    Create a pydeck map showing the route and stations.
+    
+    Parameters
+    ----------
+    route_coords : List[List[float]]
+        Route coordinates as [[lon, lat], ...]
+    stations : List[Dict[str, Any]]
+        List of station dictionaries with 'lat' and 'lon'
+    best_station_uuid : Optional[str]
+        UUID of the best station to highlight it
+    
+    Returns
+    -------
+    pdk.Deck
+        Configured pydeck map
+    """
+    # Prepare station data for ScatterplotLayer
+    station_data = []
+    for s in stations:
+        lat = s.get("lat")
+        lon = s.get("lon")
+        if lat is None or lon is None:
+            continue
+        
+        # Check if this is the best station (check both possible UUID keys)
+        station_uuid = s.get("tk_uuid") or s.get("station_uuid")
+        is_best = station_uuid == best_station_uuid if best_station_uuid and station_uuid else False
+        
+        # Prepare station info for tooltip
+        name = s.get("tk_name") or s.get("osm_name") or "Unknown"
+        brand = s.get("brand") or ""
+        
+        station_data.append({
+            "position": [lon, lat],
+            "name": name,
+            "brand": brand,
+            "is_best": "🌟 EMPFOHLEN" if is_best else "",
+            "color": [0, 255, 0, 255] if is_best else [255, 165, 0, 255],  # Bright green for best, bright orange for others
+            "radius": 300 if is_best else 200,  # Balanced marker sizes
+        })
+    
+    # PathLayer for route (route_coords is already [[lon, lat], ...])
+    route_layer = pdk.Layer(
+        "PathLayer",
+        data=[{"path": route_coords}],
+        get_path="path",
+        get_width=8,
+        get_color=[30, 144, 255, 255],  # Dodger blue, full opacity
+        width_min_pixels=3,
+    )
+    
+    # ScatterplotLayer for stations
+    stations_layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=station_data,
+        get_position="position",
+        get_fill_color="color",
+        get_radius="radius",
+        pickable=True,
+        auto_highlight=True,
+    )
+    
+    # Calculate center of route for initial view
+    if route_coords:
+        lons = [coord[0] for coord in route_coords]
+        lats = [coord[1] for coord in route_coords]
+        center_lon = sum(lons) / len(lons)
+        center_lat = sum(lats) / len(lats)
+        
+        # Calculate zoom level based on route extent (adjusted for better visibility)
+        lon_range = max(lons) - min(lons)
+        lat_range = max(lats) - min(lats)
+        max_range = max(lon_range, lat_range)
+        
+        # Zoom estimation - showing the full route with context
+        if max_range > 5:
+            zoom = 5.5
+        elif max_range > 2:
+            zoom = 6.5
+        elif max_range > 1:
+            zoom = 7.5
+        elif max_range > 0.5:
+            zoom = 8.5
+        elif max_range > 0.2:
+            zoom = 9
+        else:
+            zoom = 10
+    else:
+        # Default to Germany center
+        center_lat, center_lon = 51.1657, 10.4515
+        zoom = 6
+    
+    # Create view state
+    view_state = pdk.ViewState(
+        latitude=center_lat,
+        longitude=center_lon,
+        zoom=zoom,
+        pitch=0,
+    )
+    
+    # Create tooltip with corrected syntax
+    tooltip = {
+        "html": "<b>{name}</b><br/>{brand}<br/><span style='color: gold;'>{is_best}</span>",
+        "style": {
+            "backgroundColor": "rgba(0, 0, 0, 0.8)",
+            "color": "white",
+            "padding": "8px",
+            "borderRadius": "4px"
+        },
+    }
+    
+    # Create deck with free Carto Positron map (no API token needed)
+    deck = pdk.Deck(
+        layers=[route_layer, stations_layer],
+        initial_view_state=view_state,
+        tooltip=tooltip,
+        map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",  # Free Carto basemap
+    )
+    
+    return deck
+
 
 def _fuel_label_to_code(label: str) -> str:
     """
@@ -775,10 +904,18 @@ whether a detour is economically worthwhile.
     # ----------------------------------------------------------------------
     # Get data from integration layer
     # ----------------------------------------------------------------------
+    route_info = None  # Will hold route data for map visualization
+    
     if env_label.startswith("Test"):
         st.subheader("Mode: Test route (example data)")
         try:
-            stations = run_example()
+            result = run_example()
+            # Unpack result - if it's a tuple with route_info, use it
+            if isinstance(result, tuple) and len(result) == 2:
+                stations, route_info = result
+            else:
+                stations = result
+                route_info = None
         except Exception as exc:
             st.error(f"Error while running example integration: {exc}")
             return
@@ -790,7 +927,7 @@ whether a detour is economically worthwhile.
             return
 
         try:
-            stations = get_fuel_prices_for_route(
+            stations, route_info = get_fuel_prices_for_route(
                 start_locality=start_locality,
                 end_locality=end_locality,
                 start_address=start_address,
@@ -872,6 +1009,37 @@ whether a detour is economically worthwhile.
         st.info("No stations with valid predictions to display.")
     else:
         st.dataframe(df_ranked.reset_index(drop=True))
+
+    # ----------------------------------------------------------------------
+    # Map visualization (only for real route mode)
+    # ----------------------------------------------------------------------
+    if not env_label.startswith("Test") and route_info is not None:
+        st.markdown("### Route and stations map")
+        st.caption(
+            "Blue line shows your route. "
+            "Green marker is the recommended station. "
+            "Orange markers are other stations along the route."
+        )
+        
+        try:
+            # Use route data from integration (no duplicate API calls!)
+            route_coords = route_info['route_coords']
+            
+            # Get best station UUID for highlighting (check both possible keys)
+            best_uuid = None
+            if best_station:
+                best_uuid = best_station.get("tk_uuid") or best_station.get("station_uuid")
+            
+            # Create and display map with ALL stations (not just ranked)
+            deck = _create_map_visualization(
+                route_coords,
+                stations,  # Use all stations, not just ranked
+                best_station_uuid=best_uuid,
+            )
+            st.pydeck_chart(deck)
+            
+        except Exception as e:
+            st.warning(f"Could not display map: {e}")
 
 
 if __name__ == "__main__":
