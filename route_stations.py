@@ -234,7 +234,8 @@ def google_places_fuel_along_route(
         List of fuel stations with keys:
             name, lat, lon,
             detour_distance_km, detour_duration_min,
-            distance_along_m, fraction_of_route, eta
+            distance_along_m, fraction_of_route, eta,
+            open_now, opening_hours
     """
     # segment_coords = [[lon, lat], ... ] but polyline needs [(lat, lon), ...]
     latlon = [(lat, lon) for lon, lat in segment_coords]
@@ -246,6 +247,7 @@ def google_places_fuel_along_route(
         "X-Goog-Api-Key": api_key,
         "X-Goog-FieldMask": (
             "places.displayName,places.location,"
+            "places.regularOpeningHours,"
             "routingSummaries.legs.distanceMeters,"
             "routingSummaries.legs.duration,"
             "nextPageToken"
@@ -315,6 +317,11 @@ def google_places_fuel_along_route(
 
             eta = departure_time + timedelta(seconds=T_OA)
 
+            # Extract opening hours information
+            opening_hours = place.get("regularOpeningHours", {})
+            open_now = opening_hours.get("openNow")
+            weekday_descriptions = opening_hours.get("weekdayDescriptions", [])
+
             # Fraction of route: position along route relative to original distance
             if original_distance_km and original_distance_km > 0:
                 fraction_of_route = D_OA / (original_distance_km * 1000.0)
@@ -331,6 +338,8 @@ def google_places_fuel_along_route(
                     "distance_along_m": D_OA,
                     "fraction_of_route": fraction_of_route,
                     "eta": eta.isoformat(),
+                    "open_now": open_now,
+                    "opening_hours": weekday_descriptions,
                 }
             )
 
@@ -406,6 +415,7 @@ def main():
             f"distance from start to station={s.get('distance_along_m'):.0f} m, "
             f"fraction_of_route={s.get('fraction_of_route'):.3f} "
             f"ETA={s.get('eta')}\n"
+            f"open_now={s.get('open_now')}, opening_hours={s.get('opening_hours')}"
         )
 
 
