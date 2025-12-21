@@ -7,7 +7,6 @@ polyline
 pyproj
 python-dotenv
 requests
-scikit-learn
 scipy
 shapely
 streamlit
