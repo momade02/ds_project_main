@@ -4,7 +4,6 @@ joblib
 numpy
 pandas
 polyline
-psycopg2-binary
 pyproj
 python-dotenv
 requests
