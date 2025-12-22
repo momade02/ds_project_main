@@ -11,3 +11,5 @@ scipy
 shapely
 streamlit
 supabase
+pydeck
+scikit-learn==1.6.1
