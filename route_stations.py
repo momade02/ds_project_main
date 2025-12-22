@@ -202,6 +202,79 @@ def google_route_driving_car(
     return coords_lonlat, distance_km, duration_min, departure_time
 
 
+def google_route_via_waypoint(
+    start_lat: float,
+    start_lon: float,
+    waypoint_lat: float,
+    waypoint_lon: float,
+    end_lat: float,
+    end_lon: float,
+    api_key: str,
+    departure_time: str | datetime = "now",
+):
+    """
+    Get a driving route that goes from origin → waypoint → destination using
+    Google Directions API. Returns only the overview polyline (single path)
+    and total distance/duration.
+
+    Parameters
+    ----------
+    start_lat, start_lon, waypoint_lat, waypoint_lon, end_lat, end_lon : float
+        Coordinates for origin, waypoint (station) and destination.
+    api_key : str
+        Google Maps API key.
+    departure_time : "now" or datetime
+        Desired departure time.
+
+    Returns
+    -------
+        dict
+                {
+                    'via_full_coords': [[lon, lat], ...],
+                    'via_distance_km': float,
+                    'via_duration_min': float,
+                    'departure_time': datetime
+                }
+    """
+    client = googlemaps.Client(key=api_key)
+
+    directions = client.directions(
+        origin=(start_lat, start_lon),
+        destination=(end_lat, end_lon),
+        waypoints=[(waypoint_lat, waypoint_lon)],
+        mode="driving",
+        alternatives=False,
+        departure_time=departure_time,
+        traffic_model="best_guess",
+    )
+
+    if not directions:
+        raise ValueError("No via-station route found by Google Directions API.")
+
+    if departure_time == "now":
+        departure_time = datetime.now(ZoneInfo("Europe/Berlin"))
+
+    route = directions[0]
+
+    # Total distance and duration over both legs
+    total_distance_m = sum(leg.get("distance", {}).get("value", 0) for leg in route.get("legs", []))
+    total_duration_s = sum(leg.get("duration", {}).get("value", 0) for leg in route.get("legs", []))
+
+    # Overview polyline for the full path (origin → waypoint → destination)
+    overview = route.get("overview_polyline", {}).get("points")
+    if not overview:
+        raise ValueError("Directions API response missing overview polyline.")
+    pts = googlemaps.convert.decode_polyline(overview)
+    full_coords = [[p["lng"], p["lat"]] for p in pts]
+
+    return {
+        "via_full_coords": full_coords,
+        "via_distance_km": total_distance_m / 1000.0,
+        "via_duration_min": total_duration_s / 60.0,
+        "departure_time": departure_time,
+    }
+
+
 def google_places_fuel_along_route(
     segment_coords,
     api_key: str,
@@ -234,7 +307,8 @@ def google_places_fuel_along_route(
         List of fuel stations with keys:
             name, lat, lon,
             detour_distance_km, detour_duration_min,
-            distance_along_m, fraction_of_route, eta
+            distance_along_m, fraction_of_route, eta,
+            open_now, opening_hours
     """
     # segment_coords = [[lon, lat], ... ] but polyline needs [(lat, lon), ...]
     latlon = [(lat, lon) for lon, lat in segment_coords]
@@ -246,6 +320,7 @@ def google_places_fuel_along_route(
         "X-Goog-Api-Key": api_key,
         "X-Goog-FieldMask": (
             "places.displayName,places.location,"
+            "places.regularOpeningHours,"
             "routingSummaries.legs.distanceMeters,"
             "routingSummaries.legs.duration,"
             "nextPageToken"
@@ -315,6 +390,11 @@ def google_places_fuel_along_route(
 
             eta = departure_time + timedelta(seconds=T_OA)
 
+            # Extract opening hours information
+            opening_hours = place.get("regularOpeningHours", {})
+            open_now = opening_hours.get("openNow")
+            weekday_descriptions = opening_hours.get("weekdayDescriptions", [])
+
             # Fraction of route: position along route relative to original distance
             if original_distance_km and original_distance_km > 0:
                 fraction_of_route = D_OA / (original_distance_km * 1000.0)
@@ -331,6 +411,8 @@ def google_places_fuel_along_route(
                     "distance_along_m": D_OA,
                     "fraction_of_route": fraction_of_route,
                     "eta": eta.isoformat(),
+                    "open_now": open_now,
+                    "opening_hours": weekday_descriptions,
                 }
             )
 
@@ -406,6 +488,7 @@ def main():
             f"distance from start to station={s.get('distance_along_m'):.0f} m, "
             f"fraction_of_route={s.get('fraction_of_route'):.3f} "
             f"ETA={s.get('eta')}\n"
+            f"open_now={s.get('open_now')}, opening_hours={s.get('opening_hours')}"
         )
 
 

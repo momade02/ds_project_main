@@ -32,11 +32,13 @@ from app_errors import AppError, ConfigError, ExternalServiceError, DataAccessEr
 # Make sure the project root (containing the `src` package) is on sys.path
 # ---------------------------------------------------------------------------
 import sys
+import math
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 import pandas as pd
 import streamlit as st
+import pydeck as pdk
 
 from functools import lru_cache
 
@@ -59,6 +61,7 @@ from src.integration.route_tankerkoenig_integration import (
     run_example,
     get_fuel_prices_for_route,
 )
+from route_stations import environment_check, google_route_via_waypoint
 from src.decision.recommender import (
     recommend_best_station,
     rank_stations_by_predicted_price,
@@ -70,6 +73,232 @@ from src.decision.recommender import (
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
+
+def _calculate_zoom_for_bounds(lon_min: float, lon_max: float, lat_min: float, lat_max: float, 
+                                padding_percent: float = 0.10, 
+                                map_width_px: int = 700, map_height_px: int = 500) -> float:
+    """
+    Calculate optimal zoom level to fit bounds with padding using Web Mercator projection.
+    
+    Parameters
+    ----------
+    lon_min, lon_max, lat_min, lat_max : float
+        Bounding box coordinates
+    padding_percent : float
+        Padding around bounds (0.05 = 5%)
+    map_width_px, map_height_px : int
+        Map container size in pixels
+    
+    Returns
+    -------
+    float
+        Zoom level (1-15), clamped to valid range
+    """
+    try:
+        # Add padding to bounds
+        lon_range = lon_max - lon_min
+        lat_range = lat_max - lat_min
+        
+        # Handle edge case: point (no range)
+        if lon_range < 0.0001 and lat_range < 0.0001:
+            return 15.0  # Zoom in on single point
+        
+        # Handle edge case: line (only one dimension has range)
+        if lon_range < 0.0001:
+            lon_range = 0.1
+        if lat_range < 0.0001:
+            lat_range = 0.1
+        
+        lon_min -= lon_range * padding_percent / 2
+        lon_max += lon_range * padding_percent / 2
+        lat_min -= lat_range * padding_percent / 2
+        lat_max += lat_range * padding_percent / 2
+        
+        # Clamp latitude to valid Web Mercator range (avoid poles)
+        lat_min = max(-85.05, min(85.05, lat_min))
+        lat_max = max(-85.05, min(85.05, lat_max))
+        
+        # Calculate zoom for longitude
+        lon_delta = lon_max - lon_min
+        if lon_delta <= 0:
+            lon_delta = 0.1
+        zoom_lon = math.log2(360 * map_width_px / (256 * lon_delta))
+        
+        # Calculate zoom for latitude using Web Mercator projection
+        lat_min_rad = math.radians(lat_min)
+        lat_max_rad = math.radians(lat_max)
+        
+        y_min = math.log(math.tan(math.pi / 4 + lat_max_rad / 2))
+        y_max = math.log(math.tan(math.pi / 4 + lat_min_rad / 2))
+        
+        y_delta = y_max - y_min
+        if abs(y_delta) < 0.0001:
+            y_delta = 0.1
+        
+        zoom_lat = math.log2(math.pi * map_height_px / (256 * abs(y_delta)))
+        
+        # Take minimum zoom to fit both dimensions
+        zoom = min(zoom_lon, zoom_lat)
+        
+        # Clamp to valid range
+        return max(1, min(zoom, 15))
+    
+    except Exception as e:
+        # Fallback to default zoom if calculation fails
+        return 7.5
+
+def _create_map_visualization(
+    route_coords: List[List[float]],
+    stations: List[Dict[str, Any]],
+    best_station_uuid: Optional[str] = None,
+    via_full_coords: Optional[List[List[float]]] = None,
+    zoom_level: float = 7.5,
+) -> pdk.Deck:
+    """
+    Create a pydeck map showing the route and stations.
+    
+    Parameters
+    ----------
+    route_coords : List[List[float]]
+        Route coordinates as [[lon, lat], ...]
+    stations : List[Dict[str, Any]]
+        List of station dictionaries with 'lat' and 'lon'
+    best_station_uuid : Optional[str]
+        UUID of the best station to highlight it
+    via_full_coords : Optional[List[List[float]]]
+        Via-route coordinates as [[lon, lat], ...]
+    zoom_level : float
+        Current zoom level for zoom-dependent marker scaling
+    
+    Returns
+    -------
+    pdk.Deck
+        Configured pydeck map
+    """
+    # Calculate zoom-dependent radius scaling
+    # At zoom 7.5 (baseline), best stations get 6px, others get 4px
+    # Scales proportionally with zoom level
+    base_zoom = 7.5
+    zoom_factor = zoom_level / base_zoom
+    radius_best = max(4, min(12, 6 * zoom_factor))  # Range: 4-12 pixels
+    radius_other = max(2, min(10, 4 * zoom_factor))  # Range: 2-10 pixels
+    
+    # Prepare station data for ScatterplotLayer
+    station_data = []
+    for s in stations:
+        lat = s.get("lat")
+        lon = s.get("lon")
+        if lat is None or lon is None:
+            continue
+        
+        # Check if this is the best station (check both possible UUID keys)
+        station_uuid = s.get("tk_uuid") or s.get("station_uuid")
+        is_best = station_uuid == best_station_uuid if best_station_uuid and station_uuid else False
+        
+        # Prepare station info for tooltip
+        name = s.get("tk_name") or s.get("osm_name") or "Unknown"
+        brand = s.get("brand") or ""
+        
+        station_data.append({
+            "position": [lon, lat],
+            "name": name,
+            "brand": brand,
+            "is_best": "🌟 EMPFOHLEN" if is_best else "",
+            "color": [0, 255, 0, 255] if is_best else [255, 165, 0, 255],  # Bright green for best, bright orange for others
+            "radius": radius_best if is_best else radius_other,  # Zoom-dependent marker sizes
+        })
+    
+    # PathLayer for baseline route (route_coords is already [[lon, lat], ...])
+    route_layer = pdk.Layer(
+        "PathLayer",
+        data=[{"path": route_coords}],
+        get_path="path",
+        get_width=4,
+        get_color=[30, 144, 255, 255],  # Dodger blue, full opacity
+        width_min_pixels=2,
+    )
+    extra_layers = []
+    # PathLayer for via-station overview path
+    if via_full_coords:
+        extra_layers.append(
+            pdk.Layer(
+                "PathLayer",
+                data=[{"path": via_full_coords}],
+                get_path="path",
+                get_width=4,
+                get_color=[148, 0, 211, 255],  # DarkViolet for via route
+                width_min_pixels=3,
+            )
+        )
+    
+    # ScatterplotLayer for stations with zoom-dependent pixel-based sizing
+    stations_layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=station_data,
+        get_position="position",
+        get_fill_color="color",
+        get_radius="radius",
+        radius_units="pixels",  # Radius is now in pixels, not meters
+        radius_min_pixels=2,  # Minimum 2 pixels for visibility at low zoom
+        radius_max_pixels=12,  # Maximum 12 pixels to avoid oversizing at high zoom
+        pickable=True,
+        auto_highlight=True,
+    )
+    
+    # Calculate center of route for initial view
+    if route_coords:
+        lons = [coord[0] for coord in route_coords]
+        lats = [coord[1] for coord in route_coords]
+        center_lon = sum(lons) / len(lons)
+        center_lat = sum(lats) / len(lats)
+        
+        # Use Web Mercator formula to calculate precise zoom level
+        zoom = _calculate_zoom_for_bounds(
+            lon_min=min(lons),
+            lon_max=max(lons),
+            lat_min=min(lats),
+            lat_max=max(lats),
+            padding_percent=0.10,
+            map_width_px=700,  # Default Streamlit width for pydeck
+            map_height_px=500,
+        )
+        
+        # Update zoom_level parameter for marker scaling
+        zoom_level = zoom
+    else:
+        # Default to Germany center
+        center_lat, center_lon = 51.1657, 10.4515
+        zoom = 6
+    
+    # Create view state
+    view_state = pdk.ViewState(
+        latitude=center_lat,
+        longitude=center_lon,
+        zoom=zoom,
+        pitch=0,
+    )
+    
+    # Create tooltip with corrected syntax
+    tooltip = {
+        "html": "<b>{name}</b><br/>{brand}<br/><span style='color: gold;'>{is_best}</span>",
+        "style": {
+            "backgroundColor": "rgba(0, 0, 0, 0.8)",
+            "color": "white",
+            "padding": "8px",
+            "borderRadius": "4px"
+        },
+    }
+    
+    # Create deck with free Carto Positron map (no API token needed)
+    deck = pdk.Deck(
+        layers=[route_layer, *extra_layers, stations_layer],
+        initial_view_state=view_state,
+        tooltip=tooltip,
+        map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",  # Free Carto basemap
+    )
+    
+    return deck
+
 
 def _fuel_label_to_code(label: str) -> str:
     """
@@ -775,10 +1004,18 @@ whether a detour is economically worthwhile.
     # ----------------------------------------------------------------------
     # Get data from integration layer
     # ----------------------------------------------------------------------
+    route_info = None  # Will hold route data for map visualization
+    
     if env_label.startswith("Test"):
         st.subheader("Mode: Test route (example data)")
         try:
-            stations = run_example()
+            result = run_example()
+            # Unpack result - if it's a tuple with route_info, use it
+            if isinstance(result, tuple) and len(result) == 2:
+                stations, route_info = result
+            else:
+                stations = result
+                route_info = None
         except Exception as exc:
             st.error(f"Error while running example integration: {exc}")
             return
@@ -790,7 +1027,7 @@ whether a detour is economically worthwhile.
             return
 
         try:
-            stations = get_fuel_prices_for_route(
+            stations, route_info = get_fuel_prices_for_route(
                 start_locality=start_locality,
                 end_locality=end_locality,
                 start_address=start_address,
@@ -872,6 +1109,84 @@ whether a detour is economically worthwhile.
         st.info("No stations with valid predictions to display.")
     else:
         st.dataframe(df_ranked.reset_index(drop=True))
+
+    # ----------------------------------------------------------------------
+    # Map visualization (only for real route mode)
+    # ----------------------------------------------------------------------
+    if not env_label.startswith("Test") and route_info is not None:
+        st.markdown("### Route and stations map")
+        
+        try:
+            # Use route data from integration
+            route_coords = route_info['route_coords']
+
+            # Compute via-station route (origin → best station → destination), if possible
+            via_overview = None
+            if best_station and route_coords:
+                try:
+                    start_lon, start_lat = route_coords[0][0], route_coords[0][1]
+                    end_lon, end_lat = route_coords[-1][0], route_coords[-1][1]
+                    st_lat = float(best_station.get("lat")) if best_station.get("lat") is not None else None
+                    st_lon = float(best_station.get("lon")) if best_station.get("lon") is not None else None
+                    if st_lat is not None and st_lon is not None:
+                        api_key = environment_check()
+                        via = google_route_via_waypoint(
+                            start_lat=start_lat,
+                            start_lon=start_lon,
+                            waypoint_lat=st_lat,
+                            waypoint_lon=st_lon,
+                            end_lat=end_lat,
+                            end_lon=end_lon,
+                            api_key=api_key,
+                            departure_time=route_info.get('departure_time', 'now'),
+                        )
+                        via_overview = via.get('via_full_coords')
+                except Exception:
+                    # Non-fatal: still show baseline route
+                    via_overview = None
+
+            # Get best station UUID for highlighting (check both possible keys)
+            best_uuid = None
+            if best_station:
+                best_uuid = best_station.get("tk_uuid") or best_station.get("station_uuid")
+
+            # Calculate zoom level based on route extent (for marker scaling)
+            zoom_for_markers = 7.5  # Default
+            if route_coords:
+                lons = [coord[0] for coord in route_coords]
+                lats = [coord[1] for coord in route_coords]
+                
+                # Use Web Mercator formula for precise zoom calculation
+                zoom_for_markers = _calculate_zoom_for_bounds(
+                    lon_min=min(lons),
+                    lon_max=max(lons),
+                    lat_min=min(lats),
+                    lat_max=max(lats),
+                    padding_percent=0.10,
+                    map_width_px=700,
+                    map_height_px=500,
+                )
+
+            # Create and display map with ALL stations
+            deck = _create_map_visualization(
+                route_coords,
+                stations,
+                best_station_uuid=best_uuid,
+                via_full_coords=via_overview,
+                zoom_level=zoom_for_markers,
+            )
+            st.pydeck_chart(deck)
+            
+            # Legend for routes and markers
+            st.markdown("---")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Routes:**  \n🔵 Blue = Direct route  \n🟣 Violet = Via recommended station")
+            with col2:
+                st.markdown("**Stations:**  \n🟢 Green = Recommended station  \n🟠 Orange = Other stations")
+            
+        except Exception as e:
+            st.warning(f"Could not display map: {e}")
 
 
 if __name__ == "__main__":
