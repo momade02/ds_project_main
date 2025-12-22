@@ -202,6 +202,79 @@ def google_route_driving_car(
     return coords_lonlat, distance_km, duration_min, departure_time
 
 
+def google_route_via_waypoint(
+    start_lat: float,
+    start_lon: float,
+    waypoint_lat: float,
+    waypoint_lon: float,
+    end_lat: float,
+    end_lon: float,
+    api_key: str,
+    departure_time: str | datetime = "now",
+):
+    """
+    Get a driving route that goes from origin → waypoint → destination using
+    Google Directions API. Returns only the overview polyline (single path)
+    and total distance/duration.
+
+    Parameters
+    ----------
+    start_lat, start_lon, waypoint_lat, waypoint_lon, end_lat, end_lon : float
+        Coordinates for origin, waypoint (station) and destination.
+    api_key : str
+        Google Maps API key.
+    departure_time : "now" or datetime
+        Desired departure time.
+
+    Returns
+    -------
+        dict
+                {
+                    'via_full_coords': [[lon, lat], ...],
+                    'via_distance_km': float,
+                    'via_duration_min': float,
+                    'departure_time': datetime
+                }
+    """
+    client = googlemaps.Client(key=api_key)
+
+    directions = client.directions(
+        origin=(start_lat, start_lon),
+        destination=(end_lat, end_lon),
+        waypoints=[(waypoint_lat, waypoint_lon)],
+        mode="driving",
+        alternatives=False,
+        departure_time=departure_time,
+        traffic_model="best_guess",
+    )
+
+    if not directions:
+        raise ValueError("No via-station route found by Google Directions API.")
+
+    if departure_time == "now":
+        departure_time = datetime.now(ZoneInfo("Europe/Berlin"))
+
+    route = directions[0]
+
+    # Total distance and duration over both legs
+    total_distance_m = sum(leg.get("distance", {}).get("value", 0) for leg in route.get("legs", []))
+    total_duration_s = sum(leg.get("duration", {}).get("value", 0) for leg in route.get("legs", []))
+
+    # Overview polyline for the full path (origin → waypoint → destination)
+    overview = route.get("overview_polyline", {}).get("points")
+    if not overview:
+        raise ValueError("Directions API response missing overview polyline.")
+    pts = googlemaps.convert.decode_polyline(overview)
+    full_coords = [[p["lng"], p["lat"]] for p in pts]
+
+    return {
+        "via_full_coords": full_coords,
+        "via_distance_km": total_distance_m / 1000.0,
+        "via_duration_min": total_duration_s / 60.0,
+        "departure_time": departure_time,
+    }
+
+
 def google_places_fuel_along_route(
     segment_coords,
     api_key: str,
