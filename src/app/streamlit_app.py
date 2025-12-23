@@ -28,13 +28,22 @@ from __future__ import annotations
 
 from app_errors import AppError, ConfigError, ExternalServiceError, DataAccessError, DataQualityError, PredictionError
 
+from urllib.parse import quote
+
 # ---------------------------------------------------------------------------
 # Make sure the project root (containing the `src` package) is on sys.path
 # ---------------------------------------------------------------------------
 import sys
 import math
+import inspect
+import html
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+
+import base64
+
+import json
+import hashlib
 
 import pandas as pd
 import streamlit as st
@@ -147,78 +156,260 @@ def _calculate_zoom_for_bounds(lon_min: float, lon_max: float, lat_min: float, l
         # Fallback to default zoom if calculation fails
         return 7.5
 
+def _supports_pydeck_selections() -> bool:
+    """Return True if the installed Streamlit supports pydeck selection events."""
+    try:
+        sig = inspect.signature(st.pydeck_chart)
+        return "on_select" in sig.parameters and "selection_mode" in sig.parameters
+    except Exception:
+        return False
+
+
+def _station_uuid(station: Dict[str, Any]) -> Optional[str]:
+    """Return the station UUID used throughout the project (Tankerkönig UUID preferred)."""
+    return station.get("tk_uuid") or station.get("station_uuid")
+
+
+def _safe_text(value: Any) -> str:
+    """HTML-escape user/external text for safe tooltip rendering."""
+    if value is None:
+        return ""
+    return html.escape(str(value))
+
+
+def _fmt_price(value: Any) -> str:
+    try:
+        if value is None:
+            return "—"
+        return f"{float(value):.3f} €/L"
+    except Exception:
+        return "—"
+
+
+def _fmt_eur(value: Any) -> str:
+    try:
+        if value is None:
+            return "—"
+        return f"{float(value):.2f} €"
+    except Exception:
+        return "—"
+
+
+def _fmt_km(value: Any) -> str:
+    try:
+        if value is None:
+            return "—"
+        return f"{float(value):.2f} km"
+    except Exception:
+        return "—"
+
+
+def _fmt_min(value: Any) -> str:
+    try:
+        if value is None:
+            return "—"
+        return f"{float(value):.1f} min"
+    except Exception:
+        return "—"
+
 def _create_map_visualization(
     route_coords: List[List[float]],
     stations: List[Dict[str, Any]],
     best_station_uuid: Optional[str] = None,
     via_full_coords: Optional[List[List[float]]] = None,
     zoom_level: float = 7.5,
+    *,
+    fuel_code: Optional[str] = None,
+    selected_station_uuid: Optional[str] = None,
+    map_style: Optional[str] = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+    show_station_labels: bool = True,
 ) -> pdk.Deck:
     """
-    Create a pydeck map showing the route and stations.
-    
-    Parameters
-    ----------
-    route_coords : List[List[float]]
-        Route coordinates as [[lon, lat], ...]
-    stations : List[Dict[str, Any]]
-        List of station dictionaries with 'lat' and 'lon'
-    best_station_uuid : Optional[str]
-        UUID of the best station to highlight it
-    via_full_coords : Optional[List[List[float]]]
-        Via-route coordinates as [[lon, lat], ...]
-    zoom_level : float
-        Current zoom level for zoom-dependent marker scaling
-    
-    Returns
-    -------
-    pdk.Deck
-        Configured pydeck map
+    Create a pydeck map showing:
+      - baseline route (and optional via-station route),
+      - start/end markers,
+      - all stations (best station highlighted),
+      - hover tooltip (compact),
+      - selection support via Streamlit's pydeck selection API.
+
+    Notes
+    -----
+    - Click-selection is handled by Streamlit (st.pydeck_chart on_select=...).
+      This function provides a stable layer id ("stations") and station UUIDs.
     """
-    # Calculate zoom-dependent radius scaling
-    # At zoom 7.5 (baseline), best stations get 6px, others get 4px
-    # Scales proportionally with zoom level
-    base_zoom = 7.5
-    zoom_factor = zoom_level / base_zoom
-    radius_best = max(4, min(12, 6 * zoom_factor))  # Range: 4-12 pixels
-    radius_other = max(2, min(10, 4 * zoom_factor))  # Range: 2-10 pixels
-    
-    # Prepare station data for ScatterplotLayer
-    station_data = []
+
+    # ------------------------------------------------------------------
+    # Pin icon (SVG data URL) for IconLayer
+    # NOTE: Must be URL-encoded, otherwise deck.gl often fails to load it,
+    #       resulting in large placeholder circles.
+    # ------------------------------------------------------------------
+    def _pin_icon_data_url(fill_hex: str, stroke_hex: str) -> str:
+        svg = (
+            "<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'>"
+            f"<path d='M32 2C21 2 12 11 12 22c0 17 20 40 20 40s20-23 20-40C52 11 43 2 32 2z' "
+            f"fill='{fill_hex}' stroke='{stroke_hex}' stroke-width='2'/>"
+            "<circle cx='32' cy='22' r='7' fill='white'/>"
+            "</svg>"
+        )
+        b64 = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+        return f"data:image/svg+xml;base64,{b64}"
+
+    # ------------------------------------------------------------------
+    # Marker sizing: pixel-based, scaled by zoom
+    # ------------------------------------------------------------------
+    base_size_other = 2.0
+    base_size_best = 7.0
+    base_size_selected = 9.0
+
+    zoom_factor = max(0.6, min(1.6, zoom_level / 10.0))
+    radius_other = base_size_other * zoom_factor
+    radius_best = base_size_best * zoom_factor
+    radius_selected = base_size_selected * zoom_factor
+
+    pred_key = f"pred_price_{fuel_code}" if fuel_code else None
+    curr_key = f"price_current_{fuel_code}" if fuel_code else None
+
+    # ------------------------------------------------------------------
+    # Build station data used by deck.gl (tooltip + selection object payload)
+    # ------------------------------------------------------------------
+    station_data: List[Dict[str, Any]] = []
+
     for s in stations:
-        lat = s.get("lat")
-        lon = s.get("lon")
-        if lat is None or lon is None:
+        # 1) Robust coordinate parsing
+        lat_raw, lon_raw = s.get("lat"), s.get("lon")
+        try:
+            lat = float(lat_raw)
+            lon = float(lon_raw)
+        except (TypeError, ValueError):
             continue
-        
-        # Check if this is the best station (check both possible UUID keys)
-        station_uuid = s.get("tk_uuid") or s.get("station_uuid")
-        is_best = station_uuid == best_station_uuid if best_station_uuid and station_uuid else False
-        
-        # Prepare station info for tooltip
-        name = s.get("tk_name") or s.get("osm_name") or "Unknown"
-        brand = s.get("brand") or ""
-        
-        station_data.append({
-            "position": [lon, lat],
-            "name": name,
-            "brand": brand,
-            "is_best": "🌟 EMPFOHLEN" if is_best else "",
-            "color": [0, 255, 0, 255] if is_best else [255, 165, 0, 255],  # Bright green for best, bright orange for others
-            "radius": radius_best if is_best else radius_other,  # Zoom-dependent marker sizes
-        })
-    
-    # PathLayer for baseline route (route_coords is already [[lon, lat], ...])
+
+        # Reject NaN/inf and out-of-range coordinates
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            continue
+        if not math.isfinite(lat) or not math.isfinite(lon):
+            continue
+
+        # 2) Identity + flags
+        station_uuid = _station_uuid(s)
+        is_best = bool(best_station_uuid and station_uuid and station_uuid == best_station_uuid)
+        is_selected = bool(selected_station_uuid and station_uuid and station_uuid == selected_station_uuid)
+
+        # 3) Safe text for tooltip (HTML-escaped)
+        name = _safe_text(s.get("tk_name") or s.get("osm_name") or "Unknown")
+        brand = _safe_text(s.get("brand") or "")
+
+        # 4) Keys for prices
+        pred_key = f"pred_price_{fuel_code}" if fuel_code else None
+        curr_key = f"price_current_{fuel_code}" if fuel_code else None
+
+        current_price = _fmt_price(s.get(curr_key)) if curr_key else "—"
+        predicted_price = _fmt_price(s.get(pred_key)) if pred_key else "—"
+
+        # 5) Optional metrics (if present)
+        detour_km = _fmt_km(s.get("detour_distance_km") or s.get("detour_km"))
+        detour_min = _fmt_min(s.get("detour_duration_min") or s.get("detour_min"))
+        # Net saving is fuel-specific in this project (econ_*_{fuel_code})
+        econ_net_key = f"econ_net_saving_eur_{fuel_code}" if fuel_code else None
+
+        raw_net = None
+        if econ_net_key:
+            raw_net = s.get(econ_net_key)
+
+        # Backward compatible fallback (older payloads)
+        if raw_net is None:
+            raw_net = s.get("econ_net_saving_eur")
+
+        net_saving = _fmt_eur(raw_net)
+
+        # 6) Label (only used when zoomed in)
+        label = ""
+        try:
+            if pred_key and s.get(pred_key) is not None:
+                label = f"{float(s[pred_key]):.3f}"
+            elif curr_key and s.get(curr_key) is not None:
+                label = f"{float(s[curr_key]):.3f}"
+        except Exception:
+            label = ""
+
+        # 7) Visual hierarchy
+        # Use RGB (3 values) for maximum compatibility; opacity handled by layer opacity.
+        fill_color = [0, 200, 0] if is_best else [255, 165, 0]
+
+        if is_selected:
+            line_color = [255, 255, 255]   # selected ring
+            line_width = 3
+            radius = float(radius_selected)
+        elif is_best:
+            line_color = [0, 0, 0]         # best ring
+            line_width = 2
+            radius = float(radius_best)
+        else:
+            line_color = [0, 0, 0]         # subtle outline
+            line_width = 1
+            radius = float(radius_other)
+
+        # --- Pin icon fields for IconLayer ---
+        # Use hex colors in the SVG; keep it simple and stable.
+        fill_hex = "#00C800" if is_best else "#FFA500"
+        stroke_hex = "#FFFFFF" if is_selected else "#000000"
+
+        icon_url = _pin_icon_data_url(fill_hex, stroke_hex)
+
+        # Pixel size of the icon (bigger for best/selected)
+        icon_size = 30 if is_selected else (26 if is_best else 20)
+
+        station_data.append(
+            {
+                "lon": lon,
+                "lat": lat,
+                "station_uuid": station_uuid or "",
+                "name": name,
+                "brand": brand,
+                "tag": "RECOMMENDED" if is_best else "",
+                "current_price": current_price,
+                "predicted_price": predicted_price,
+                "detour_km": detour_km,
+                "detour_min": detour_min,
+                "net_saving": net_saving,
+                "label": label,
+                "fill_color": fill_color,
+                "line_color": line_color,
+                "line_width": int(line_width),
+                "radius": radius,
+                "icon": {
+                    "url": icon_url,
+                    "width": 64,
+                    "height": 64,
+                    "anchorY": 64,   # bottom tip
+                },
+                "icon_size": icon_size,
+            }
+        )
+
+    # Optional: sanity check (highly recommended during development)
+    if station_data:
+        uniq = {(round(d["lon"], 5), round(d["lat"], 5)) for d in station_data}
+        if len(uniq) <= max(1, int(0.2 * len(station_data))):
+            st.warning(
+                f"Map sanity check: {len(uniq)} unique coordinates for {len(station_data)} stations. "
+                "Many markers overlap; check upstream lat/lon generation."
+            )
+
+    # ------------------------------------------------------------------
+    # Layers
+    # ------------------------------------------------------------------
     route_layer = pdk.Layer(
         "PathLayer",
         data=[{"path": route_coords}],
         get_path="path",
         get_width=4,
-        get_color=[30, 144, 255, 255],  # Dodger blue, full opacity
+        get_color=[30, 144, 255, 255],  # blue
         width_min_pixels=2,
+        pickable=False,
     )
-    extra_layers = []
-    # PathLayer for via-station overview path
+
+    extra_layers: List[pdk.Layer] = []
+
     if via_full_coords:
         extra_layers.append(
             pdk.Layer(
@@ -226,77 +417,129 @@ def _create_map_visualization(
                 data=[{"path": via_full_coords}],
                 get_path="path",
                 get_width=4,
-                get_color=[148, 0, 211, 255],  # DarkViolet for via route
+                get_color=[148, 0, 211, 255],  # violet
                 width_min_pixels=3,
+                pickable=False,
             )
         )
-    
-    # ScatterplotLayer for stations with zoom-dependent pixel-based sizing
-    stations_layer = pdk.Layer(
-        "ScatterplotLayer",
-        data=station_data,
-        get_position="position",
-        get_fill_color="color",
-        get_radius="radius",
-        radius_units="pixels",  # Radius is now in pixels, not meters
-        radius_min_pixels=2,  # Minimum 2 pixels for visibility at low zoom
-        radius_max_pixels=12,  # Maximum 12 pixels to avoid oversizing at high zoom
-        pickable=True,
-        auto_highlight=True,
-    )
-    
-    # Calculate center of route for initial view
+
+    use_pins = True  # set to False to force dots
+
+    if use_pins:
+        stations_layer = pdk.Layer(
+            "IconLayer",
+            id="stations",
+            data=station_data,
+            get_position=["lon", "lat"],
+            get_icon="icon",             # IMPORTANT: read per-row icon dict
+            get_size="icon_size",
+            size_units="pixels",
+            size_scale=1,
+            size_min_pixels=14,
+            size_max_pixels=36,
+            pickable=True,
+            auto_highlight=True,
+        )
+    else:
+        stations_layer = pdk.Layer(
+            "ScatterplotLayer",
+            id="stations",
+            data=station_data,
+            get_position=["lon", "lat"],
+            get_fill_color="fill_color",
+            get_line_color="line_color",
+            get_line_width="line_width",
+            stroked=True,
+            filled=True,
+            get_radius="radius",
+            radius_units="pixels",
+            radius_scale=1,
+            radius_min_pixels=2,
+            radius_max_pixels=14,
+            pickable=True,
+            auto_highlight=True,
+            opacity=1.0,
+        )
+
+    label_layers: List[pdk.Layer] = []
+    if show_station_labels and zoom_level >= 9.5:
+        # Only show labels when sufficiently zoomed in to avoid clutter.
+        label_layers.append(
+            pdk.Layer(
+                "TextLayer",
+                id="station-labels",
+                data=station_data,
+                get_position=["lon", "lat"],
+                size_scale=1,
+                size_min_pixels=10,
+                size_max_pixels=18,
+                get_text="label",
+                get_size=12,
+                size_units="pixels",
+                get_color=[0, 0, 0, 220],
+                get_text_anchor="start",
+                get_alignment_baseline="center",
+                get_pixel_offset=[10, 0],
+                pickable=False,
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # View state (fit to route if possible)
+    # ------------------------------------------------------------------
     if route_coords:
         lons = [coord[0] for coord in route_coords]
         lats = [coord[1] for coord in route_coords]
         center_lon = sum(lons) / len(lons)
         center_lat = sum(lats) / len(lats)
-        
-        # Use Web Mercator formula to calculate precise zoom level
+
         zoom = _calculate_zoom_for_bounds(
             lon_min=min(lons),
             lon_max=max(lons),
             lat_min=min(lats),
             lat_max=max(lats),
             padding_percent=0.10,
-            map_width_px=700,  # Default Streamlit width for pydeck
+            map_width_px=700,
             map_height_px=500,
         )
-        
-        # Update zoom_level parameter for marker scaling
-        zoom_level = zoom
     else:
-        # Default to Germany center
         center_lat, center_lon = 51.1657, 10.4515
         zoom = 6
-    
-    # Create view state
+
     view_state = pdk.ViewState(
         latitude=center_lat,
         longitude=center_lon,
         zoom=zoom,
         pitch=0,
+        controller=True,
     )
-    
-    # Create tooltip with corrected syntax
+
     tooltip = {
-        "html": "<b>{name}</b><br/>{brand}<br/><span style='color: gold;'>{is_best}</span>",
+        "html": (
+            "<div style='font-size: 12px;'>"
+            "<div style='font-weight: 600; margin-bottom: 4px;'>{name}</div>"
+            "<div style='opacity: 0.85; margin-bottom: 6px;'>{brand} "
+            "<span style='color: #6ee7b7; font-weight: 600;'>{tag}</span></div>"
+            "<div><b>Current</b>: {current_price} &nbsp; <b>Pred</b>: {predicted_price}</div>"
+            "<div><b>Detour</b>: {detour_km} / {detour_min}</div>"
+            "<div><b>Net saving</b>: {net_saving}</div>"
+            "</div>"
+        ),
         "style": {
-            "backgroundColor": "rgba(0, 0, 0, 0.8)",
+            "backgroundColor": "rgba(0, 0, 0, 0.85)",
             "color": "white",
-            "padding": "8px",
-            "borderRadius": "4px"
+            "padding": "10px",
+            "borderRadius": "6px",
+            "maxWidth": "320px",
         },
     }
-    
-    # Create deck with free Carto Positron map (no API token needed)
+
     deck = pdk.Deck(
-        layers=[route_layer, *extra_layers, stations_layer],
+        layers=[route_layer, *extra_layers, stations_layer, *label_layers],
         initial_view_state=view_state,
         tooltip=tooltip,
-        map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",  # Free Carto basemap
+        map_style=map_style,
     )
-    
     return deck
 
 
@@ -885,6 +1128,146 @@ def _display_best_station(
                     )
 
 
+def _display_station_details_panel(
+    station: Dict[str, Any],
+    fuel_code: str,
+    *,
+    litres_to_refuel: Optional[float] = None,
+    debug_mode: bool = False,
+) -> None:
+    """
+    Render an extensive station details panel (triggered by map click selection).
+
+    The panel is designed for two-level interaction:
+      - hover tooltip for quick glance,
+      - click selection for deep dive.
+    """
+    pred_key = f"pred_price_{fuel_code}"
+    current_key = f"price_current_{fuel_code}"
+
+    name = station.get("tk_name") or station.get("osm_name") or "Unknown"
+    brand = station.get("brand") or ""
+
+    st.markdown("### Station details")
+    header = f"**{name}**"
+    if brand:
+        header += f"  \n{brand}"
+    st.markdown(header)
+
+    station_uuid = _station_uuid(station)
+    if station_uuid:
+        st.caption(f"Station UUID: {station_uuid}")
+
+    tab_overview, tab_prices, tab_econ, tab_timing, tab_raw = st.tabs(
+        ["Overview", "Prices", "Economics", "Timing", "Raw"]
+    )
+
+    with tab_overview:
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Current price", _fmt_price(station.get(current_key)))
+        col2.metric("Predicted price", _fmt_price(station.get(pred_key)))
+
+        detour_km = station.get("detour_distance_km") or station.get("detour_km")
+        detour_min = station.get("detour_duration_min") or station.get("detour_min")
+        col3.metric("Detour distance", _fmt_km(detour_km))
+        col4.metric("Detour time", _fmt_min(detour_min))
+
+        # Fuel-specific economics keys (consistent with the rest of the app)
+        econ_net_key = f"econ_net_saving_eur_{fuel_code}"
+        econ_baseline_key = f"econ_baseline_price_{fuel_code}"
+        econ_breakeven_key = f"econ_breakeven_liters_{fuel_code}"
+
+        if econ_net_key in station:
+            st.markdown("#### Economic summary")
+            col_a, col_b, col_c = st.columns(3)
+            col_a.metric("Baseline on-route price", _fmt_price(station.get(econ_baseline_key)))
+            col_b.metric("Net saving", _fmt_eur(station.get(econ_net_key)))
+            col_c.metric("Break-even litres", "—" if station.get(econ_breakeven_key) is None else f"{float(station.get(econ_breakeven_key)):.2f}")
+        else:
+            st.info(
+                "Economic metrics are not available for this station (missing econ_* fields). "
+                "This usually means the station was not part of the ranked/evaluated set."
+            )
+
+    with tab_prices:
+        rows = [
+            {"Metric": "Current price", "Value": _fmt_price(station.get(current_key))},
+            {"Metric": "Predicted price", "Value": _fmt_price(station.get(pred_key))},
+        ]
+        for lag in ("1d", "2d", "3d", "7d"):
+            rows.append(
+                {
+                    "Metric": f"Price lag {lag}",
+                    "Value": _fmt_price(station.get(f"price_lag_{lag}_{fuel_code}")),
+                }
+            )
+
+        df = pd.DataFrame(rows)
+        st.dataframe(df, hide_index=True, use_container_width=True)
+
+        debug_h_key = f"debug_{fuel_code}_horizon_used"
+        debug_ucp_key = f"debug_{fuel_code}_used_current_price"
+        if debug_h_key in station or debug_ucp_key in station:
+            st.markdown("#### Forecast basis")
+            st.write(
+                {
+                    "used_current_price": station.get(debug_ucp_key),
+                    "horizon_used": station.get(debug_h_key),
+                }
+            )
+
+    with tab_econ:
+        econ_net_key = f"econ_net_saving_eur_{fuel_code}"
+        econ_gross_key = f"econ_gross_saving_eur_{fuel_code}"
+        econ_detour_fuel_key = f"econ_detour_fuel_l_{fuel_code}"
+        econ_detour_fuel_cost_key = f"econ_detour_fuel_cost_eur_{fuel_code}"
+        econ_time_cost_key = f"econ_time_cost_eur_{fuel_code}"
+        econ_breakeven_key = f"econ_breakeven_liters_{fuel_code}"
+        econ_baseline_key = f"econ_baseline_price_{fuel_code}"
+
+        if econ_net_key not in station:
+            st.info("No economic metrics available for this station.")
+        else:
+            econ_rows = [
+                {"Metric": "Baseline on-route price", "Value": _fmt_price(station.get(econ_baseline_key))},
+                {"Metric": "Gross saving", "Value": _fmt_eur(station.get(econ_gross_key))},
+                {"Metric": "Detour fuel [L]", "Value": "—" if station.get(econ_detour_fuel_key) is None else f"{float(station.get(econ_detour_fuel_key)):.2f}"},
+                {"Metric": "Detour fuel cost", "Value": _fmt_eur(station.get(econ_detour_fuel_cost_key))},
+                {"Metric": "Time cost", "Value": _fmt_eur(station.get(econ_time_cost_key))},
+                {"Metric": "Net saving", "Value": _fmt_eur(station.get(econ_net_key))},
+                {"Metric": "Break-even litres", "Value": "—" if station.get(econ_breakeven_key) is None else f"{float(station.get(econ_breakeven_key)):.2f}"},
+            ]
+            st.dataframe(pd.DataFrame(econ_rows), hide_index=True, use_container_width=True)
+
+            if litres_to_refuel is not None:
+                st.caption(f"Economics computed assuming refuel amount: {litres_to_refuel:.1f} L")
+
+    with tab_timing:
+        eta = station.get("eta")
+        st.write({"eta_raw": eta})
+
+        timing_fields = [
+            f"debug_{fuel_code}_current_time_cell",
+            f"debug_{fuel_code}_cells_ahead_raw",
+            f"debug_{fuel_code}_minutes_ahead",
+            f"debug_{fuel_code}_minutes_to_arrival",
+            f"debug_{fuel_code}_eta_utc",
+            f"debug_{fuel_code}_horizon_used",
+            f"debug_{fuel_code}_used_current_price",
+        ]
+        timing_payload = {k: station.get(k) for k in timing_fields if k in station}
+        if timing_payload:
+            st.write(timing_payload)
+        else:
+            st.info("No timing/debug metadata available for this station.")
+
+    with tab_raw:
+        if debug_mode:
+            st.json(station)
+        else:
+            st.info("Enable 'Debug mode' in the sidebar to see the full raw station payload.")
+
+
 # ---------------------------------------------------------------------------
 # Main Streamlit app
 # ---------------------------------------------------------------------------
@@ -896,6 +1279,15 @@ def main() -> None:
     )
 
     st.title("Route-aware Fuel Price Recommender (Prototype)")
+
+    # Persist last clicked station (map selection)
+    if "selected_station_uuid" not in st.session_state:
+        st.session_state["selected_station_uuid"] = None
+    # Persist last computed results so UI does not reset on reruns (sidebar changes / map clicks)
+    if "last_run" not in st.session_state:
+        st.session_state["last_run"] = None  # will store dict of computed outputs
+    if "last_params_hash" not in st.session_state:
+        st.session_state["last_params_hash"] = None
 
     st.markdown(
         """
@@ -947,6 +1339,10 @@ whether a detour is economically worthwhile.
     # Detour economics
     st.sidebar.markdown("### Detour economics")
 
+    use_economics = st.sidebar.checkbox(
+        "Use economics-based detour decision (net saving, time cost, fuel cost)",
+        value=True,
+    )
     litres_to_refuel = st.sidebar.number_input(
         "Litres to refuel",
         min_value=1.0,
@@ -961,7 +1357,7 @@ whether a detour is economically worthwhile.
         value=7.0,
         step=0.5,
     )
-    value_of_time_per_hour = st.sidebar.number_input(
+    value_of_time_eur_per_hour = st.sidebar.number_input(
         "Value of time (€/hour)",
         min_value=0.0,
         max_value=200.0,
@@ -995,95 +1391,178 @@ whether a detour is economically worthwhile.
         "Debug mode (show pipeline diagnostics)", value=False
     )
 
+    # Map settings
+    st.sidebar.markdown("### Map")
+    map_style_label = st.sidebar.selectbox(
+        "Basemap style",
+        options=["Light (Positron)", "Dark (Dark Matter)", "Detailed (Voyager)"],
+        index=0,
+    )
+    map_style_url = {
+        "Light (Positron)": "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+        "Dark (Dark Matter)": "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+        "Detailed (Voyager)": "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json",
+    }[map_style_label]
+
+    show_station_labels = st.sidebar.checkbox(
+        "Show station labels when zoomed in", value=True
+    )
+
     run_clicked = st.sidebar.button("Run recommender")
 
-    if not run_clicked:
+    # -----------------------------
+    # Parameters hash (controls recompute warnings)
+    # -----------------------------
+    params = {
+        "env_label": env_label,
+        "start_locality": start_locality,
+        "end_locality": end_locality,
+        "start_address": start_address,
+        "end_address": end_address,
+        "fuel_label": fuel_label,
+        "fuel_code": fuel_code,
+        "use_economics": use_economics,
+        "litres_to_refuel": litres_to_refuel,
+        "consumption_l_per_100km": consumption_l_per_100km,
+        "value_of_time_eur_per_hour": value_of_time_eur_per_hour,
+        "max_detour_km": max_detour_km,
+        "max_detour_min": max_detour_min,
+        "min_net_saving_eur": min_net_saving_eur,
+    }
+    params_hash = hashlib.sha256(
+        json.dumps(params, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+    have_cached = st.session_state.get("last_run") is not None
+    cached_is_stale = have_cached and (st.session_state.get("last_params_hash") != params_hash)
+
+    # First-time user gating
+    if not run_clicked and not have_cached:
         st.info("Configure the settings on the left and click **Run recommender**.")
         return
 
-    # ----------------------------------------------------------------------
-    # Get data from integration layer
-    # ----------------------------------------------------------------------
-    route_info = None  # Will hold route data for map visualization
-    
-    if env_label.startswith("Test"):
-        st.subheader("Mode: Test route (example data)")
-        try:
-            result = run_example()
-            # Unpack result - if it's a tuple with route_info, use it
-            if isinstance(result, tuple) and len(result) == 2:
-                stations, route_info = result
-            else:
-                stations = result
-                route_info = None
-        except Exception as exc:
-            st.error(f"Error while running example integration: {exc}")
-            return
-    else:
-        st.subheader("Mode: Real route (Google pipeline with real-time prices)")
+    # If user changed settings, keep showing cached results but warn
+    if not run_clicked and cached_is_stale:
+        st.warning("Settings changed. Showing previous results; click **Run recommender** to recompute.")
 
-        if not start_locality or not end_locality:
-            st.error("Please provide at least start and end localities (cities/towns).")
+    # -----------------------------
+    # Compute (ONLY when run_clicked)
+    # -----------------------------
+    if run_clicked:
+        st.session_state["selected_station_uuid"] = None  # reset selection on recompute
+
+        # 1) Integration
+        route_info = None
+
+        if env_label.startswith("Test"):
+            st.subheader("Mode: Test route (example data)")
+            try:
+                result = run_example()
+                if isinstance(result, tuple) and len(result) == 2:
+                    stations, route_info = result
+                else:
+                    stations = result
+                    route_info = None
+            except Exception as exc:
+                st.error(f"Error while running example integration: {exc}")
+                return
+        else:
+            st.subheader("Mode: Real route (Google pipeline with real-time prices)")
+
+            if not start_locality or not end_locality:
+                st.error("Please provide at least start and end localities (cities/towns).")
+                return
+
+            try:
+                stations, route_info = get_fuel_prices_for_route(
+                    start_locality=start_locality,
+                    end_locality=end_locality,
+                    start_address=start_address,
+                    end_address=end_address,
+                    use_realtime=True,
+                )
+            except AppError as exc:
+                st.error(exc.user_message)
+                if exc.remediation:
+                    st.info(exc.remediation)
+                return
+            except Exception as exc:
+                st.error("Unexpected error. Please try again. If it persists, check logs.")
+                st.caption(str(exc))
+                return
+
+        if not stations:
+            st.warning("No stations returned by the integration pipeline.")
             return
 
-        try:
-            stations, route_info = get_fuel_prices_for_route(
-                start_locality=start_locality,
-                end_locality=end_locality,
-                start_address=start_address,
-                end_address=end_address,
-                use_realtime=True,  # always use current Tankerkönig prices
+        st.markdown(f"**Total stations with complete price data:** {len(stations)}")
+
+        # 2) Ranking + recommendation
+        if use_economics:
+            ranked = rank_stations_by_predicted_price(
+                stations,
+                fuel_code,
+                litres_to_refuel=litres_to_refuel,
+                consumption_l_per_100km=consumption_l_per_100km,
+                value_of_time_per_hour=value_of_time_eur_per_hour,
+                max_detour_km=max_detour_km,
+                max_detour_min=max_detour_min,
+                min_net_saving_eur=min_net_saving_eur,
             )
-        except AppError as exc:
-            st.error(exc.user_message)
-            if exc.remediation:
-                st.info(exc.remediation)
-            # Optional: show technical details only if you want.
-            # st.caption(exc.details)
-            return
-        except Exception as exc:
-            st.error("Unexpected error. Please try again. If it persists, check logs.")
-            st.caption(str(exc))
+            best_station = recommend_best_station(
+                stations,
+                fuel_code,
+                litres_to_refuel=litres_to_refuel,
+                consumption_l_per_100km=consumption_l_per_100km,
+                value_of_time_per_hour=value_of_time_eur_per_hour,
+                max_detour_km=max_detour_km,
+                max_detour_min=max_detour_min,
+                min_net_saving_eur=min_net_saving_eur,
+            )
+        else:
+            ranked = rank_stations_by_predicted_price(stations, fuel_code)
+            best_station = recommend_best_station(stations, fuel_code)
+
+        if not ranked:
+            st.warning("No stations with valid predictions for the selected fuel and constraints.")
             return
 
-    if not stations:
-        st.warning("No stations returned by the integration pipeline.")
+        best_uuid = None
+        if best_station:
+            best_uuid = best_station.get("tk_uuid") or best_station.get("station_uuid")
+
+        # 3) Precompute route_coords for map (if available)
+        route_coords = None
+        if route_info is not None and isinstance(route_info, dict):
+            route_coords = route_info.get("route_coords")
+
+        # 4) Cache everything for reruns (map clicks/sidebar changes)
+        st.session_state["last_run"] = {
+            "stations": stations,
+            "ranked": ranked,
+            "best_station": best_station,
+            "best_uuid": best_uuid,
+            "route_info": route_info,
+            "route_coords": route_coords,
+            "params": params,
+        }
+        st.session_state["last_params_hash"] = params_hash
+
+    # -----------------------------
+    # Render from cache (ALWAYS)
+    # -----------------------------
+    cached = st.session_state.get("last_run")
+    if not cached:
+        st.info("Configure the settings and click **Run recommender**.")
         return
 
-    st.markdown(
-        f"**Total stations with complete price data:** {len(stations)}"
-    )
+    stations = cached["stations"]
+    ranked = cached["ranked"]
+    best_station = cached["best_station"]
+    best_uuid = cached["best_uuid"]
+    route_info = cached.get("route_info")
+    route_coords = cached.get("route_coords")
 
-    # ----------------------------------------------------------------------
-    # Recommendation and ranking
-    # ----------------------------------------------------------------------
-    ranked = rank_stations_by_predicted_price(
-        stations,
-        fuel_code,
-        litres_to_refuel=litres_to_refuel,
-        consumption_l_per_100km=consumption_l_per_100km,
-        value_of_time_per_hour=value_of_time_per_hour,
-        max_detour_km=max_detour_km,
-        max_detour_min=max_detour_min,
-        min_net_saving_eur=min_net_saving_eur,
-    )
-    if not ranked:
-        st.warning(
-            "No stations with valid predictions for the selected fuel "
-            "and detour constraints."
-        )
-        return
-
-    best_station = recommend_best_station(
-        stations,
-        fuel_code,
-        litres_to_refuel=litres_to_refuel,
-        consumption_l_per_100km=consumption_l_per_100km,
-        value_of_time_per_hour=value_of_time_per_hour,
-        max_detour_km=max_detour_km,
-        max_detour_min=max_detour_min,
-        min_net_saving_eur=min_net_saving_eur,
-    )
     _display_best_station(
         best_station,
         fuel_code,
@@ -1170,12 +1649,83 @@ whether a detour is economically worthwhile.
             # Create and display map with ALL stations
             deck = _create_map_visualization(
                 route_coords,
-                stations,
+                ranked,
                 best_station_uuid=best_uuid,
                 via_full_coords=via_overview,
                 zoom_level=zoom_for_markers,
+                fuel_code=fuel_code,
+                selected_station_uuid=st.session_state.get("selected_station_uuid"),
+                map_style=map_style_url,
+                show_station_labels=show_station_labels,
             )
-            st.pydeck_chart(deck)
+
+            st.caption("Hover for quick info. Click a station marker to open the details panel.")
+
+            selected_uuid_from_event: Optional[str] = None
+            if _supports_pydeck_selections():
+                event = st.pydeck_chart(
+                    deck,
+                    on_select="rerun",
+                    selection_mode="single-object",
+                    key="route_map",
+                )
+
+                # Extract clicked station from selection state
+                try:
+                    selection = event.selection
+                    objects = getattr(selection, "objects", None)
+                    if objects is None and isinstance(selection, dict):
+                        objects = selection.get("objects")
+
+                    if objects and "stations" in objects and objects["stations"]:
+                        selected_obj = objects["stations"][0]
+                        selected_uuid_from_event = selected_obj.get("station_uuid") or None
+                except Exception:
+                    selected_uuid_from_event = None
+            else:
+                st.pydeck_chart(deck)
+                st.caption(
+                    "Note: Your Streamlit version does not expose pydeck click selections. "
+                    "Upgrade Streamlit to enable click-to-details interaction."
+                )
+
+            if selected_uuid_from_event:
+                st.session_state["selected_station_uuid"] = selected_uuid_from_event
+
+            # Details panel (based on last selection)
+            selected_uuid = st.session_state.get("selected_station_uuid")
+            if selected_uuid:
+                # Prefer the ranked station object (contains economics), fall back to the raw station.
+                uuid_to_station: Dict[str, Dict[str, Any]] = {}
+                for s in ranked:
+                    u = _station_uuid(s)
+                    if u:
+                        uuid_to_station[u] = s
+                for s in stations:
+                    u = _station_uuid(s)
+                    if u and u not in uuid_to_station:
+                        uuid_to_station[u] = s
+
+                if st.button("Clear station selection", key="clear_station_selection"):
+                    st.session_state["selected_station_uuid"] = None
+                    if hasattr(st, "rerun"):
+                        st.rerun()
+                    else:
+                        st.experimental_rerun()
+
+                station_obj = uuid_to_station.get(selected_uuid)
+                if station_obj:
+                    with st.expander("Selected station details", expanded=True):
+                        _display_station_details_panel(
+                            station_obj,
+                            fuel_code,
+                            litres_to_refuel=litres_to_refuel,
+                            debug_mode=debug_mode,
+                        )
+                else:
+                    st.info("Selected station could not be resolved. Please click another marker.")
+            else:
+                st.info("Click a station marker to show details here.")
             
             # Legend for routes and markers
             st.markdown("---")
