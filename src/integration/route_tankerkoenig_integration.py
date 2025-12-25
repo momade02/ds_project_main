@@ -1351,7 +1351,7 @@ def get_fuel_prices_for_route(
     5. Match stations to Tankerkoenig database
     6. Retrieve historical prices
     7. Optionally get real-time prices
-    8. Return model-ready data AND route information
+    8. Return model-ready data
     
     This is what needs to be called from the Streamlit app
     
@@ -1363,18 +1363,8 @@ def get_fuel_prices_for_route(
         use_realtime: If True, fetch current prices from Tankerkoenig API
     
     Returns:
-        Tuple containing:
-        - List of dictionaries with complete data for each station
-          (same format as integrate_route_with_prices() output)
-        - Dictionary with route information:
-          {
-              'route_coords': [[lon, lat], ...],
-              'route_km': float,
-              'route_min': float,
-              'departure_time': datetime,
-              'start_label': str,
-              'end_label': str
-          }
+        List of dictionaries with complete data for each station
+        (same format as integrate_route_with_prices() output)
     
     Example:
         >>> result = get_fuel_prices_for_route(
@@ -1510,14 +1500,17 @@ def get_fuel_prices_for_route(
             details="integrate_route_with_prices returned an empty result.",
         )
 
-    # Package route information to avoid duplicate API calls in the UI
-    route_info = {
-        'route_coords': route_coords,
-        'route_km': route_km,
-        'route_min': route_min,
-        'departure_time': departure_time,
-        'start_label': start_label,
-        'end_label': end_label,
+    route_info: Dict[str, Any] = {
+        "route_coords": route_coords,
+        "route_km": route_km,
+        "route_min": route_min,
+        "departure_time": departure_time,
+        "start_lat": start_lat,
+        "start_lon": start_lon,
+        "end_lat": end_lat,
+        "end_lon": end_lon,
+        "start_label": start_label,
+        "end_label": end_label,
     }
 
     return model_input, route_info
