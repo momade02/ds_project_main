@@ -1343,6 +1343,7 @@ whether a detour is economically worthwhile.
         "Use economics-based detour decision (net saving, time cost, fuel cost)",
         value=True,
     )
+    st.sidebar.caption("⚠️ When checked, stations may be filtered out based on detour constraints below. Uncheck to see ALL stations.")
     litres_to_refuel = st.sidebar.number_input(
         "Litres to refuel",
         min_value=1.0,
@@ -1524,8 +1525,31 @@ whether a detour is economically worthwhile.
             best_station = recommend_best_station(stations, fuel_code)
 
         if not ranked:
-            st.warning("No stations with valid predictions for the selected fuel and constraints.")
+            st.error("⚠️ No stations passed the economic filters!")
+            st.info(f"""
+            **Possible solutions:**
+            - Uncheck "Use economics-based detour decision" in the sidebar (left side)
+            - Increase "Maximum extra distance" (currently {max_detour_km} km)
+            - Increase "Maximum extra time" (currently {max_detour_min} min)
+            - Decrease "Minimum net saving" (currently {min_net_saving_eur} €)
+            
+            **Note:** {len(stations)} stations were found, but all were filtered out due to economic constraints.
+            """)
             return
+        
+        # Show how many stations passed the filters  
+        if use_economics:
+            filtered_count = len(stations) - len(ranked)
+            st.markdown(f"**Stations after economic filtering:** {len(ranked)} out of {len(stations)}")
+            if filtered_count > 0:
+                st.warning(f"""
+                ⚠️ **{filtered_count} stations were filtered out** due to economic constraints:
+                - Max detour distance: {max_detour_km} km
+                - Max detour time: {max_detour_min} min  
+                - Min net saving: {min_net_saving_eur} €
+                
+                💡 **To see more stations:** Uncheck "Use economics-based detour decision" or adjust the values above in the sidebar.
+                """)
 
         best_uuid = None
         if best_station:
@@ -1545,6 +1569,9 @@ whether a detour is economically worthwhile.
             "route_info": route_info,
             "route_coords": route_coords,
             "params": params,
+            "fuel_code": fuel_code,  # For details page
+            "litres_to_refuel": litres_to_refuel,  # For details page
+            "debug_mode": debug_mode,  # For details page
         }
         st.session_state["last_params_hash"] = params_hash
 
@@ -1588,6 +1615,34 @@ whether a detour is economically worthwhile.
         st.info("No stations with valid predictions to display.")
     else:
         st.dataframe(df_ranked.reset_index(drop=True))
+        
+        # ----------------------------------------------------------------------
+        # Interactive station selection buttons
+        # ----------------------------------------------------------------------
+        st.markdown("---")
+        st.markdown("#### 🏆 Top 10 Stations - Click for Detailed Analysis")
+        st.caption("Select a station to open a separate page with detailed price charts and analysis")
+        
+        # Create buttons for top stations (up to 10)
+        max_buttons = min(10, len(ranked))
+        cols = st.columns(max_buttons)
+        
+        for i, station in enumerate(ranked[:max_buttons]):
+            with cols[i]:
+                station_name = station.get("tk_name") or station.get("osm_name") or f"Station {i+1}"
+                display_name = station_name[:30] + "..." if len(station_name) > 30 else station_name
+                station_uuid = _station_uuid(station)
+                
+                if st.button(
+                    f"#{i+1}: {display_name}",
+                    key=f"view_station_{i}",
+                    use_container_width=True,
+                ):
+                    # Store data for details page
+                    st.session_state["selected_station_uuid"] = station_uuid
+                    st.session_state["selected_station_data"] = station
+                    # Navigate to details page
+                    st.switch_page("pages/station_details.py")
 
     # ----------------------------------------------------------------------
     # Map visualization (only for real route mode)
