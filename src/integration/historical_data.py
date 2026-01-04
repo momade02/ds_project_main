@@ -1,497 +1,386 @@
 """
-Historical Data Module
-======================
+Module: Historical Data Access Layer.
 
-Fetches 14-day price histories from Supabase for station detail visualizations.
-Includes opening hours parsing from Tankerkönig database JSON format.
+Description:
+    This module serves as the Data Access Object (DAO) for historical fuel price information.
+    It interfaces with the Supabase 'prices' and 'stations' tables.
 
-Functions
----------
-- get_station_price_history: Fetch full price time-series for a station
-- get_opening_hours_display: Parse complex opening hours JSON into readable format
-- calculate_hourly_price_stats: Aggregate prices by hour-of-day for optimal time analysis
+    Capabilities:
+    1. Time-Series Retrieval: Fetches 14-day price windows for visualization.
+    2. Statistical Aggregation: Computes hourly averages to identify optimal refueling times.
+    3. Metadata Parsing: Decodes complex JSON bitmasks for opening hours.
 
-**FIXED FOR PANDAS 2.X:**
-- Added `utc=False` and `errors='coerce'` to pd.to_datetime()
-- This prevents "Addition/subtraction of integers and integer-arrays with Timestamp" errors
+    Critical Implementation Details:
+    - Dates are handled in local German time (as stored in DB) to avoid TZ confusion.
+    - Pandas 2.x compatibility is enforced via `utc=False`.
+    - Caching (`lru_cache`) is applied to static station metadata.
+
+Usage:
+    Used primarily by the `station_details.py` page to render charts and info cards.
 """
 
-import os
 import json
+import os
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from functools import lru_cache
+from typing import Any, Dict, List, Optional, TypeAlias, Final
 
 import pandas as pd
-from supabase import create_client
+from supabase import create_client, Client  # type: ignore
 
 from src.app.app_errors import DataAccessError, DataQualityError
 
+# ==========================================
+# Type Definitions & Constants
+# ==========================================
 
-# Initialize Supabase client (reads from environment variables)
-def _get_supabase_client():
-    """Get Supabase client from environment variables."""
+StationUUID: TypeAlias = str
+FuelType: TypeAlias = str  # 'e5', 'e10', 'diesel'
+
+# DataFrame Schema: ['date', 'price', 'price_change']
+PriceHistoryDF: TypeAlias = pd.DataFrame
+
+# DataFrame Schema: ['hour', 'avg_price', 'min_price', 'max_price', 'count']
+HourlyStatsDF: TypeAlias = pd.DataFrame
+
+VALID_FUEL_TYPES: Final[List[str]] = ["e5", "e10", "diesel"]
+DEFAULT_HISTORY_DAYS: Final[int] = 14
+DB_QUERY_LIMIT: Final[int] = 2000
+
+
+# ==========================================
+# Client Factory
+# ==========================================
+
+def _get_supabase_client() -> Client:
+    """
+    Initializes Supabase client from environment variables.
+    
+    Raises:
+        DataAccessError: If credentials are missing.
+    """
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_SECRET_KEY")
-    
+
     if not url or not key:
         raise DataAccessError(
             user_message="Database connection is not configured.",
-            remediation="Check that SUPABASE_URL and SUPABASE_SECRET_KEY are set in environment variables.",
-            details="Missing Supabase credentials in environment."
+            remediation="Set SUPABASE_URL and SUPABASE_SECRET_KEY in environment.",
+            details="Missing Supabase credentials.",
         )
-    
     return create_client(url, key)
 
 
+# ==========================================
+# Core Data Retrieval
+# ==========================================
+
 def get_station_price_history(
-    station_uuid: str,
-    fuel_type: str = "e5",
-    days: int = 14
-) -> pd.DataFrame:
+    station_uuid: StationUUID,
+    fuel_type: FuelType = "e5",
+    days: int = DEFAULT_HISTORY_DAYS
+) -> PriceHistoryDF:
     """
-    Fetch full price history for a station from Supabase.
-    
-    This retrieves ALL price records (not just snapshots at specific lags)
-    for plotting continuous time-series trends.
-    
-    Parameters
-    ----------
-    station_uuid : str
-        Tankerkönig station UUID
-    fuel_type : str
-        One of 'e5', 'e10', 'diesel'
-    days : int
-        Number of days of history to retrieve (default: 14)
-    
-    Returns
-    -------
-    pd.DataFrame
-        Columns: ['date', 'price', 'price_change']
-        Sorted by date ascending
-        Empty DataFrame if no data found
-    
-    Raises
-    ------
-    DataAccessError
-        If database connection fails
-    DataQualityError
-        If fuel_type is invalid
-    
-    Examples
-    --------
-    >>> df = get_station_price_history("abc-123", fuel_type="e5", days=7)
-    >>> df.head()
-                         date  price  price_change
-    0  2025-12-06 00:01:26   1.639             0
-    1  2025-12-06 06:15:42   1.649             1
-    2  2025-12-06 12:30:18   1.639            -1
+    Fetches raw time-series price data for a specific station.
+
+    Args:
+        station_uuid: Tankerkönig UUID.
+        fuel_type: 'e5', 'e10', or 'diesel'.
+        days: Lookback window size.
+
+    Returns:
+        pd.DataFrame: Schema ['date', 'price', 'price_change'].
+                      Sorted ascending by date.
     """
-    # Validate fuel type
-    valid_fuels = ["e5", "e10", "diesel"]
-    if fuel_type not in valid_fuels:
+    # 1. Input Validation
+    if fuel_type not in VALID_FUEL_TYPES:
         raise DataQualityError(
             user_message=f"Invalid fuel type '{fuel_type}'.",
-            remediation=f"Choose one of: {', '.join(valid_fuels)}",
-            details=f"fuel_type must be in {valid_fuels}"
+            remediation=f"Choose one of: {', '.join(VALID_FUEL_TYPES)}",
+            details=f"fuel_type must be in {VALID_FUEL_TYPES}",
         )
-    
+
     try:
-        supabase = _get_supabase_client()
-        
-        # Calculate date range (last N days)
+        client = _get_supabase_client()
+
+        # 2. Date Range Calculation (Local Time)
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
         
-        # Format dates for PostgreSQL (German time stored as-is, no timezone conversion)
+        # Strings formatted for PostgreSQL timestamp comparison
         start_str = start_date.strftime("%Y-%m-%d %H:%M:%S")
         end_str = end_date.strftime("%Y-%m-%d %H:%M:%S")
         
-        # Query Supabase
-        # Note: Database stores German local time without timezone
-        # CRITICAL: Add limit to prevent timeout on large datasets
+        # 3. Dynamic Column Selection
+        # We need the price column (e.g., 'e5') and the change column (e.g., 'e5change')
         change_col = f"{fuel_type}change"
-        
-        result = supabase.table('prices')\
-            .select(f'date, {fuel_type}, {change_col}')\
-            .eq('station_uuid', station_uuid)\
-            .gte('date', start_str)\
-            .lte('date', end_str)\
-            .order('date', desc=True)\
-            .limit(2000)\
+
+        # 4. Database Query
+        response = (
+            client.table("prices")
+            .select(f"date, {fuel_type}, {change_col}")
+            .eq("station_uuid", station_uuid)
+            .gte("date", start_str)
+            .lte("date", end_str)
+            .order("date", desc=True)  # DESC for efficiency (latest first)
+            .limit(DB_QUERY_LIMIT)
             .execute()
+        )
+
+        # 5. Schema Enforcement (Handle Empty Results)
+        if not response.data:
+            return pd.DataFrame(columns=["date", "price", "price_change"])
+
+        # 6. Transformation
+        df = pd.DataFrame(response.data)
         
-        # Convert to DataFrame
-        if not result.data:
-            # No data found - return empty DataFrame with correct schema
-            return pd.DataFrame(columns=['date', 'price', 'price_change'])
-        
-        df = pd.DataFrame(result.data)
-        
-        # Rename columns to generic names
+        # Rename to standardized schema
         df = df.rename(columns={
-            fuel_type: 'price',
-            change_col: 'price_change'
+            fuel_type: "price",
+            change_col: "price_change"
         })
+
+        # Date Parsing
+        # NOTE: utc=False is critical. The DB stores '2023-01-01 12:00:00' (German time).
+        # We want to keep it as a naive timestamp representing that wall-clock time.
+        df["date"] = pd.to_datetime(df["date"], utc=False, errors="coerce")
+
+        # Numeric Coercion & Cleanup
+        df = df[df["date"].notna()].copy()
+        df["price"] = pd.to_numeric(df["price"], errors="coerce")
+        df["price_change"] = pd.to_numeric(df["price_change"], errors="coerce").fillna(0).astype(int)
         
-        # Convert date strings to datetime (handle both formats)
-        # CRITICAL: Explicitly set utc=False for Pandas 2.x compatibility
-        # This prevents "unsupported operand type" errors with datetime arithmetic
-        df['date'] = pd.to_datetime(df['date'], utc=False, errors='coerce')
-        
-        # Remove rows with invalid dates or NULL prices
-        df = df[df['date'].notna() & df['price'].notna()].copy()
-        
-        # Ensure numeric types
-        df['price'] = pd.to_numeric(df['price'], errors='coerce')
-        df['price_change'] = pd.to_numeric(df['price_change'], errors='coerce').fillna(0).astype(int)
-        
-        # Sort by date ASCENDING (we queried DESC for efficiency, now reverse for display)
-        df = df.sort_values('date', ascending=True).reset_index(drop=True)
-        
+        # Final cleanup: drop NaN prices and sort chronological
+        df = df.dropna(subset=["price"])
+        df = df.sort_values("date", ascending=True).reset_index(drop=True)
+
         return df
-    
-    except Exception as exc:
+
+    except Exception as e:
         raise DataAccessError(
-            user_message="Failed to retrieve price history from database.",
-            remediation="Check your internet connection and database access.",
-            details=f"Error querying Supabase for station {station_uuid}: {exc}"
-        ) from exc
+            user_message="Failed to retrieve price history.",
+            remediation="Check internet connection or try again later.",
+            details=str(e),
+        ) from e
 
 
-def calculate_hourly_price_stats(df: pd.DataFrame) -> pd.DataFrame:
+def calculate_hourly_price_stats(df: PriceHistoryDF) -> HourlyStatsDF:
     """
-    Aggregate price data by hour-of-day to find optimal refueling times.
-    
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Output from get_station_price_history() with columns ['date', 'price']
-    
-    Returns
-    -------
-    pd.DataFrame
-        Columns: ['hour', 'avg_price', 'min_price', 'max_price', 'count']
-        Indexed by hour (0-23)
-    
-    Examples
-    --------
-    >>> history_df = get_station_price_history("abc-123")
-    >>> hourly_df = calculate_hourly_price_stats(history_df)
-    >>> hourly_df.loc[11]  # 11:00 AM
-    hour            11
-    avg_price     1.629
-    min_price     1.619
-    max_price     1.639
-    count            14
+    Aggregates a price history DataFrame by Hour of Day (0-23).
+
+    Returns:
+        pd.DataFrame: Indexed by 0-23, containing avg/min/max/count.
     """
+    expected_cols = ["hour", "avg_price", "min_price", "max_price", "count"]
+    
     if df.empty:
-        # Return empty DataFrame with correct schema
-        return pd.DataFrame(columns=['hour', 'avg_price', 'min_price', 'max_price', 'count'])
-    
-    # Extract hour from datetime
-    df = df.copy()
-    df['hour'] = df['date'].dt.hour
-    
-    # Aggregate by hour
-    hourly = df.groupby('hour')['price'].agg([
-        ('avg_price', 'mean'),
-        ('min_price', 'min'),
-        ('max_price', 'max'),
-        ('count', 'count')
+        return pd.DataFrame(columns=expected_cols)
+
+    # work on copy to avoid side-effects
+    work_df = df.copy()
+    work_df["hour"] = work_df["date"].dt.hour
+
+    # Aggregation
+    hourly = work_df.groupby("hour")["price"].agg([
+        ("avg_price", "mean"),
+        ("min_price", "min"),
+        ("max_price", "max"),
+        ("count", "count"),
     ]).reset_index()
-    
-    # Ensure all hours 0-23 are present (fill missing with NaN)
-    all_hours = pd.DataFrame({'hour': range(24)})
-    hourly = all_hours.merge(hourly, on='hour', how='left')
-    
-    return hourly
+
+    # Reindexing: Ensure 0-23 always exist (fill missing with NaN)
+    all_hours = pd.DataFrame({"hour": range(24)})
+    merged = all_hours.merge(hourly, on="hour", how="left")
+
+    return merged
 
 
-def get_opening_hours_display(openingtimes_json: str) -> str:
+def get_cheapest_and_most_expensive_hours(hourly_df: HourlyStatsDF) -> Dict[str, Any]:
     """
-    Parse Tankerkönig opening hours JSON into human-readable format.
-    
-    The database stores complex JSON with bitmask encoding:
-    - applicable_days: Bitmask (1=Mon, 2=Tue, 4=Wed, ..., 64=Sun)
-    - periods: List of {startp, endp} time ranges
-    
-    Examples of applicable_days bitmask:
-    - 31  = 0011111 = Mon-Fri
-    - 32  = 0100000 = Sat
-    - 64  = 1000000 = Sun
-    - 96  = 1100000 = Sat-Sun
-    - 127 = 1111111 = Mon-Sun (every day)
-    
-    Parameters
-    ----------
-    openingtimes_json : str
-        Raw JSON string from database
-    
-    Returns
-    -------
-    str
-        Human-readable opening hours (e.g., "Mon-Fri: 06:00-22:00 | Sat-Sun: 07:00-20:00")
-        Or "24/7" if always open
-        Or "Hours not available" if data is missing/corrupt
-    
-    Examples
-    --------
-    >>> json_str = '{"openingTimes": [{"applicable_days": 31, "periods": [{"startp": "06:00", "endp": "22:00"}]}]}'
-    >>> get_opening_hours_display(json_str)
-    'Mon-Fri: 06:00-22:00'
+    Analyzes hourly stats to find extrema.
+
+    Returns:
+        Dict with keys: 'cheapest_hour', 'cheapest_price', 'most_expensive_hour', ...
     """
-    if not openingtimes_json or openingtimes_json in ('{}', ''):
-        return "Hours not available"
-    
-    try:
-        # Day names (Mon=0, Tue=1, ..., Sun=6)
-        day_names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-        
-        # Parse JSON
-        data = json.loads(openingtimes_json)
-        
-        # Extract openingTimes array
-        opening_times = data.get("openingTimes", [])
-        if not opening_times:
-            return "Hours not available"
-        
-        # Check for 24/7 pattern (all days, 00:00-24:00)
-        if len(opening_times) == 1:
-            entry = opening_times[0]
-            if entry.get("applicable_days") == 127:  # All 7 days
-                periods = entry.get("periods", [])
-                if periods and len(periods) == 1:
-                    period = periods[0]
-                    if period.get("startp") == "00:00" and period.get("endp") == "24:00":
-                        return "24/7"
-        
-        # Parse each entry
-        schedule_parts = []
-        
-        for entry in opening_times:
-            applicable_days = entry.get("applicable_days", 0)
-            periods = entry.get("periods", [])
-            
-            if not periods:
-                continue
-            
-            # Decode bitmask to day names
-            active_days = []
-            for i, day_name in enumerate(day_names):
-                if applicable_days & (1 << i):
-                    active_days.append(day_name)
-            
-            if not active_days:
-                continue
-            
-            # Format day range (e.g., Mon-Fri or Sat-Sun)
-            if len(active_days) == 1:
-                day_str = active_days[0]
-            elif len(active_days) == 7:
-                day_str = "Every day"
-            elif active_days == day_names[:5]:  # Mon-Fri
-                day_str = "Mon-Fri"
-            elif active_days == day_names[5:]:  # Sat-Sun
-                day_str = "Sat-Sun"
-            else:
-                # Non-consecutive days, list them
-                day_str = ", ".join(active_days)
-            
-            # Format time periods (usually just one, but can be multiple)
-            time_ranges = []
-            for period in periods:
-                start = period.get("startp", "")
-                end = period.get("endp", "")
-                if start and end:
-                    # Clean up time format (remove :00 seconds if present)
-                    start = start[:5] if len(start) > 5 else start
-                    end = end[:5] if len(end) > 5 else end
-                    time_ranges.append(f"{start}-{end}")
-            
-            if time_ranges:
-                schedule_parts.append(f"{day_str}: {', '.join(time_ranges)}")
-        
-        if schedule_parts:
-            return " | ".join(schedule_parts)
-        else:
-            return "Hours not available"
-    
-    except (json.JSONDecodeError, KeyError, TypeError) as exc:
-        # If parsing fails, return fallback
-        return f"Hours format error"
+    if hourly_df.empty or hourly_df["avg_price"].isna().all():
+        return {
+            "cheapest_hour": None,
+            "cheapest_price": None,
+            "most_expensive_hour": None,
+            "most_expensive_price": None,
+        }
+
+    # Find indices of min and max average price
+    idx_min = hourly_df["avg_price"].idxmin()
+    idx_max = hourly_df["avg_price"].idxmax()
+
+    row_min = hourly_df.loc[idx_min]
+    row_max = hourly_df.loc[idx_max]
+
+    return {
+        "cheapest_hour": int(row_min["hour"]),
+        "cheapest_price": float(row_min["avg_price"]),
+        "most_expensive_hour": int(row_max["hour"]),
+        "most_expensive_price": float(row_max["avg_price"]),
+    }
 
 
-
-
-# ---------------------------------------------------------------------
-# Station metadata (name/brand/address/opening times) from Supabase
-# ---------------------------------------------------------------------
-from functools import lru_cache
+# ==========================================
+# Metadata & Utils
+# ==========================================
 
 @lru_cache(maxsize=4096)
-def get_station_metadata(station_uuid: str) -> dict:
-    """Fetch station metadata from Supabase `stations` table for one uuid.
-
-    Returns a dict with best-effort fields (missing values may be None/empty).
-    Raises DataAccessError on connectivity/query errors.
+def get_station_metadata(station_uuid: StationUUID) -> Dict[str, Any]:
+    """
+    Fetches static station details (Name, Address, Brand).
+    Cached in memory to reduce DB calls for frequently accessed stations.
     """
     if not station_uuid:
-        raise DataQualityError(
-            user_message="Station id is missing.",
-            remediation="Select a valid station and try again."
-        )
+        raise DataQualityError("Station UUID is missing.")
 
     client = _get_supabase_client()
     try:
-        resp = (
+        response = (
             client.table("stations")
-            .select(
-                "uuid,name,brand,street,house_number,post_code,city,latitude,longitude,openingtimes_json"
-            )
+            .select("uuid,name,brand,street,house_number,post_code,city,latitude,longitude,openingtimes_json")
             .eq("uuid", station_uuid)
             .limit(1)
             .execute()
         )
     except Exception as e:
-        raise DataAccessError(
-            user_message="Could not load station metadata from the database.",
-            remediation="Check Supabase connectivity and credentials (.env).",
-            debug=e
-        )
+        raise DataAccessError("Failed to fetch station metadata.", debug=e)
 
-    data = getattr(resp, "data", None)
+    data = response.data
     if not data:
-        # Not found is not fatal; return minimal info
+        # Fallback for valid ID but missing record
         return {"uuid": station_uuid}
 
-    row = data[0] if isinstance(data, list) else data
-    # Ensure uuid is present
+    row = data[0]
+    # Ensure UUID is explicitly set in result even if DB returns weirdness
     row["uuid"] = row.get("uuid") or station_uuid
     return row
-def get_cheapest_and_most_expensive_hours(hourly_df: pd.DataFrame) -> Dict[str, any]:
-    """
-    Identify the cheapest and most expensive hours to refuel.
-    
-    Parameters
-    ----------
-    hourly_df : pd.DataFrame
-        Output from calculate_hourly_price_stats()
-    
-    Returns
-    -------
-    dict
-        {
-            'cheapest_hour': int (0-23),
-            'cheapest_price': float,
-            'most_expensive_hour': int (0-23),
-            'most_expensive_price': float
-        }
-        Returns None values if data is insufficient
-    
-    Examples
-    --------
-    >>> hourly_df = calculate_hourly_price_stats(history_df)
-    >>> optimal = get_cheapest_and_most_expensive_hours(hourly_df)
-    >>> print(f"Best time: {optimal['cheapest_hour']:02d}:00 (€{optimal['cheapest_price']:.3f})")
-    Best time: 11:00 (€1.619)
-    """
-    if hourly_df.empty or hourly_df['avg_price'].isna().all():
-        return {
-            'cheapest_hour': None,
-            'cheapest_price': None,
-            'most_expensive_hour': None,
-            'most_expensive_price': None
-        }
-    
-    # Find cheapest hour
-    cheapest_idx = hourly_df['avg_price'].idxmin()
-    cheapest_row = hourly_df.loc[cheapest_idx]
-    
-    # Find most expensive hour
-    most_expensive_idx = hourly_df['avg_price'].idxmax()
-    most_expensive_row = hourly_df.loc[most_expensive_idx]
-    
-    return {
-        'cheapest_hour': int(cheapest_row['hour']),
-        'cheapest_price': float(cheapest_row['avg_price']),
-        'most_expensive_hour': int(most_expensive_row['hour']),
-        'most_expensive_price': float(most_expensive_row['avg_price'])
-    }
 
 
-# =============================================================================
-# TESTING / EXAMPLE USAGE
-# =============================================================================
+def get_opening_hours_display(openingtimes_json: str) -> str:
+    """
+    Parses Tankerkönig JSON bitmasks into readable strings.
+
+    Logic:
+        The 'applicable_days' field is a 7-bit mask:
+        1=Mon, 2=Tue, 4=Wed, 8=Thu, 16=Fri, 32=Sat, 64=Sun.
+        Examples: 31 (binary 0011111) = Mon-Fri.
+    """
+    if not openingtimes_json or openingtimes_json in ("{}", ""):
+        return "Hours not available"
+
+    try:
+        data = json.loads(openingtimes_json)
+        opening_times = data.get("openingTimes", [])
+        
+        if not opening_times:
+            return "Hours not available"
+
+        # Check for 24/7 shortcut (mask 127 = 1111111 = All Days)
+        if len(opening_times) == 1:
+            entry = opening_times[0]
+            if entry.get("applicable_days") == 127:
+                periods = entry.get("periods", [])
+                if len(periods) == 1:
+                    p = periods[0]
+                    if p.get("startp") == "00:00" and p.get("endp") == "24:00":
+                        return "24/7"
+
+        # Standard Parsing
+        day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        schedule_parts = []
+
+        for entry in opening_times:
+            mask = entry.get("applicable_days", 0)
+            periods = entry.get("periods", [])
+
+            if not periods:
+                continue
+
+            # Bitwise decode of days
+            active_days = []
+            for i, name in enumerate(day_names):
+                # Check if i-th bit is set (e.g. i=0 is 1<<0=1, i=1 is 1<<1=2)
+                if mask & (1 << i):
+                    active_days.append(name)
+
+            if not active_days:
+                continue
+
+            # Text Formatting for Days
+            if len(active_days) == 7:
+                day_str = "Every day"
+            elif active_days == day_names[:5]:
+                day_str = "Mon-Fri"
+            elif active_days == day_names[5:]:
+                day_str = "Sat-Sun"
+            elif len(active_days) == 1:
+                day_str = active_days[0]
+            else:
+                day_str = ", ".join(active_days)
+
+            # Text Formatting for Times
+            time_strs = []
+            for p in periods:
+                s = p.get("startp", "")[:5]  # Truncate seconds '06:00:00' -> '06:00'
+                e = p.get("endp", "")[:5]
+                if s and e:
+                    time_strs.append(f"{s}-{e}")
+
+            if time_strs:
+                schedule_parts.append(f"{day_str}: {', '.join(time_strs)}")
+
+        return " | ".join(schedule_parts) if schedule_parts else "Hours not available"
+
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return "Hours format error"
+
+
+# ==========================================
+# Integration Test
+# ==========================================
 
 if __name__ == "__main__":
     """
-    Example usage showing how to fetch and analyze station price history.
-    
-    NOTE: Requires valid Supabase credentials in environment:
-        export SUPABASE_URL="https://your-project.supabase.co"
-        export SUPABASE_SECRET_KEY="your-service-role-key"
+    Direct Execution Test.
+    Run: python src/app/integration/historical_data.py
     """
     import sys
+    print("=== Historical Data Module Test ===")
     
-    print("=" * 70)
-    print("HISTORICAL DATA MODULE - TEST RUN")
-    print("=" * 70)
-    
-    # Test with a real station UUID (replace with your own)
-    test_uuid = "51d4b6fd-a095-1aa0-e100-80009459e03a"
-    test_fuel = "e5"
-    
-    print(f"\nTest Station UUID: {test_uuid}")
-    print(f"Fuel Type: {test_fuel.upper()}")
-    print(f"Days of history: 14")
+    # Use a known test ID or random one
+    TEST_UUID = "51d4b6fd-a095-1aa0-e100-80009459e03a"
     
     try:
-        # Fetch price history
-        print("\n[1] Fetching price history...")
-        df_history = get_station_price_history(test_uuid, fuel_type=test_fuel, days=14)
+        print(f"1. Fetching Metadata for {TEST_UUID}...")
+        meta = get_station_metadata(TEST_UUID)
+        print(f"   Name: {meta.get('name', 'Unknown')}")
+        print(f"   Opening Hours: {get_opening_hours_display(meta.get('openingtimes_json', ''))}")
+
+        print("\n2. Fetching E5 Price History (14 days)...")
+        hist = get_station_price_history(TEST_UUID, "e5", 14)
+        print(f"   Retrieved {len(hist)} records.")
+        if not hist.empty:
+            print(f"   Latest: {hist.iloc[-1]['date']} -> {hist.iloc[-1]['price']}")
+
+        print("\n3. Calculating Stats...")
+        stats = calculate_hourly_price_stats(hist)
+        best = get_cheapest_and_most_expensive_hours(stats)
         
-        if df_history.empty:
-            print("✗ No data found for this station.")
-            sys.exit(1)
-        
-        print(f"✓ Retrieved {len(df_history)} price records")
-        print(f"  Date range: {df_history['date'].min()} to {df_history['date'].max()}")
-        print(f"  Price range: €{df_history['price'].min():.3f} - €{df_history['price'].max():.3f}")
-        
-        # Calculate hourly statistics
-        print("\n[2] Calculating hourly statistics...")
-        hourly_df = calculate_hourly_price_stats(df_history)
-        print(f"✓ Calculated stats for {hourly_df['count'].notna().sum()} hours")
-        
-        # Find optimal times
-        print("\n[3] Finding optimal refueling times...")
-        optimal = get_cheapest_and_most_expensive_hours(hourly_df)
-        
-        if optimal['cheapest_hour'] is not None:
-            print(f"✓ Best time to refuel:")
-            print(f"  {optimal['cheapest_hour']:02d}:00 - Average price: €{optimal['cheapest_price']:.3f}/L")
-            print(f"✗ Worst time to refuel:")
-            print(f"  {optimal['most_expensive_hour']:02d}:00 - Average price: €{optimal['most_expensive_price']:.3f}/L")
-            
-            savings = optimal['most_expensive_price'] - optimal['cheapest_price']
-            print(f"\n💰 Potential savings: €{savings:.3f}/L ({savings/optimal['cheapest_price']*100:.1f}%)")
+        if best["cheapest_hour"] is not None:
+            print(f"   Best Time: {best['cheapest_hour']:02d}:00 "
+                  f"(@ {best['cheapest_price']:.3f})")
+            print(f"   Worst Time: {best['most_expensive_hour']:02d}:00 "
+                  f"(@ {best['most_expensive_price']:.3f})")
         else:
-            print("✗ Insufficient data for hourly analysis")
-        
-        print("\n" + "=" * 70)
-        print("TEST COMPLETE")
-        print("=" * 70)
-    
-    except DataAccessError as exc:
-        print(f"\n✗ Database Error: {exc.user_message}")
-        print(f"  Remediation: {exc.remediation}")
-        sys.exit(1)
-    
-    except DataQualityError as exc:
-        print(f"\n✗ Data Quality Error: {exc.user_message}")
-        print(f"  Remediation: {exc.remediation}")
-        sys.exit(1)
-    
-    except Exception as exc:
-        print(f"\n✗ Unexpected Error: {exc}")
+            print("   Insufficient data for stats.")
+            
+        print("\n✓ Test Complete.")
+
+    except Exception as e:
+        print(f"\n✗ Test Failed: {e}")
         sys.exit(1)

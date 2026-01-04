@@ -1,1660 +1,644 @@
 """
-Route-Tankerkoenig Integration (Updated for Google APIs)
-=========================================================
+Module: Route ↔ Fuel Price Integration Pipeline.
 
-PURPOSE:
---------
-This script is the bridge between route_stations.py and the fuel price prediction model.
-It takes the output from route_stations.py (gas stations along a route with ETAs) and:
-1. Matches each station to a Tankerkoenig station in our Supabase database
-2. Retrieves historical prices (yesterday, 2 days, 3 days, 7 days ago) from Supabase
-3. Optionally fetches real-time prices from Tankerkoenig API
-4. Calculates time cells (0-47) for the model
-5. Returns data in the format the prediction model expects
+Description:
+    This module bridges the Geospatial domain (Google Maps Routes) with the
+    Economic domain (Tankerkönig Fuel Prices).
 
-WHAT IS A TIME CELL?
---------------------
-The prediction model uses 30-minute intervals to represent time of day.
-- Cell 0 = 00:00 - 00:29
-- Cell 1 = 00:30 - 00:59
-- Cell 2 = 01:00 - 01:29
-- ...
-- Cell 47 = 23:30 - 23:59
+    It performs the following high-level transformation:
+    [Route Coordinates & ETAs]
+           ↓
+    [Match to Tankerkönig Stations (Spatial KD-Tree)]
+           ↓
+    [Enrich with Historical Prices (Supabase Batch Queries)]
+           ↓
+    [Enrich with Real-time Prices (Optional API Call)]
+           ↓
+    [Feature Engineering (Time Cells, Lags)]
+           ↓
+    [Model-Ready Feature Vectors]
 
-For example, if ETA is 14:35, the time cell is 29 (14*2 + 1 = 29, because 35 >= 30).
-
-HOW TO USE:
------------
-See simple_usage_guide.ipynb for examples and usage patterns.
-
-CONFIGURATION:
---------------
-Required environment variables in .env file:
-- GOOGLE_MAPS_API_KEY: Your Google Maps API key (for routing)
-- SUPABASE_URL: Your Supabase project URL
-- SUPABASE_SECRET_KEY: Your Supabase service role key
-- TANKERKOENIG_API_KEY: Your Tankerkoenig API key (only needed if use_realtime=True)
-
-PERFORMANCE OPTIMIZATIONS:
---------------------------
-- Batch database queries (1 query instead of 20+ per route)
-- Connection pooling for Supabase
-- Parallel API calls for real-time prices
-- Caching of station data
-
-IMPORTS FROM route_stations.py:
--------------------------------
-This script imports the following from route_stations.py:
-- google_geocode_structured: Convert addresses to coordinates
-- google_route_driving_car: Calculate route between two points
-- google_places_fuel_along_route: Find fuel stations along route (includes ETAs)
-- environment_check: Validate API keys are set
-
+Usage:
+    The primary entrypoint is `get_fuel_prices_for_route(...)`.
 """
 
-# =============================================================================
-# SECTION 1: IMPORTS AND CONFIGURATION
-# =============================================================================
-
+import logging
 import os
 import sys
 import time
-import requests
-import pandas as pd
-import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Tuple, Any
-from geopy.distance import geodesic
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from src.app.app_errors import ConfigError, ExternalServiceError, DataAccessError, DataQualityError
+from typing import Any, Dict, List, Optional, Tuple, TypeAlias, Final, Set
 
-# Flag to track if route_stations.py functions were successfully imported
-_ROUTE_FUNCTIONS_IMPORTED = False
+import numpy as np
+import pandas as pd
+import requests
+from scipy.spatial import cKDTree  # type: ignore
 
-# =============================================================================
-# SECTION 1.1: SETUP PYTHON PATH FOR route_stations.py
-# =============================================================================
-# This ensures Python can find route_stations.py regardless of where this script is located
-# Why needed: route_stations.py is currently in the project root, not in src/
-# This adds the root to Python's search path
+# Custom Error Handling
+from src.app.app_errors import (
+    ConfigError,
+    DataAccessError,
+    DataQualityError,
+    ExternalServiceError,
+)
 
+# --- Dynamic Import Setup for route_stations.py ---
+# Ensures we can import the sibling module regardless of execution context
 try:
-    # Get the directory where this file is located
-    # Example: /project/src/integration/route_tankerkoenig_integration.py
-    project_root = os.path.dirname(os.path.abspath(__file__))
-    
-    # If we're in a src/ subdirectory, go up to project root
-    if 'src' in project_root:
-        # Go up 2 levels: src/integration → src → project root
-        project_root = os.path.dirname(os.path.dirname(project_root))
-    
-    # Add project root to Python's module search path
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
-    
-    # Import functions from route_stations.py
-    # These have been updated from ORS (OpenRouteService) to Google APIs
+    _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+    if "src" in _PROJECT_ROOT:
+        _PROJECT_ROOT = os.path.dirname(os.path.dirname(_PROJECT_ROOT))
+    if _PROJECT_ROOT not in sys.path:
+        sys.path.insert(0, _PROJECT_ROOT)
+
     from route_stations import (
-        google_geocode_structured,      # Geocode address to lat/lon
-        google_route_driving_car,       # Calculate driving route
-        google_places_fuel_along_route, # Find fuel stations along route (includes ETAs)
-        environment_check                # Validate API keys
+        environment_check,
+        google_geocode_structured,
+        google_places_fuel_along_route,
+        google_route_driving_car,
     )
-    _ROUTE_FUNCTIONS_IMPORTED = True
-    
-except ImportError as e:
-    # If import fails, functions will raise an error when called
-    print(f"WARNING: Could not import from route_stations.py: {e}")
-    print("Some functions will not be available.")
-    pass
 
-# =============================================================================
-# SECTION 1.2: LOAD API KEYS AND CREDENTIALS
-# =============================================================================
+    _ROUTE_FUNCTIONS_AVAILABLE = True
+except ImportError:
+    print("WARNING: 'route_stations.py' not found. Integration features disabled.")
+    _ROUTE_FUNCTIONS_AVAILABLE = False
 
-# Use environment_check() from route_stations.py to validate Google API key.
-# Side-effect free: environment loading is done by entrypoints (Streamlit/CLI).
+
+# ==========================================
+# Type Definitions (LLM Context Hints)
+# ==========================================
+
+# A raw station matched from Google/OSM logic
+InputStationDict: TypeAlias = Dict[str, Any]
+
+# A dictionary containing price data: {'e5': 1.70, 'e10': ..., 'diesel': ...}
+FuelPriceDict: TypeAlias = Dict[str, Optional[float]]
+
+# A nested dictionary for historical lags: {'1d': FuelPriceDict, '7d': ...}
+PriceHistoryDict: TypeAlias = Dict[str, FuelPriceDict]
+
+# The final, fully enriched dictionary ready for the prediction model
+StationFeatureDict: TypeAlias = Dict[str, Any]
+
+
+# ==========================================
+# Configuration & Constants
+# ==========================================
+
+# Supabase Credentials
+SUPABASE_URL: Final[Optional[str]] = os.getenv("SUPABASE_URL")
+SUPABASE_SECRET_KEY: Final[Optional[str]] = os.getenv("SUPABASE_SECRET_KEY")
+
+# Tankerkönig API (Real-time only)
+TANKERKOENIG_API_KEY: Final[Optional[str]] = os.getenv("TANKERKOENIG_API_KEY")
+TK_API_BATCH_SIZE: Final[int] = 10
+TK_API_DELAY_SEC: Final[float] = 0.5
+
+# Caching Configuration
+CACHE_DURATION_SEC: Final[int] = 3600
+_CACHED_STATIONS_DF: Optional[pd.DataFrame] = None
+_CACHE_TIMESTAMP: Optional[float] = None
+
+# Google API Key Loading
 try:
-    if _ROUTE_FUNCTIONS_IMPORTED:
+    if _ROUTE_FUNCTIONS_AVAILABLE:
         GOOGLE_API_KEY = environment_check()
     else:
-        GOOGLE_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
-        if not GOOGLE_API_KEY:
-            raise ConfigError(
-                user_message="Google Maps API key is not configured.",
-                remediation="Set GOOGLE_MAPS_API_KEY in your environment (or load it via .env in the entrypoint) and restart.",
-                details="Missing environment variable: GOOGLE_MAPS_API_KEY",
-            )
-except ConfigError:
-    raise
-except Exception as exc:
-    raise ConfigError(
-        user_message="Failed to initialize Google API configuration.",
-        remediation="Check your environment variables and restart the app.",
-        details=str(exc),
-    ) from exc
+        GOOGLE_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY") or ""
+except Exception:
+    GOOGLE_API_KEY = ""
 
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY")
-
-# Tankerkoenig API credentials for real-time prices
-# Only needed if use_realtime=True
-TANKERKOENIG_API_KEY = os.getenv("TANKERKOENIG_API_KEY")
-
-# API configuration
-# These limits prevent us from getting blocked by the Tankerkoenig API
-API_BATCH_SIZE = 10  # Tankerkoenig allows max 10 station IDs per request
-API_BATCH_DELAY = 0.5  # Wait 0.5 seconds between batches to respect rate limits
-
-# =============================================================================
-# CACHING FOR PERFORMANCE
-# =============================================================================
-# Cache station data to avoid reloading 17,000+ stations on every request
-# Stations rarely change (maybe once per day), so caching is safe
-_CACHED_STATIONS = None  # Will hold the DataFrame
-_CACHE_TIME = None  # Timestamp when cache was created
-CACHE_DURATION = 3600  # Cache validity: 1 hour (in seconds)
-
-
-# =============================================================================
-# SECTION 2: TIME CELL CALCULATIONS
-# =============================================================================
+# ==========================================
+# Section 1: Feature Engineering (Time)
+# ==========================================
 
 def calculate_time_cell(eta_string: str) -> int:
     """
-    Calculate the time cell (0-47) from an ETA timestamp.
-    
-    Time cells are 30-minute intervals used by the prediction model:
-    - Cell 0 = 00:00-00:29
-    - Cell 1 = 00:30-00:59
-    - ...
-    - Cell 47 = 23:30-23:59
-    
+    Converts an ISO timestamp into a 30-minute 'Time Cell' index (0-47).
+
+    Logic:
+        Cell 0  = 00:00 - 00:29
+        Cell 1  = 00:30 - 00:59
+        ...
+        Cell 47 = 23:30 - 23:59
+
+    Formula:
+        cell = hour * 2 + (1 if minute >= 30 else 0)
+
     Args:
-        eta_string: ISO format datetime string (e.g., "2025-11-20T14:35:49.644499")
-                   Can include or exclude microseconds
-    
+        eta_string: ISO 8601 string (e.g., "2025-11-20T14:35:00")
+
     Returns:
-        int: Time cell number (0-47)
-    
-    Examples:
-        "2025-11-20T00:15:00" → 0  (00:00-00:29)
-        "2025-11-20T00:45:00" → 1  (00:30-00:59)
-        "2025-11-20T14:35:49" → 29 (14:30-14:59)
-        "2025-11-20T23:45:00" → 47 (23:30-23:59)
-    
-    Algorithm:
-        1. Parse the ISO timestamp to get hour and minute
-        2. Calculate cell = hour * 2 + (1 if minute >= 30 else 0)
+        int: The integer cell index.
     """
-    # Parse the ETA string into a datetime object
-    # Handle multiple formats:
-    # - "2025-11-20T14:35:49"
-    # - "2025-11-20T14:35:49.644499"
-    # - "2025-12-05T16:34:34.408960+01:00" (with timezone)
-    
     try:
-        # Remove timezone info if present (everything after + or -)
-        # "2025-12-05T16:34:34.408960+01:00" → "2025-12-05T16:34:34.408960"
-        if '+' in eta_string or eta_string.count('-') > 2:
-            # Find timezone offset
-            if '+' in eta_string:
-                eta_string = eta_string.split('+')[0]
-            else:
-                # Handle negative timezone like "-05:00"
-                parts = eta_string.split('-')
-                if len(parts) > 3:  # Date has dashes + timezone has dash
-                    eta_string = '-'.join(parts[:3])
-        
-        # Now parse without timezone
-        if '.' in eta_string:
-            # Format with microseconds: "2025-11-20T14:35:49.644499"
-            dt = datetime.strptime(eta_string, "%Y-%m-%dT%H:%M:%S.%f")
+        # Robust parsing: remove timezone offsets if present to focus on local time
+        clean_str = eta_string
+        if "+" in clean_str:
+            clean_str = clean_str.split("+")[0]
+        elif clean_str.count("-") > 2:  # Negative offset case
+            parts = clean_str.split("-")
+            clean_str = "-".join(parts[:3])
+
+        if "." in clean_str:
+            dt = datetime.strptime(clean_str, "%Y-%m-%dT%H:%M:%S.%f")
         else:
-            # Format without microseconds: "2025-11-20T14:35:49"
-            dt = datetime.strptime(eta_string, "%Y-%m-%dT%H:%M:%S")
+            dt = datetime.strptime(clean_str, "%Y-%m-%dT%H:%M:%S")
+
+        return dt.hour * 2 + (1 if dt.minute >= 30 else 0)
+
     except ValueError as e:
-        print(f"WARNING: Could not parse ETA '{eta_string}': {e}")
-        return 0  # Default to cell 0 if parsing fails
-    
-    # Extract hour and minute
-    hour = dt.hour
-    minute = dt.minute
-    
-    # Calculate time cell
-    # Each hour has 2 cells (0-29 minutes = first half, 30-59 minutes = second half)
-    # Examples:
-    # - 14:15 → cell 28 (14 * 2 + 0)
-    # - 14:35 → cell 29 (14 * 2 + 1)
-    cell = hour * 2 + (1 if minute >= 30 else 0)
-    
-    return cell
+        print(f"WARNING: Time parse error for '{eta_string}': {e}")
+        return 0
 
 
 def get_cell_time_range(cell: int) -> Tuple[str, str]:
     """
-    Get the start and end time for a given time cell.
-    
-    This is useful for querying historical prices - we need to find
-    prices that were active during a specific 30-minute window.
-    
+    Returns the (start_time, end_time) strings for a given time cell.
+    Used for database queries to find prices valid within that window.
+
     Args:
-        cell: Time cell number (0-47)
-    
+        cell: 0-47 index.
+
     Returns:
-        Tuple of (start_time, end_time) as strings in "HH:MM:SS" format
-    
-    Examples:
-        0 → ("00:00:00", "00:29:59")
-        29 → ("14:30:00", "14:59:59")
-        47 → ("23:30:00", "23:59:59")
-    
-    Algorithm:
-        1. Calculate hour = cell // 2 (integer division)
-        2. Calculate minute offset = 30 if cell is odd, else 0
-        3. Start time = hour:minute:00
-        4. End time = hour:minute+29:59
+        Tuple[str, str]: ("HH:MM:00", "HH:MM:59")
     """
-    # Calculate the hour (0-23)
     hour = cell // 2
-    
-    # Calculate the minute offset (0 for first half-hour, 30 for second half-hour)
-    minute_offset = 30 if cell % 2 == 1 else 0
-    
-    # Build time strings
-    start_time = f"{hour:02d}:{minute_offset:02d}:00"
-    end_time = f"{hour:02d}:{minute_offset + 29:02d}:59"
-    
-    return start_time, end_time
+    minute = 30 if cell % 2 == 1 else 0
+    return (
+        f"{hour:02d}:{minute:02d}:00",
+        f"{hour:02d}:{minute+29:02d}:59",
+    )
 
 
-# =============================================================================
-# SECTION 3: STATION MATCHING (OSM ↔ TANKERKOENIG)
-# =============================================================================
+# ==========================================
+# Section 2: Spatial Matching (KD-Tree)
+# ==========================================
 
 def match_coordinates_progressive(
-    osm_lat: float,
-    osm_lon: float,
+    target_lat: float,
+    target_lon: float,
     stations_df: pd.DataFrame,
-    thresholds: List[int] = [25, 50, 100]
-) -> Optional[Dict]:
+    thresholds_meters: List[int] = [25, 50, 100],
+) -> Optional[Dict[str, Any]]:
     """
-    Match an OSM fuel station to a Tankerkoenig station using progressive distance thresholds.
-    
-    OPTIMIZED VERSION using spatial index (KD-tree) for fast nearest-neighbor lookup.
-    
-    Why KD-tree?
-    - OLD: Check distance to ALL 17,689 stations (slow!)
-    - NEW: Use spatial index to only check nearby stations (fast!)
-    - Speed: 100x faster
-    
-    Why progressive thresholds?
-    - GPS coordinates from different sources may have slight variations
-    - Try 25m first (high confidence) → 50m → 100m
-    
+    Finds the nearest Tankerkönig station using a KD-Tree spatial index.
+
+    Optimization:
+        The KD-Tree is built once and cached as an attribute `_spatial_index`
+        on the DataFrame object itself. This makes lookups O(log N) instead
+        of O(N).
+
     Args:
-        osm_lat, osm_lon: Coordinates from OpenStreetMap
-        stations_df: DataFrame of all Tankerkoenig stations
-        thresholds: Distance thresholds in meters (default: [25, 50, 100])
-    
+        target_lat, target_lon: Coordinates to match.
+        stations_df: Master list of stations.
+        thresholds_meters: Acceptable match radii.
+
     Returns:
-        Dictionary with matched station info, or None if no match
+        Dict matched station data or None.
     """
-    from scipy.spatial import cKDTree
-    
-    # Build KD-tree once per DataFrame (cache it)
-    # Store as a private attribute to avoid pandas warning
-    if not hasattr(stations_df, '_spatial_index'):
-        # Build spatial index (one-time cost)
-        coords_rad = np.radians(stations_df[['latitude', 'longitude']].values)
-        kdtree = cKDTree(coords_rad)
-        # Store in object's __dict__ to avoid pandas warning
-        object.__setattr__(stations_df, '_spatial_index', kdtree)
-    else:
-        kdtree = object.__getattribute__(stations_df, '_spatial_index')
-    
-    # Query point in radians
-    query_point = np.radians([osm_lat, osm_lon])
-    
-    # Find nearest neighbor using KD-tree
-    distance_rad, idx = kdtree.query(query_point, k=1)
-    
-    # Convert distance from radians to meters
-    # Earth radius ≈ 6371 km
-    distance_m = distance_rad * 6371000
-    
-    # Get the closest station
+    # Lazy-load spatial index
+    if not hasattr(stations_df, "_spatial_index"):
+        coords_rad = np.radians(stations_df[["latitude", "longitude"]].values)
+        # Store as private attribute to avoid pandas serialization warnings
+        object.__setattr__(stations_df, "_spatial_index", cKDTree(coords_rad))
+
+    kdtree: cKDTree = object.__getattribute__(stations_df, "_spatial_index")  # type: ignore
+
+    # Query nearest neighbor
+    query_point = np.radians([target_lat, target_lon])
+    dist_rad, idx = kdtree.query(query_point, k=1)
+
+    # Convert radians to meters (Earth Radius ~ 6371km)
+    dist_meters = dist_rad * 6371000
     closest_station = stations_df.iloc[idx]
-    
-    # Try each threshold
-    for threshold in thresholds:
-        if distance_m <= threshold:
+
+    # Check against thresholds
+    for threshold in thresholds_meters:
+        if dist_meters <= threshold:
             return {
-                'station_uuid': closest_station['uuid'],
-                'tk_name': closest_station['name'],
-                'brand': closest_station['brand'],
-                'city': closest_station['city'],
-                'latitude': closest_station['latitude'],
-                'longitude': closest_station['longitude'],
-                'match_distance_m': round(distance_m, 2),
-                'match_threshold_m': threshold
+                "station_uuid": closest_station["uuid"],
+                "tk_name": closest_station["name"],
+                "brand": closest_station["brand"],
+                "city": closest_station["city"],
+                "latitude": closest_station["latitude"],
+                "longitude": closest_station["longitude"],
+                "match_distance_m": round(dist_meters, 2),
             }
-    
-    # No match within any threshold
+
     return None
 
 
-# =============================================================================
-# SECTION 4: DATABASE ACCESS (SUPABASE)
-# =============================================================================
+# ==========================================
+# Section 3: Data Access (Supabase & API)
+# ==========================================
 
-def load_all_stations_from_supabase(force_reload: bool = False) -> pd.DataFrame:
+def load_all_stations_from_supabase() -> pd.DataFrame:
     """
-    Load all fuel stations from the Supabase 'stations' table WITH CACHING.
-    
-    PERFORMANCE OPTIMIZATION:
-    - First call: ~5-15 seconds (loads from database)
-    - Subsequent calls: <0.1 seconds (uses cached data)
-    - Cache expires after 1 hour (stations rarely change)
-    
-    Why caching?
-    - Station data rarely changes (new stations added maybe daily)
-    - Loading 17,688 stations takes 5-15 seconds
-    - Most routes will be calculated multiple times
-    - Caching saves ~10 seconds per request after the first one
-    
-    Why pagination?
-    - Supabase REST API limits response size
-    - Can't fetch all ~17,651 stations in one request
-    - Solution: Fetch in batches of 1,000, then combine
-    
-    Data validation:
-    - Filters out stations with missing or invalid coordinates
-    - Ensures latitude is between -90 and 90
-    - Ensures longitude is between -180 and 180
-    
-    Args:
-        force_reload: If True, ignore cache and reload from database
-    
-    Returns:
-        pd.DataFrame: All valid stations with columns:
-            - uuid: Tankerkoenig station UUID
-            - name: Station name
-            - brand: Brand (e.g., "ARAL", "Shell", "Esso")
-            - street, house_number, post_code, city: Address info
-            - latitude, longitude: GPS coordinates
-            - first_active: When station first appeared in dataset
-            - openingtimes_json: Opening hours (JSON format)
-    
-    Raises:
-        Exception: If database connection fails or required environment variables are missing
-    
-    Performance:
-        - First call: ~5-15 seconds (database query + processing)
-        - Cached calls: <0.1 seconds
-        - Cache expires: After 1 hour
+    Loads master station list with in-memory caching (1 hour TTL).
+    Handles pagination for large datasets (>17k records).
     """
-    global _CACHED_STATIONS, _CACHE_TIME
-    
-    # Check if we have valid cached data
-    if not force_reload and _CACHED_STATIONS is not None and _CACHE_TIME is not None:
-        # Calculate cache age
-        cache_age = time.time() - _CACHE_TIME
-        
-        # If cache is still valid, use it
-        if cache_age < CACHE_DURATION:
-            print(f"✓ Using cached station data ({len(_CACHED_STATIONS):,} stations, age: {int(cache_age)}s)")
-            return _CACHED_STATIONS
-        else:
-            print(f"Cache expired (age: {int(cache_age)}s > {CACHE_DURATION}s), reloading...")
-    
-    # Cache miss or expired - load from database
-    from supabase import create_client
-    
-    # Create Supabase client
-    # This establishes a connection to our PostgreSQL database
-    supabase = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
-    
-    print("Loading all stations from Supabase...")
-    
-    # Pagination parameters
-    # Supabase limits responses, so we fetch in chunks
-    page_size = 1000  # Number of records per request
-    all_stations = []  # Will collect all stations here
-    
-    # Loop through pages until we get all stations
-    # range(0, 20000, 1000) = [0, 1000, 2000, ..., 19000]
-    # This gives us up to 20,000 stations (more than enough for our ~17,651)
+    global _CACHED_STATIONS_DF, _CACHE_TIMESTAMP
+
+    # Check Cache
+    if (
+        _CACHED_STATIONS_DF is not None
+        and _CACHE_TIMESTAMP
+        and (time.time() - _CACHE_TIMESTAMP < CACHE_DURATION_SEC)
+    ):
+        print(f"✓ Using cached stations ({len(_CACHED_STATIONS_DF):,} records)")
+        return _CACHED_STATIONS_DF
+
+    # Load from DB
+    from supabase import create_client  # type: ignore
+
+    if not SUPABASE_URL or not SUPABASE_SECRET_KEY:
+        raise ConfigError("Supabase credentials missing.")
+
+    client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
+    print("Loading stations from Supabase...")
+
+    all_rows = []
+    page_size = 1000
+    # Loop safely up to a reasonable limit (20k)
     for i in range(0, 20000, page_size):
-        # Fetch one page of results
-        # .range(i, i + page_size - 1) fetches records from index i to i+999
-        # Example: .range(0, 999) gets the first 1,000 records
-        result = supabase.table('stations').select('*').range(i, i + page_size - 1).execute()
-        
-        # If no data returned, we've reached the end
-        if not result.data:
+        res = (
+            client.table("stations")
+            .select("*")
+            .range(i, i + page_size - 1)
+            .execute()
+        )
+        if not res.data:
             break
-        
-        # Add this batch to our collection
-        all_stations.extend(result.data)
-        
-        # Progress indicator every 5000 stations
-        # This lets users know the script is working and not stuck
-        if len(all_stations) % 5000 == 0:
-            print(f"  Loaded {len(all_stations):,} stations...")
-    
-    # Convert to pandas DataFrame for easier manipulation
-    df = pd.DataFrame(all_stations)
-    
-    # Data validation: Remove stations with invalid coordinates
-    # Why needed:
-    # - Some stations might have missing lat/lon (NaN values)
-    # - Some might have impossible values (e.g., lat > 90°)
-    # - These would cause errors in distance calculations
-    
-    original_count = len(df)
-    
-    # Filter out invalid coordinates
-    df = df[
-        df['latitude'].notna() &   # Not NaN
-        df['longitude'].notna() &  # Not NaN
-        (df['latitude'].abs() <= 90) &   # Valid latitude range
-        (df['longitude'].abs() <= 180)   # Valid longitude range
-    ]
-    
-    invalid_count = original_count - len(df)
-    if invalid_count > 0:
-        print(f"  Filtered out {invalid_count} stations with invalid coordinates")
-    
-    print(f"Loaded {len(df):,} valid stations from Supabase")
-    
-    # Update cache
-    _CACHED_STATIONS = df
-    _CACHE_TIME = time.time()
-    
+        all_rows.extend(res.data)
+        if len(all_rows) % 5000 == 0:
+            print(f"  Loaded {len(all_rows):,}...")
+
+    df = pd.DataFrame(all_rows)
+
+    # Validate Coordinates
+    valid_mask = (
+        df["latitude"].notna()
+        & df["longitude"].notna()
+        & (df["latitude"].abs() <= 90)
+        & (df["longitude"].abs() <= 180)
+    )
+    df = df[valid_mask]
+
+    # Update Cache
+    _CACHED_STATIONS_DF = df
+    _CACHE_TIMESTAMP = time.time()
+    print(f"✓ Loaded {len(df):,} valid stations.")
     return df
 
 
-# =============================================================================
-# SECTION 5: HISTORICAL PRICE QUERIES (OPTIMIZED)
-# =============================================================================
-
-def get_historical_price_for_station(
-    station_uuid: str,
-    target_date: datetime,
-    target_cell: int
-) -> Dict[str, Optional[float]]:
-    """
-    Get the price for a station at a specific time cell on a specific date.
-    
-    How fuel prices work:
-    - Stations change prices multiple times per day
-    - Each price change is recorded with a timestamp
-    - To find "the price at 14:30", we need to find the most recent price change
-      that happened BEFORE 14:30 on that day
-    
-    Algorithm:
-    1. Get the time range for the target cell (e.g., cell 29 = 14:30-14:59)
-    2. Query all price records for this station on the target date up to end of cell
-    3. Take the most recent one (that's the price that was active)
-    
-    Example:
-        Station had these price changes on Nov 20:
-        - 00:05 → €1.739
-        - 06:30 → €1.749
-        - 12:45 → €1.729
-        - 18:20 → €1.719
-        
-        Query: What was the price at 14:30 (cell 29)?
-        Answer: €1.729 (the most recent change before 14:59:59)
-    
-    Args:
-        station_uuid: Tankerkoenig station UUID
-        target_date: The date to look up (datetime object)
-        target_cell: The time cell (0-47) to look up
-    
-    Returns:
-        Dictionary with prices: {'e5': 1.739, 'e10': 1.679, 'diesel': 1.599}
-        Values are None if no price data found
-    
-    Performance note:
-        This function makes ONE database query per call.
-        For better performance with multiple queries, use get_historical_prices_batch().
-    """
-    from supabase import create_client
-    
-    supabase = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
-    
-    # Calculate the end time of the target cell
-    # We want prices that were set BEFORE or AT this time
-    # Example: Cell 29 = 14:30-14:59, so end_time = "14:59:59"
-    _, end_time = get_cell_time_range(target_cell)
-    
-    # Build the datetime strings for the query
-    # Format: "2025-11-19 14:59:59"
-    date_str = target_date.strftime("%Y-%m-%d")
-    end_datetime = f"{date_str} {end_time}"
-    start_datetime = f"{date_str} 00:00:00"
-    
-    # Query the database
-    # Goal: Find the most recent price change before our target time
-    try:
-        result = supabase.table('prices')\
-            .select('date, e5, e10, diesel')\
-            .eq('station_uuid', station_uuid)\
-            .gte('date', start_datetime)\
-            .lte('date', end_datetime)\
-            .order('date', desc=True)\
-            .limit(1)\
-            .execute()
-        
-        # If we found a price record, return it
-        if result.data and len(result.data) > 0:
-            record = result.data[0]
-            return {
-                'e5': record.get('e5'),
-                'e10': record.get('e10'),
-                'diesel': record.get('diesel')
-            }
-        else:
-            # No price data found for this station on this date
-            return {'e5': None, 'e10': None, 'diesel': None}
-            
-    except Exception as e:
-        print(f"WARNING: Error querying historical price for {station_uuid}: {e}")
-        return {'e5': None, 'e10': None, 'diesel': None}
-
-
 def get_historical_prices_batch(
-    station_uuids: List[str],
-    target_date: datetime,
-    target_cell: int
-) -> Dict[str, Dict[str, Optional[float]]]:
+    station_uuids: List[str], target_date: datetime, target_cell: int
+) -> Dict[str, FuelPriceDict]:
     """
-    Get historical prices for multiple stations at once (OPTIMIZED VERSION).
-    
-    Why batch queries?
-    - Instead of 20 separate queries (5 stations × 4 lags), we make 1 query
-    - Reduces total time from ~60 seconds to ~5 seconds
-    - Much more efficient use of database resources
-    
-    Strategy:
-    - Use SQL IN clause to get all stations in one query
-    - Use window functions (PARTITION BY + ORDER BY) to get most recent price per station
-    - Let the database do the heavy lifting
-    
-    Args:
-        station_uuids: List of station UUIDs to query
-        target_date: The date to look up
-        target_cell: The time cell (0-47) to look up
-    
-    Returns:
-        Dictionary mapping station UUID to prices:
-        {
-            "uuid1": {'e5': 1.739, 'e10': 1.679, 'diesel': 1.599},
-            "uuid2": {'e5': 1.749, 'e10': 1.689, 'diesel': 1.609},
-            ...
-        }
-    
-    Performance:
-        - Single station: ~3 seconds
-        - 5 stations: ~4 seconds (vs 15 seconds with individual queries)
-        - 20 stations: ~6 seconds (vs 60 seconds with individual queries)
+    Fetches prices for multiple stations at a specific date/time in ONE query.
+    Uses Supabase `.in_()` filtering for efficiency.
     """
-    from supabase import create_client
-    
+    from supabase import create_client  # type: ignore
+
     if not station_uuids:
         return {}
-    
-    supabase = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
-    
-    # Calculate time range for the target cell
+
+    client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
     _, end_time = get_cell_time_range(target_cell)
-    
-    # Build datetime strings
     date_str = target_date.strftime("%Y-%m-%d")
-    end_datetime = f"{date_str} {end_time}"
-    start_datetime = f"{date_str} 00:00:00"
-    
+
+    # Range: Start of day -> End of target 30-min window
+    # We want the *latest* price change within this window.
+    range_start = f"{date_str} 00:00:00"
+    range_end = f"{date_str} {end_time}"
+
     try:
-        # Make ONE query for all stations
-        # The .in_() method creates a SQL IN clause
-        # Example: WHERE station_uuid IN ('uuid1', 'uuid2', 'uuid3')
-        result = supabase.table('prices')\
-            .select('station_uuid, date, e5, e10, diesel')\
-            .in_('station_uuid', station_uuids)\
-            .gte('date', start_datetime)\
-            .lte('date', end_datetime)\
-            .order('date', desc=True)\
+        # Query: Get all prices in range for these stations
+        res = (
+            client.table("prices")
+            .select("station_uuid, date, e5, e10, diesel")
+            .in_("station_uuid", station_uuids)
+            .gte("date", range_start)
+            .lte("date", range_end)
+            .order("date", desc=True)
             .execute()
-        
-        # Process results
-        # Group by station_uuid and take the first (most recent) record for each
-        prices_by_station = {}
-        seen_uuids = set()
-        
-        for record in result.data:
-            uuid = record['station_uuid']
-            # Skip if we already have this station (we want the first/most recent)
-            if uuid in seen_uuids:
-                continue
-            
-            seen_uuids.add(uuid)
-            prices_by_station[uuid] = {
-                'e5': record.get('e5'),
-                'e10': record.get('e10'),
-                'diesel': record.get('diesel')
-            }
-        
-        # Fill in None for stations with no data
-        for uuid in station_uuids:
-            if uuid not in prices_by_station:
-                prices_by_station[uuid] = {'e5': None, 'e10': None, 'diesel': None}
-        
-        return prices_by_station
-        
-    except Exception as e:
-        print(f"WARNING: Error in batch query: {e}")
-        # Fallback to individual queries
-        return {
-            uuid: get_historical_price_for_station(uuid, target_date, target_cell)
-            for uuid in station_uuids
-        }
+        )
 
+        # Process: Find most recent record per station
+        prices_map: Dict[str, FuelPriceDict] = {}
+        seen: Set[str] = set()
 
-# =============================================================================
-# SECTION 6: REAL-TIME PRICES (TANKERKOENIG API)
-# =============================================================================
-
-def get_all_historical_lags_single_query(
-    station_uuids: List[str],
-    time_cell: int
-) -> Dict[str, Dict[str, Dict[str, Optional[float]]]]:
-    """
-    Get ALL lag periods (1d, 2d, 3d, 7d) for multiple stations in ONE database query.
-    
-    PERFORMANCE OPTIMIZATION:
-    - Old approach: 4 separate queries (one per lag) = ~4 seconds
-    - New approach: 1 combined query = ~1 second
-    - Speedup: 3x faster!
-    
-    Strategy:
-    - Query a date range (today - 7 days to today)
-    - Get prices for the target time cell from each day
-    - Group results by station and date offset
-    
-    Args:
-        station_uuids: List of station UUIDs to query
-        time_cell: The time cell (0-47) to look up
-    
-    Returns:
-        Dictionary mapping station UUID to lag periods:
-        {
-            "uuid1": {
-                "1d": {'e5': 1.739, 'e10': 1.679, 'diesel': 1.599},
-                "2d": {'e5': 1.729, 'e10': 1.669, 'diesel': 1.589},
-                "3d": {'e5': 1.719, 'e10': 1.659, 'diesel': 1.579},
-                "7d": {'e5': 1.709, 'e10': 1.649, 'diesel': 1.569}
-            },
-            ...
-        }
-    
-    Performance:
-        - Single query instead of 4 separate queries
-        - ~1 second instead of ~4 seconds
-    """
-    from supabase import create_client
-    
-    if not station_uuids:
-        return {}
-    
-    supabase = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
-    
-    # Calculate dates
-    today = datetime.now()
-    yesterday = today - timedelta(days=1)
-    two_days_ago = today - timedelta(days=2)
-    three_days_ago = today - timedelta(days=3)
-    seven_days_ago = today - timedelta(days=7)
-    
-    # Get time range for the target cell
-    _, end_time = get_cell_time_range(time_cell)
-    
-    # Build datetime strings for each lag period
-    dates_to_query = {
-        "1d": yesterday,
-        "2d": two_days_ago,
-        "3d": three_days_ago,
-        "7d": seven_days_ago
-    }
-    
-    # Initialize result structure
-    results = {
-        uuid: {
-            "1d": {'e5': None, 'e10': None, 'diesel': None},
-            "2d": {'e5': None, 'e10': None, 'diesel': None},
-            "3d": {'e5': None, 'e10': None, 'diesel': None},
-            "7d": {'e5': None, 'e10': None, 'diesel': None}
-        }
-        for uuid in station_uuids
-    }
-    
-    try:
-        # Query from 7 days ago to today
-        # We'll get all price records in this range, then filter by date
-        start_datetime = seven_days_ago.strftime("%Y-%m-%d") + " 00:00:00"
-        end_datetime = yesterday.strftime("%Y-%m-%d") + f" {end_time}"
-        
-        # Make ONE query for all stations and all dates
-        result = supabase.table('prices')\
-            .select('station_uuid, date, e5, e10, diesel')\
-            .in_('station_uuid', station_uuids)\
-            .gte('date', start_datetime)\
-            .lte('date', end_datetime)\
-            .order('date', desc=True)\
-            .execute()
-        
-        # Process results: group by station and date
-        # For each (station, date) pair, keep only the most recent price
-        station_date_prices = {}
-        
-        for record in result.data:
-            uuid = record['station_uuid']
-            date_str = record['date']
-            
-            # Handle both date formats: "YYYY-MM-DD HH:MM:SS" and "YYYY-MM-DDTHH:MM:SS"
-            try:
-                if 'T' in date_str:
-                    # Format: "2025-12-04T14:33:27"
-                    record_date = datetime.strptime(date_str.split('.')[0], "%Y-%m-%dT%H:%M:%S")
-                else:
-                    # Format: "2025-12-04 14:33:27"
-                    record_date = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
-            except ValueError as e:
-                print(f"  WARNING: Could not parse date '{date_str}': {e}")
-                continue
-            
-            date_only = record_date.date()
-            
-            # Create key: (uuid, date)
-            key = (uuid, date_only)
-            
-            # Only keep if we don't have this (uuid, date) yet (we want most recent)
-            if key not in station_date_prices:
-                station_date_prices[key] = {
-                    'e5': record.get('e5'),
-                    'e10': record.get('e10'),
-                    'diesel': record.get('diesel')
+        for row in res.data:
+            uuid = row["station_uuid"]
+            if uuid not in seen:
+                prices_map[uuid] = {
+                    "e5": row.get("e5"),
+                    "e10": row.get("e10"),
+                    "diesel": row.get("diesel"),
                 }
-        
-        # Map results to lag periods
-        for uuid in station_uuids:
-            for lag_name, lag_date in dates_to_query.items():
-                key = (uuid, lag_date.date())
-                if key in station_date_prices:
-                    results[uuid][lag_name] = station_date_prices[key]
+                seen.add(uuid)
 
-        # Diagnostics: warn if we have no historical prices at all for a station
+        # Fill missing with None
         for uuid in station_uuids:
-            all_none = True
-            for lag_name in ("1d", "2d", "3d", "7d"):
-                lag_prices = results[uuid].get(lag_name, {})
-                if any(
-                    lag_prices.get(fuel) is not None
-                    for fuel in ("e5", "e10", "diesel")
-                ):
-                    all_none = False
-                    break
-            if all_none:
-                print(
-                    f"  WARNING: No historical prices found for station {uuid} "
-                    f"for any of the lag days (1d/2d/3d/7d)."
-                )
+            if uuid not in prices_map:
+                prices_map[uuid] = {"e5": None, "e10": None, "diesel": None}
 
-        return results
-        
+        return prices_map
+
     except Exception as e:
-        print(f"WARNING: Error in combined lag query: {e}")
-        print("Falling back to individual queries...")
-        
-        # Fallback to old method (4 separate queries)
-        prices_1d = get_historical_prices_batch(station_uuids, yesterday, time_cell)
-        prices_2d = get_historical_prices_batch(station_uuids, two_days_ago, time_cell)
-        prices_3d = get_historical_prices_batch(station_uuids, three_days_ago, time_cell)
-        prices_7d = get_historical_prices_batch(station_uuids, seven_days_ago, time_cell)
-        
-        # Reformat to match expected output
-        for uuid in station_uuids:
-            results[uuid] = {
-                "1d": prices_1d.get(uuid, {'e5': None, 'e10': None, 'diesel': None}),
-                "2d": prices_2d.get(uuid, {'e5': None, 'e10': None, 'diesel': None}),
-                "3d": prices_3d.get(uuid, {'e5': None, 'e10': None, 'diesel': None}),
-                "7d": prices_7d.get(uuid, {'e5': None, 'e10': None, 'diesel': None}),
-            }
-
-        # Diagnostics: warn if we have no historical prices at all for a station
-        for uuid, lag_dict in results.items():
-            all_none = True
-            for lag_name in ("1d", "2d", "3d", "7d"):
-                lag_prices = lag_dict.get(lag_name, {})
-                if any(
-                    lag_prices.get(fuel) is not None
-                    for fuel in ("e5", "e10", "diesel")
-                ):
-                    all_none = False
-                    break
-            if all_none:
-                print(
-                    f"  WARNING (fallback): No historical prices found for station {uuid} "
-                    f"for any of the lag days (1d/2d/3d/7d)."
-                )
-
-        return results
+        print(f"Batch query failed: {e}. Falling back...")
+        return {uuid: {"e5": None, "e10": None, "diesel": None} for uuid in station_uuids}
 
 
-# =============================================================================
-# SECTION 7: REAL-TIME PRICES (TANKERKOENIG API)
-# =============================================================================
-
-def get_realtime_prices_batch(station_uuids: List[str]) -> Dict[str, Dict]:
+def get_realtime_prices_batch(station_uuids: List[str]) -> Dict[str, Dict[str, Any]]:
     """
-    Fetch current prices from Tankerkoenig API for multiple stations.
-    
-    API Limitations:
-    - Maximum 10 station IDs per request
-    - Rate limit: ~10 requests per second
-    - Solution: Batch requests and add delays
-    
-    API Endpoint:
-        GET https://creativecommons.tankerkoenig.de/json/prices.php
-        Parameters:
-            - ids: Comma-separated station UUIDs (max 10)
-            - apikey: Your Tankerkoenig API key
-    
-    API Response Format:
-        {
-            "prices": {
-                "station_uuid_1": {
-                    "e5": 1.739,
-                    "e10": 1.679,
-                    "diesel": 1.599,
-                    "status": "open"  // or "closed"
-                },
-                "station_uuid_2": { ... }
-            }
-        }
-    
-    Args:
-        station_uuids: List of Tankerkoenig station UUIDs
-    
-    Returns:
-        Dictionary mapping station UUID to price data:
-        {
-            "uuid1": {
-                'e5': 1.739,
-                'e10': 1.679,
-                'diesel': 1.599,
-                'status': 'open',
-                'is_open': True
-            },
-            ...
-        }
-        
-        Stations not in response will have all values set to None.
-    
-    Performance:
-        - Uses parallel requests with ThreadPoolExecutor
-        - Respects rate limits with delays between batches
-        - For 20 stations: ~2-3 seconds (2 batches of 10)
+    Fetches live prices from Tankerkönig API (rate-limited and batched).
     """
-    if not station_uuids:
+    if not station_uuids or not TANKERKOENIG_API_KEY:
         return {}
-    
-    # Calculate how many batches we need
-    # Example: 23 stations → (23 + 10 - 1) // 10 = 3 batches
-    # This formula rounds up without using math.ceil()
-    total_batches = (len(station_uuids) + API_BATCH_SIZE - 1) // API_BATCH_SIZE
-    
+
     results = {}
-    
-    print(f"Fetching real-time prices from Tankerkoenig API...")
-    print(f"  {len(station_uuids)} stations in {total_batches} batch(es)")
-    
-    # Process in batches of 10 (API limit)
-    # enumerate() gives us both the batch number and the index
-    # Example: batch_num=1, i=0  → stations 0-9
-    #          batch_num=2, i=10 → stations 10-19
-    for batch_num, i in enumerate(range(0, len(station_uuids), API_BATCH_SIZE), 1):
-        # Get the next batch of up to 10 station UUIDs
-        batch = station_uuids[i:i + API_BATCH_SIZE]
-        
-        # Build API request
-        # Join UUIDs with commas: "uuid1,uuid2,uuid3"
-        params = {
-            "ids": ",".join(batch),
-            "apikey": TANKERKOENIG_API_KEY
-        }
-        
+    print(f"Fetching realtime prices for {len(station_uuids)} stations...")
+
+    # Batch processing (API limit: 10 IDs per call)
+    for i in range(0, len(station_uuids), TK_API_BATCH_SIZE):
+        batch = station_uuids[i : i + TK_API_BATCH_SIZE]
+        params = {"ids": ",".join(batch), "apikey": TANKERKOENIG_API_KEY}
+
         try:
-            # Make API request
-            response = requests.get(
+            resp = requests.get(
                 "https://creativecommons.tankerkoenig.de/json/prices.php",
                 params=params,
-                timeout=10  # 10 second timeout
+                timeout=10,
             )
-            response.raise_for_status()  # Raise exception for 4xx/5xx status codes
-            data = response.json()
-            
-            # Check if API returned an error
-            if not data.get("ok", False):
-                print(f"  WARNING: API returned error for batch {batch_num}")
-                continue
-            
-            # Extract prices from response
-            for station_id, price_data in data.get("prices", {}).items():
-                results[station_id] = {
-                    'e5': price_data.get('e5'),
-                    'e10': price_data.get('e10'),
-                    'diesel': price_data.get('diesel'),
-                    'status': price_data.get('status', 'unknown'),
-                    'is_open': price_data.get('status') == 'open'
-                }
-            
-            # Progress indicator
-            if batch_num % 5 == 0 or batch_num == total_batches:
-                print(f"  Completed {batch_num}/{total_batches} API calls")
-                
+            resp.raise_for_status()
+            data = resp.json()
+
+            if data.get("ok"):
+                for uuid, info in data.get("prices", {}).items():
+                    results[uuid] = {
+                        "e5": info.get("e5"),
+                        "e10": info.get("e10"),
+                        "diesel": info.get("diesel"),
+                        "is_open": info.get("status") == "open",
+                    }
         except Exception as e:
-            print(f"  WARNING: Error fetching batch {batch_num}: {e}")
-        
-        # Add delay between batches to respect rate limits
-        # Skip delay after the last batch (no need to wait)
-        if i + API_BATCH_SIZE < len(station_uuids):
-            time.sleep(API_BATCH_DELAY)
-    
-    # Fill in None for stations not in response
-    for uuid in station_uuids:
-        if uuid not in results:
-            results[uuid] = {
-                'e5': None,
-                'e10': None,
-                'diesel': None,
-                'status': 'unknown',
-                'is_open': None
-            }
-    
+            print(f"  API Batch failed: {e}")
+
+        # Rate limit pause
+        if i + TK_API_BATCH_SIZE < len(station_uuids):
+            time.sleep(TK_API_DELAY_SEC)
+
     return results
 
 
-# =============================================================================
-# SECTION 8: MAIN INTEGRATION FUNCTION
-# =============================================================================
+# ==========================================
+# Section 4: Core Integration Logic
+# ==========================================
 
 def integrate_route_with_prices(
-    stations_with_eta: List[Dict],
+    stations_with_eta: List[InputStationDict],
     use_realtime: bool = False,
-    stations_df: Optional[pd.DataFrame] = None
-) -> List[Dict]:
+    stations_df: Optional[pd.DataFrame] = None,
+) -> List[StationFeatureDict]:
     """
-    THE CORE INTEGRATION FUNCTION
-    ==============================
-    
-    This is the main function that combines everything:
-    1. Station matching (OSM ↔ Tankerkoenig)
-    2. Historical price retrieval (Supabase)
-    3. Real-time price retrieval (optional, from Tankerkoenig API)
-    4. Time cell calculations
-    5. Data formatting for the prediction model
-    
-    INPUT FORMAT (from route_stations.py):
-    --------------------------------------
-    stations_with_eta = [
-        {
-            "name": "Aral",                    # OSM station name
-            "lat": 48.51279,                   # GPS latitude
-            "lon": 9.07341,                    # GPS longitude
-            "detour_distance_km": 0.241,       # Detour needed (NEW: renamed from 'distance')
-            "detour_duration_min": 2.55,       # Time for detour (NEW)
-            "distance_along_m": 3058,          # Distance from start along route
-            "fraction_of_route": 0.201,        # How far along route (0-1)
-            "eta": "2025-11-20T14:35:49"       # Estimated arrival time
-        },
-        ...
-    ]
-    
-    OUTPUT FORMAT (for prediction model):
-    -------------------------------------
-    [
-        {
-            # Original route info
-            "osm_name": "Aral",
-            "lat": 48.51279,
-            "lon": 9.07341,
-            "detour_distance_km": 0.241,        # Updated field name
-            "detour_duration_min": 2.55,        # New field
-            "distance_along_m": 3058,
-            "fraction_of_route": 0.201,
-            "eta": "2025-11-20T14:35:49",
-            
-            # Tankerkoenig match info
-            "station_uuid": "44e2bdb7-...",
-            "tk_name": "Aral Tuebingen Nord",
-            "brand": "ARAL",
-            "city": "Tuebingen",
-            "tk_latitude": 48.51295,
-            "tk_longitude": 9.073625,
-            "match_distance_m": 12.5,
-            
-            # Model inputs
-            "time_cell": 29,
-            
-            # Inter-day lags (different dates, same time)
-            "price_lag_1d_e5": 1.729,
-            "price_lag_1d_e10": 1.669,
-            "price_lag_1d_diesel": 1.589,
-            
-            "price_lag_2d_e5": 1.719,
-            "price_lag_2d_e10": 1.659,
-            "price_lag_2d_diesel": 1.579,
-            
-            "price_lag_3d_e5": 1.715,
-            "price_lag_3d_e10": 1.655,
-            "price_lag_3d_diesel": 1.575,
-            
-            "price_lag_7d_e5": 1.709,
-            "price_lag_7d_e10": 1.649,
-            "price_lag_7d_diesel": 1.569,
-            
-            # Current/predicted prices
-            "price_current_e5": 1.739,
-            "price_current_e10": 1.679,
-            "price_current_diesel": 1.599,
-            
-            "is_open": True  # Only if use_realtime=True
-        },
-        ...
-    ]
-    
+    Orchestrates the data enrichment pipeline.
+
+    Steps:
+    1. Match Route Points -> Tankerkönig UUIDs.
+    2. Deduplicate Matches (multiple route points -> single station).
+    3. Fetch Historical Prices (Parallel DB Queries for lags).
+    4. Fetch Realtime Prices (Optional).
+    5. Construct Final Feature Vectors.
+
     Args:
-        stations_with_eta: List of stations from route_stations.py
-        use_realtime: If True, fetch current prices from Tankerkoenig API.
-                      If False, use yesterday's price as current price (for demo/testing).
-        stations_df: Optional pre-loaded DataFrame of Tankerkoenig stations.
-                     If None, will load from Supabase.
-    
+        stations_with_eta: Output from route_stations.py.
+        use_realtime: Toggle live API calls.
+        stations_df: Pre-loaded station master list (optional).
+
     Returns:
-        List of dictionaries (one per matched station) with all data needed for prediction
-    
-    Performance:
-        - Without optimization: ~60-80 seconds for 5 stations
-        - With batch queries: ~10-15 seconds for 5 stations
-        - Main bottleneck: Database queries for historical prices
+        List[StationFeatureDict]: Data ready for ML inference.
     """
-    
-    print("\n" + "=" * 70)
-    print("ROUTE-TANKERKOENIG INTEGRATION")
-    print("=" * 70)
-    print(f"Mode: {'REAL-TIME' if use_realtime else 'HISTORICAL (yesterday = current)'}")
-    print(f"Input stations: {len(stations_with_eta)}")
-    
-    # =================================================================
-    # STEP 1: Load Tankerkoenig stations from Supabase (if not provided)
-    # =================================================================
+    print(f"\n--- Integration Pipeline (Realtime={use_realtime}) ---")
+
+    # Step 1: Load Master Data
     if stations_df is None:
         stations_df = load_all_stations_from_supabase()
-    
-    # =================================================================
-    # STEP 2: Match OSM stations to Tankerkoenig stations
-    # =================================================================
-    import time as time_module
-    
-    print("\nMatching stations to Tankerkoenig database...")
-    match_start = time_module.time()
-    
-    matched_stations = []
-    unmatched_count = 0
-    
-    for station in stations_with_eta:
-        # Calculate time cell from ETA
-        time_cell = calculate_time_cell(station['eta'])
-        
-        # Try to match this OSM station to a Tankerkoenig station
-        match = match_coordinates_progressive(
-            station['lat'],
-            station['lon'],
-            stations_df
-        )
-        
-        if not match:
-            # No Tankerkoenig station found within 100m
-            print(f"  WARNING: No match for '{station['name']}' at ({station['lat']}, {station['lon']})")
-            unmatched_count += 1
-            continue
-        
-        # Build result dictionary with all available data
-        # Note: Handle both old and new field names from route_stations.py
-        result = {
-            # Original OSM data
-            'osm_name': station['name'],
-            'lat': station['lat'],
-            'lon': station['lon'],
-            'distance_along_m': station.get('distance_along_m', 0),
-            'fraction_of_route': station.get('fraction_of_route', None),  # Optional
-            'eta': station['eta'],
-            
-            # New fields from Google API (if available)
-            'detour_distance_km': station.get('detour_distance_km', station.get('distance', None)),
-            'detour_duration_min': station.get('detour_duration_min', None),
-            
-            # Tankerkoenig match data
-            'station_uuid': match['station_uuid'],
-            'tk_name': match['tk_name'],
-            'brand': match['brand'],
-            'city': match['city'],
-            'tk_latitude': match['latitude'],
-            'tk_longitude': match['longitude'],
-            'match_distance_m': match['match_distance_m'],
-            
-            # Model inputs
-            'time_cell': time_cell,
-        }
-        
-        matched_stations.append(result)
-    
-    match_elapsed = time_module.time() - match_start
-    print(f"Matched: {len(matched_stations)}, Unmatched: {unmatched_count} (took {match_elapsed:.1f}s)")
-    
-    # -----------------------------------------------------------------
-    # DEDUPLICATION: collapse multiple Google places → one TK station
-    # -----------------------------------------------------------------
-    # It is common that Google Places returns several entries for the
-    # same physical station (different names / entrances, etc.). After
-    # matching, these all share the same `station_uuid`. We keep only
-    # one entry per Tankerkoenig station, preferring:
-    #   1. smaller detour_distance_km (if available),
-    #   2. then smaller distance_along_m as tie-breaker.
-    dedup_by_uuid: Dict[str, Dict] = {}
 
-    def _dedup_metric(s: Dict) -> tuple:
-        """Smaller tuple = better candidate."""
-        detour = s.get("detour_distance_km")
-        dist_along = s.get("distance_along_m", float("inf"))
-        # If detour is missing, treat as worse than any with detour info
-        if detour is None:
-            return (1, dist_along)
-        return (0, detour, dist_along)
+    # Step 2: Spatial Matching & Time Cell Calc
+    matched_candidates = []
+    
+    for s in stations_with_eta:
+        match = match_coordinates_progressive(s["lat"], s["lon"], stations_df)
+        if match:
+            # Merge route data with match data
+            feature_row = {
+                # Route Context
+                "osm_name": s["name"],
+                "lat": s["lat"],
+                "lon": s["lon"],
+                "eta": s["eta"],
+                "time_cell": calculate_time_cell(s["eta"]),
+                "detour_distance_km": s.get("detour_distance_km", s.get("distance")),
+                "detour_duration_min": s.get("detour_duration_min"),
+                "distance_along_m": s.get("distance_along_m", 0),
+                "fraction_of_route": s.get("fraction_of_route"),
+                # Match Context
+                **match,  # Unpacks uuid, tk_name, brand, etc.
+            }
+            matched_candidates.append(feature_row)
 
-    for s in matched_stations:
-        uuid = s.get("station_uuid")
-        if uuid is None:
-            # Should not happen, but keep as unique entry
-            dedup_by_uuid[id(s)] = s
-            continue
-
-        existing = dedup_by_uuid.get(uuid)
-        if existing is None:
-            dedup_by_uuid[uuid] = s
-        else:
-            if _dedup_metric(s) < _dedup_metric(existing):
-                dedup_by_uuid[uuid] = s
-
-    deduped_stations = list(dedup_by_uuid.values())
-    if len(deduped_stations) != len(matched_stations):
-        print(
-            f"Deduplication: {len(matched_stations)} matched entries "
-            f"collapsed into {len(deduped_stations)} unique Tankerkoenig stations."
-        )
-
-    matched_stations = deduped_stations
-
-    if not matched_stations:
-        print("ERROR: No stations matched after deduplication. Cannot proceed.")
+    if not matched_candidates:
+        print("No stations matched to database.")
         return []
 
-    # =================================================================
-    # STEP 3: Get historical prices from Supabase (BATCH QUERIES)
-    # =================================================================
-    print("\nFetching historical prices from Supabase...")
+    # Step 3: Deduplication
+    # Strategy: Keep the entry with minimal detour. If equal, minimal route distance.
+    dedup_map: Dict[str, StationFeatureDict] = {}
+
+    def _sorting_key(item: Dict) -> Tuple:
+        # Sort key: (Has Detour Info?, Detour Length, Distance Along Route)
+        # We want Minimal Detour, then Minimal Distance along route.
+        d_km = item.get("detour_distance_km")
+        return (0 if d_km is not None else 1, d_km or 0, item["distance_along_m"])
+
+    for cand in matched_candidates:
+        uuid = cand["station_uuid"]
+        existing = dedup_map.get(uuid)
+        if not existing or _sorting_key(cand) < _sorting_key(existing):
+            dedup_map[uuid] = cand
+
+    final_stations = list(dedup_map.values())
+    print(f"Matched {len(matched_candidates)} points -> {len(final_stations)} unique stations.")
+
+    # Step 4: Historical Prices (Parallel IO)
+    uuids = [s["station_uuid"] for s in final_stations]
+    # We use the time cell of the first station as a representative approximation 
+    # for the batch query to optimize cache/performance, or use individual cells if strict.
+    # Here, we use the specific cell logic inside the helper if we were iterating, 
+    # but for batching we typically align to a common reference or accept slight noise.
+    # To keep exact formula parity with original, we use the logic from the input file:
+    common_cell = final_stations[0]["time_cell"]
     
-    # Calculate dates for historical lookups
     today = datetime.now()
-    yesterday = today - timedelta(days=1)
-    two_days_ago = today - timedelta(days=2)
-    three_days_ago = today - timedelta(days=3)
-    seven_days_ago = today - timedelta(days=7)
-    
-    # Get all station UUIDs
-    all_uuids = [s['station_uuid'] for s in matched_stations]
-    
-    # Get the most common time cell (use for all queries)
-    common_cell = matched_stations[0]['time_cell']
-    
-    # Make 4 batch queries (one for each lag period) - IN PARALLEL!
-    # This runs all 4 queries simultaneously instead of one-by-one
-    from concurrent.futures import ThreadPoolExecutor
-    import time as time_module
-    
-    print("Querying all lag periods in parallel...")
-    start_time = time_module.time()
-    
+    lags = {
+        "1d": today - timedelta(days=1),
+        "2d": today - timedelta(days=2),
+        "3d": today - timedelta(days=3),
+        "7d": today - timedelta(days=7),
+    }
+
+    print("Fetching historical price lags (Parallel)...")
+    price_cache: Dict[str, Dict[str, FuelPriceDict]] = {uid: {} for uid in uuids}
+
     with ThreadPoolExecutor(max_workers=4) as executor:
-        # Submit all 4 queries at once
-        future_1d = executor.submit(get_historical_prices_batch, all_uuids, yesterday, common_cell)
-        future_2d = executor.submit(get_historical_prices_batch, all_uuids, two_days_ago, common_cell)
-        future_3d = executor.submit(get_historical_prices_batch, all_uuids, three_days_ago, common_cell)
-        future_7d = executor.submit(get_historical_prices_batch, all_uuids, seven_days_ago, common_cell)
+        # Launch 4 parallel DB queries
+        futures = {
+            lag_name: executor.submit(get_historical_prices_batch, uuids, date, common_cell)
+            for lag_name, date in lags.items()
+        }
         
-        # Wait for all to complete
-        prices_1d = future_1d.result()
-        prices_2d = future_2d.result()
-        prices_3d = future_3d.result()
-        prices_7d = future_7d.result()
-    
-    elapsed = time_module.time() - start_time
-    print(f"Retrieved prices in {elapsed:.1f}s (parallel execution)")
-    
-    # Add historical prices to each station
-    for station in matched_stations:
-        uuid = station['station_uuid']
-        
-        # Get prices for this station from batch results
-        p1d = prices_1d.get(uuid, {'e5': None, 'e10': None, 'diesel': None})
-        p2d = prices_2d.get(uuid, {'e5': None, 'e10': None, 'diesel': None})
-        p3d = prices_3d.get(uuid, {'e5': None, 'e10': None, 'diesel': None})
-        p7d = prices_7d.get(uuid, {'e5': None, 'e10': None, 'diesel': None})
-        
-        # Add to station dictionary
-        station['price_lag_1d_e5'] = p1d['e5']
-        station['price_lag_1d_e10'] = p1d['e10']
-        station['price_lag_1d_diesel'] = p1d['diesel']
-        
-        station['price_lag_2d_e5'] = p2d['e5']
-        station['price_lag_2d_e10'] = p2d['e10']
-        station['price_lag_2d_diesel'] = p2d['diesel']
-        
-        station['price_lag_3d_e5'] = p3d['e5']
-        station['price_lag_3d_e10'] = p3d['e10']
-        station['price_lag_3d_diesel'] = p3d['diesel']
-        
-        station['price_lag_7d_e5'] = p7d['e5']
-        station['price_lag_7d_e10'] = p7d['e10']
-        station['price_lag_7d_diesel'] = p7d['diesel']
-    
-    print("Retrieved historical prices for all stations")
-    
-    # =================================================================
-    # STEP 4: Get current prices (real-time or use yesterday)
-    # =================================================================
+        # Collect results
+        for lag_name, future in futures.items():
+            result_map = future.result()
+            for uid, prices in result_map.items():
+                price_cache[uid][lag_name] = prices
+
+    # Attach History to Stations
+    for s in final_stations:
+        uid = s["station_uuid"]
+        for lag_name in lags.keys():
+            p = price_cache[uid].get(lag_name, {"e5": None, "e10": None, "diesel": None})
+            s[f"price_lag_{lag_name}_e5"] = p["e5"]
+            s[f"price_lag_{lag_name}_e10"] = p["e10"]
+            s[f"price_lag_{lag_name}_diesel"] = p["diesel"]
+
+    # Step 5: Current Prices (Realtime vs Proxy)
     if use_realtime:
-        print("\nFetching current prices from Tankerkoenig API...")
-        realtime_prices = get_realtime_prices_batch(all_uuids)
-        
-        for station in matched_stations:
-            uuid = station['station_uuid']
-            prices = realtime_prices.get(uuid, {})
-            
-            # Add current prices
-            station['price_current_e5'] = prices.get('e5')
-            station['price_current_e10'] = prices.get('e10')
-            station['price_current_diesel'] = prices.get('diesel')
-            station['is_open'] = prices.get('is_open')
+        live_data = get_realtime_prices_batch(uuids)
+        for s in final_stations:
+            uid = s["station_uuid"]
+            info = live_data.get(uid, {})
+            s["price_current_e5"] = info.get("e5")
+            s["price_current_e10"] = info.get("e10")
+            s["price_current_diesel"] = info.get("diesel")
+            s["is_open"] = info.get("is_open")
     else:
-        print("\nUsing yesterday's prices as current prices (demo mode)...")
-        # In demo mode, use yesterday's price as the "current" price
-        # This lets us test without making API calls
-        for station in matched_stations:
-            station['price_current_e5'] = station['price_lag_1d_e5']
-            station['price_current_e10'] = station['price_lag_1d_e10']
-            station['price_current_diesel'] = station['price_lag_1d_diesel']
-            station['is_open'] = None  # Unknown in demo mode
-    
-    # =================================================================
-    # STEP 5: Filter out stations with missing data
-    # =================================================================
-    # Only return stations that have complete price data
-    # The model can't make predictions without historical prices
-    complete_stations = [
-        s for s in matched_stations
-        if s['price_lag_1d_e5'] is not None and s['price_lag_7d_e5'] is not None
+        # Fallback: Use yesterday's price (1d lag) as current proxy
+        for s in final_stations:
+            s["price_current_e5"] = s["price_lag_1d_e5"]
+            s["price_current_e10"] = s["price_lag_1d_e10"]
+            s["price_current_diesel"] = s["price_lag_1d_diesel"]
+            s["is_open"] = None  # Unknown
+
+    # Filter complete data
+    valid_output = [
+        s for s in final_stations 
+        if s["price_lag_1d_e5"] is not None and s["price_lag_7d_e5"] is not None
     ]
+    print(f"Integration Complete. Valid Stations: {len(valid_output)}/{len(final_stations)}")
     
-    print("\n" + "=" * 70)
-    print("INTEGRATION COMPLETE")
-    print("=" * 70)
-    print(f"Total stations processed: {len(matched_stations)}")
-    print(f"Stations with complete price data: {len(complete_stations)}")
-    
-    return complete_stations
+    return valid_output
 
 
-# =============================================================================
-# SECTION 9: COMPLETE PIPELINE FUNCTION (For Streamlit/Production)
-# =============================================================================
+# ==========================================
+# Section 5: Public API Entrypoint
+# ==========================================
 
 def get_fuel_prices_for_route(
     start_locality: str,
     end_locality: str,
     start_address: str = "",
     end_address: str = "",
-    use_realtime: bool = False
-) -> Tuple[List[Dict], Dict[str, Any]]:
+    use_realtime: bool = False,
+) -> Tuple[List[StationFeatureDict], Dict[str, Any]]:
     """
-    COMPLETE END-TO-END PIPELINE
-    ============================
-    
-    This is the highest-level function that does everything:
-    1. Geocode start and end addresses
-    2. Calculate route between them
-    3. Find fuel stations along the route
-    4. Calculate ETAs for each station
-    5. Match stations to Tankerkoenig database
-    6. Retrieve historical prices
-    7. Optionally get real-time prices
-    8. Return model-ready data
-    
-    This is what needs to be called from the Streamlit app
-    
-    Args:
-        start_locality: Starting city (REQUIRED, e.g., "Tübingen")
-        end_locality: Destination city (REQUIRED, e.g., "Reutlingen")
-        start_address: Starting street address (optional, e.g., "Wilhelmstraße 7")
-        end_address: Destination street address (optional, e.g., "Charlottenstraße 45")
-        use_realtime: If True, fetch current prices from Tankerkoenig API
-    
+    End-to-end pipeline callable by the UI.
+
     Returns:
-        List of dictionaries with complete data for each station
-        (same format as integrate_route_with_prices() output)
-    
-    Example:
-        >>> result = get_fuel_prices_for_route(
-        ...     start_locality="Tübingen",
-        ...     end_locality="Reutlingen",
-        ...     start_address="Wilhelmstraße 7",
-        ...     end_address="Charlottenstraße 45",
-        ...     use_realtime=False
-        ... )
-        >>> len(result)
-        5
-        >>> result[0]['tk_name']
-        'Aral Tankstelle'
-        >>> result[0]['price_lag_1d_e5']
-        1.759
-    
-    Raises:
-        ImportError: If route_stations.py functions are not available
-        Exception: If any step in the pipeline fails
+        (List of station features, Dictionary of route metadata)
     """
-    
-    # Check if we have the required functions from route_stations.py
-    if not _ROUTE_FUNCTIONS_IMPORTED:
-        raise ImportError(
-            "Could not import functions from route_stations.py. "
-            "Make sure route_stations.py is in the project root."
-        )
-    
-    print("\n" + "=" * 70)
-    print("COMPLETE FUEL PRICE PIPELINE")
-    print("=" * 70)
-    print(f"Route: {start_locality} → {end_locality}")
-    print(f"Mode: {'REAL-TIME' if use_realtime else 'HISTORICAL (demo)'}")
-    
-    # ================================================================
-    # STEP 1: Geocode addresses to get coordinates
-    # ================================================================
+    if not _ROUTE_FUNCTIONS_AVAILABLE:
+        raise ImportError("Missing route_stations.py dependency.")
+
+    print(f"\n=== Pipeline Start: {start_locality} -> {end_locality} ===")
+
+    # 1. Geocoding
     try:
-        start_lat, start_lon, start_label = google_geocode_structured(
+        s_lat, s_lon, s_lbl = google_geocode_structured(
             start_address, start_locality, "Germany", GOOGLE_API_KEY
         )
-        end_lat, end_lon, end_label = google_geocode_structured(
+        e_lat, e_lon, e_lbl = google_geocode_structured(
             end_address, end_locality, "Germany", GOOGLE_API_KEY
         )
-    except ConfigError:
-        # Raised by environment_check() (or your own config checks) and should
-        # be shown to the user as-is.
-        raise
-    except Exception as exc:
-        raise ExternalServiceError(
-            user_message="Failed to geocode the start or destination.",
-            remediation="Check the address/city inputs. If the issue persists, verify Google API quota/billing.",
-            details=str(exc),
-        ) from exc
+    except Exception as e:
+        raise ExternalServiceError("Geocoding failed.", details=str(e))
 
-
-    # ================================================================
-    # STEP 2: Calculate route between start and end
-    # ================================================================
+    # 2. Routing
     try:
-        # Note: google_route_driving_car returns (route_coords, route_km, route_min, departure_time)
-        route_coords, route_km, route_min, departure_time = google_route_driving_car(
-            start_lat, start_lon, end_lat, end_lon, GOOGLE_API_KEY
+        route_pts, dist_km, dur_min, dept_time = google_route_driving_car(
+            s_lat, s_lon, e_lat, e_lon, GOOGLE_API_KEY
         )
-    except Exception as exc:
-        raise ExternalServiceError(
-            user_message="Failed to compute a driving route between start and destination.",
-            remediation="Try simpler inputs (only city names) or verify Google routing API availability/quota.",
-            details=str(exc),
-        ) from exc
+    except Exception as e:
+        raise ExternalServiceError("Routing failed.", details=str(e))
 
-    # Optional but recommended: sanity check the returned values
-    if not route_coords or route_km is None or route_min is None:
-        raise DataQualityError(
-            user_message="The route service returned an incomplete route result.",
-            remediation="Try different start/end locations or retry later.",
-            details=f"route_coords={bool(route_coords)}, route_km={route_km}, route_min={route_min}",
-        )
-
-
-    # ================================================================
-    # STEP 3: Find fuel stations along the route
-    # ================================================================
+    # 3. Station Finding
     try:
-        stations = google_places_fuel_along_route(
-            route_coords,
-            GOOGLE_API_KEY,
-            route_km,
-            route_min,
-            departure_time,
+        raw_stations = google_places_fuel_along_route(
+            route_pts, GOOGLE_API_KEY, dist_km, dur_min, dept_time
         )
-    except Exception as exc:
-        raise ExternalServiceError(
-            user_message="Failed to retrieve fuel stations along the route.",
-            remediation="Retry later or check Google Places quota/billing. Also consider using larger cities as inputs.",
-            details=str(exc),
-        ) from exc
+    except Exception as e:
+        raise ExternalServiceError("Places search failed.", details=str(e))
 
-    if not stations:
-        raise DataQualityError(
-            user_message="No fuel stations were found along this route.",
-            remediation="Try a longer route, different cities, or relax constraints (detour limits).",
-            details="google_places_fuel_along_route returned an empty list.",
-        )
+    if not raw_stations:
+        raise DataQualityError("No stations found along route.")
 
-    # google_places_fuel_along_route already includes ETAs
-    stations_with_eta = stations
-
-
-    # ================================================================
-    # STEP 4: Run the integration (match stations + get prices)
-    # ================================================================
+    # 4. Integration
     try:
-        model_input = integrate_route_with_prices(
-            stations_with_eta=stations_with_eta,
-            use_realtime=use_realtime,
-        )
-    except Exception as exc:
-        # This step typically fails due to:
-        # - Supabase connectivity / permissions (DataAccessError would be ideal if you wrap internally)
-        # - Tankerkönig realtime failures (ExternalServiceError would be ideal if you wrap internally)
-        # For now: map unknown errors conservatively to DataAccessError with actionable remediation.
-        raise DataAccessError(
-            user_message="Failed to match stations to the database and/or fetch price data.",
-            remediation="Check Supabase credentials/connectivity. If realtime prices are enabled, also check Tankerkönig availability.",
-            details=str(exc),
-        ) from exc
+        enriched_data = integrate_route_with_prices(raw_stations, use_realtime)
+    except Exception as e:
+        raise DataAccessError("Data integration failed.", details=str(e))
 
-    if not model_input:
-        raise DataQualityError(
-            user_message="No stations could be matched to Tankerkönig or enriched with price data.",
-            remediation="Try a different route or disable strict constraints. Also verify the station database is up to date.",
-            details="integrate_route_with_prices returned an empty result.",
-        )
+    if not enriched_data:
+        raise DataQualityError("No stations matched to database with valid prices.")
 
-    route_info: Dict[str, Any] = {
-        "route_coords": route_coords,
-        "route_km": route_km,
-        "route_min": route_min,
-        "departure_time": departure_time,
-        "start_lat": start_lat,
-        "start_lon": start_lon,
-        "end_lat": end_lat,
-        "end_lon": end_lon,
-        "start_label": start_label,
-        "end_label": end_label,
+    # Metadata Bundle
+    route_meta = {
+        "route_coords": route_pts,
+        "route_km": dist_km,
+        "route_min": dur_min,
+        "departure_time": dept_time,
+        "start_label": s_lbl,
+        "end_label": e_lbl,
     }
 
-    return model_input, route_info
+    return enriched_data, route_meta
 
 
-# =============================================================================
-# SECTION 10: EXAMPLE/TEST FUNCTIONS
-# =============================================================================
-
-def run_example():
-    """
-    Simple example using test data (no route_stations.py needed).
-    
-    This demonstrates the integration function with hardcoded example data.
-    Useful for:
-    - Testing the integration without depending on route_stations.py
-    - Demonstrating the expected input/output format
-    - Debugging database or API issues
-    
-    Returns:
-        List of model-ready dictionaries
-    """
-    print("\n" + "=" * 70)
-    print("SIMPLE EXAMPLE (Using Test Data)")
-    print("=" * 70)
-    
-    # Example stations (as if they came from route_stations.py)
-    # These are real stations on the Tübingen → Reutlingen route
-    example_stations_with_eta = [
-        {
-            "name": "Aral",
-            "lat": 48.51279,
-            "lon": 9.07341,
-            "detour_distance_km": 0.241,
-            "detour_duration_min": 2.55,
-            "distance_along_m": 3058,
-            "fraction_of_route": 0.201,
-            "eta": "2025-11-23T14:35:49"
-        },
-        {
-            "name": "Esso",
-            "lat": 48.49228,
-            "lon": 9.20297,
-            "detour_distance_km": 3.126,
-            "detour_duration_min": 7.53,
-            "distance_along_m": 13494,
-            "fraction_of_route": 0.887,
-            "eta": "2025-11-23T14:50:46"
-        },
-        {
-            "name": "Jet",
-            "lat": 48.49178,
-            "lon": 9.19813,
-            "detour_distance_km": 1.954,
-            "detour_duration_min": 4.53,
-            "distance_along_m": 13140,
-            "fraction_of_route": 0.864,
-            "eta": "2025-11-23T14:50:16"
-        }
-    ]
-    
-    # Run the integration
-    model_input = integrate_route_with_prices(
-        stations_with_eta=example_stations_with_eta,
-        use_realtime=False  # Use historical prices (demo mode)
-    )
-    
-    # Display results
-    if model_input:
-        print("\n" + "-" * 70)
-        print("FIRST STATION (All Data):")
-        print("-" * 70)
-        first = model_input[0]
-        print(f"OSM Name: {first['osm_name']}")
-        print(f"TK Name: {first['tk_name']}")
-        print(f"Brand: {first['brand']}")
-        print(f"Time Cell: {first['time_cell']}")
-        print(f"Match Distance: {first['match_distance_m']} m")
-        print(f"Detour Distance: {first.get('detour_distance_km', 'N/A')} km")
-        print(f"Detour Duration: {first.get('detour_duration_min', 'N/A')} min")
-        print(f"Current E5: {first['price_current_e5']}")
-        print(f"Lag 1d E5: {first['price_lag_1d_e5']}")
-        print(f"Lag 2d E5: {first['price_lag_2d_e5']}")
-        print(f"Lag 3d E5: {first['price_lag_3d_e5']}")
-        print(f"Lag 7d E5: {first['price_lag_7d_e5']}")
-        
-        print("\n" + "-" * 70)
-        print("ALL STATIONS SUMMARY:")
-        print("-" * 70)
-        
-        for station in model_input:
-            print(f"{station['tk_name']} ({station['brand']}) - "
-                  f"Cell {station['time_cell']}, "
-                  f"E5: €{station['price_current_e5']}")
-    
-    return model_input
-
-
-# =============================================================================
-# SECTION 11: MAIN EXECUTION
-# =============================================================================
+# ==========================================
+# Execution Test (Direct Run)
+# ==========================================
 
 if __name__ == "__main__":
-    """
-    Run this script directly to test the complete pipeline.
-    
-    Usage:
-        python route_tankerkoenig_integration.py
-    
-    This will:
-    1. Try to run the complete pipeline with real routing (requires route_stations.py)
-    2. If that fails, fall back to the simple example with test data
-    """
-    
-    print("=" * 70)
-    print("TESTING COMPLETE PIPELINE FUNCTION")
-    print("=" * 70)
-    
-    # Test with a real route
+    # Simple test harness
     try:
-        result = get_fuel_prices_for_route(
-            start_locality="Tübingen",
-            end_locality="Reutlingen",
-            start_address="Wilhelmstraße 7",
-            end_address="Charlottenstraße 45",
-            use_realtime=False
-        )
-        
-        if result:
-            print("\n" + "=" * 70)
-            print("SUCCESS: Complete pipeline works!")
-            print(f"Generated {len(result)} model input records")
-            print("=" * 70)
-            
-            # Show first station
-            print("\nFirst station:")
-            for key, value in result[0].items():
-                print(f"  {key}: {value}")
+        print("Testing Pipeline...")
+        # Attempt to run with defaults if env vars are present
+        if GOOGLE_API_KEY and SUPABASE_URL:
+            stations, meta = get_fuel_prices_for_route(
+                start_locality="Tübingen",
+                end_locality="Reutlingen",
+                start_address="Wilhelmstraße 7",
+                end_address="Charlottenstraße 45",
+            )
+            print(f"\nSuccess! Found {len(stations)} valid stations.")
+            if stations:
+                print(f"Sample: {stations[0]['tk_name']} - {stations[0]['price_current_e5']} EUR")
         else:
-            print("\nNo stations found on this route.")
-    
+            print("Skipping test: Missing API Keys in environment.")
+            
     except Exception as e:
-        print(f"\nERROR: {e}")
-        print("\nFalling back to simple example...")
-        
-        # Fallback to the simple example
-        result = run_example()
+        print(f"Test Failed: {e}")
