@@ -1,472 +1,394 @@
 """
-Decision layer for the route-aware refuelling recommender.
+Module: Fuel Station Recommendation Engine.
 
-This module operates purely in-memory on the list-of-dicts structure
-returned by the integration layer (`route_tankerkoenig_integration`).
+Description:
+    This module implements the decision logic for selecting the optimal refueling stop.
+    It operates on enriched station data (from the integration layer) and applies
+    two distinct ranking strategies based on available input:
 
-Responsibilities
-----------------
-* Ensure that ARDL predictions exist for the chosen fuel type.
-* Optionally apply an economic detour filter and ranking:
-    - baseline price on the direct route,
-    - gross saving vs baseline,
-    - detour fuel and time cost,
-    - net saving and break-even litres.
-* Rank stations along the route.
-* Select the single best station for a given fuel type.
+    1. **Economic Ranking (Cost-Benefit Analysis):**
+       - Active when `litres_to_refuel` and `consumption_l_per_100km` are provided.
+       - Calculates the "Net Saving" of a detour compared to an "On-Route Baseline".
+       - Formula: (BaselinePrice - StationPrice) * Litres - (DetourFuelCost + TimeCost).
+       - Filters stations exceeding max detour constraints.
 
-If the economic parameters are not provided (litres_to_refuel or
-consumption_l_per_100km is None), the module falls back to the
-classical "cheapest predicted price" ranking.
+    2. **Price-Only Ranking (Fallback):**
+       - Active when economic parameters are missing.
+       - Simply sorts stations by the lowest predicted price.
+       - Tie-breakers: Distance along route (earlier is better).
+
+Usage:
+    Called by the UI layer to populate the "Recommended Stop" card and the result list.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Dict, List, Any, Optional
+from typing import Any, Dict, List, Optional, Tuple, TypeAlias, Final
 
 from src.modeling.model import FUEL_TYPES
 from src.modeling.predict import predict_for_fuel
 
+# ==========================================
+# Type Definitions
+# ==========================================
 
-# ---------------------------------------------------------------------------
-# Configuration constants
-# ---------------------------------------------------------------------------
+# A dictionary representing a single station with route and price data.
+StationDict: TypeAlias = Dict[str, Any]
 
-# What counts as "on route" when we search for the baseline price:
-# very small detour only (essentially the direct route).
-ONROUTE_MAX_DETOUR_KM = 1
-ONROUTE_MAX_DETOUR_MIN = 5.0
+# ==========================================
+# Constants & Configuration
+# ==========================================
 
-# Hard safety caps for detours. These are defaults; they can be
-# overridden via function arguments.
-DEFAULT_MAX_DETOUR_KM = 10.0
-DEFAULT_MAX_DETOUR_MIN = 10.0
+# Thresholds to consider a station "On-Route" (used for baseline price calculation)
+# Essentially the direct route with negligible deviation.
+ONROUTE_MAX_DETOUR_KM: Final[float] = 1.0
+ONROUTE_MAX_DETOUR_MIN: Final[float] = 5.0
+
+# Default safety caps for detours if not specified by user
+DEFAULT_MAX_DETOUR_KM: Final[float] = 10.0
+DEFAULT_MAX_DETOUR_MIN: Final[float] = 10.0
 
 
-# ---------------------------------------------------------------------------
-# Helper utilities
-# ---------------------------------------------------------------------------
+# ==========================================
+# Helper: Key Generation & Validation
+# ==========================================
 
 def _prediction_key(fuel_type: str) -> str:
-    """
-    Build the dictionary key used for predictions of a given fuel type.
-
-    Examples
-    --------
-    >>> _prediction_key("e5")
-    'pred_price_e5'
-    """
+    """Returns the dictionary key for the specific fuel type's price prediction."""
     return f"pred_price_{fuel_type.lower().strip()}"
 
 
 def _normalise_fuel_type(fuel_type: str) -> str:
-    """
-    Normalise and validate a fuel type string.
-
-    Returns the canonical lower-case form and raises ValueError for
-    unsupported fuel types.
-    """
+    """Validates and normalizes fuel type string."""
     if fuel_type is None:
         raise ValueError("fuel_type must not be None")
-
+    
     ft = fuel_type.lower().strip()
     if ft not in FUEL_TYPES:
-        valid = ", ".join(FUEL_TYPES)
-        raise ValueError(
-            f"Unsupported fuel_type '{fuel_type}'. Expected one of: {valid}"
-        )
+        valid_options = ", ".join(FUEL_TYPES)
+        raise ValueError(f"Unsupported fuel_type '{fuel_type}'. Expected: {valid_options}")
     return ft
 
 
 def _ensure_predictions(
-    model_input: List[Dict[str, Any]],
+    stations: List[StationDict],
     fuel_type: str,
-    *,
-    now: datetime | None = None,
+    now: Optional[datetime] = None,
 ) -> None:
     """
-    Ensure that ARDL predictions exist for the given fuel type.
-
-    If the prediction key is missing entirely or all values are None,
-    this function calls :func:`predict_for_fuel` to compute them in-place.
+    Guarantees that price predictions exist in the station dictionaries.
+    Mutates the list in-place by calling the inference model if needed.
     """
-    if not model_input:
+    if not stations:
         return
 
     ft = _normalise_fuel_type(fuel_type)
     pred_key = _prediction_key(ft)
 
-    # Check whether we already have at least one non-null prediction
-    has_any_prediction = any(
-        (station.get(pred_key) is not None) for station in model_input
-    )
+    # Check if ANY station already has a prediction. If not, batch predict for all.
+    has_predictions = any(s.get(pred_key) is not None for s in stations)
 
-    if not has_any_prediction:
-        # This mutates model_input in-place
-        predict_for_fuel(model_input, ft, prediction_key=pred_key, now=now)
+    if not has_predictions:
+        predict_for_fuel(stations, ft, prediction_key=pred_key, now=now)
 
 
-def _get_detour_metrics(station: Dict[str, Any]) -> tuple[float, float]:
+# ==========================================
+# Helper: Metric Calculation
+# ==========================================
+
+def _get_detour_metrics(station: StationDict) -> Tuple[float, float]:
     """
-    Return (detour_distance_km, detour_duration_min) with sane defaults.
-
-    Important: For economics we interpret "detour" as *extra* distance/time
-    compared to the baseline route. Small negative values can occur due to
-    routing/rounding artefacts; we clamp them to 0.0 to avoid confusing
-    negative fuel and negative break-even outputs.
+    Extracts detour distance (km) and duration (min) with safety clamping.
+    Returns (0.0, 0.0) if values are missing or negative (routing artifacts).
     """
-    detour_km = station.get("detour_distance_km")
-    detour_min = station.get("detour_duration_min")
+    d_km = station.get("detour_distance_km")
+    d_min = station.get("detour_duration_min")
 
     try:
-        detour_km_f = float(detour_km) if detour_km is not None else 0.0
+        val_km = float(d_km) if d_km is not None else 0.0
     except (TypeError, ValueError):
-        detour_km_f = 0.0
+        val_km = 0.0
 
     try:
-        detour_min_f = float(detour_min) if detour_min is not None else 0.0
+        val_min = float(d_min) if d_min is not None else 0.0
     except (TypeError, ValueError):
-        detour_min_f = 0.0
+        val_min = 0.0
 
-    # Clamp: "detour" = extra distance/time (never negative for economics/UI)
-    detour_km_f = max(detour_km_f, 0.0)
-    detour_min_f = max(detour_min_f, 0.0)
-
-    return detour_km_f, detour_min_f
+    return max(0.0, val_km), max(0.0, val_min)
 
 
 def _find_baseline_price(
-    stations: List[Dict[str, Any]],
+    stations: List[StationDict],
     pred_key: str,
-    *,
-    onroute_max_detour_km: float,
-    onroute_max_detour_min: float,
+    onroute_dist_limit: float,
+    onroute_time_limit: float,
 ) -> Optional[float]:
     """
-    Determine the baseline "on-route" price for the given fuel.
-
-    We select the cheapest station (by predicted price) among those with a
-    very small detour (essentially the direct route). If none qualify,
-    we fall back to the global minimum predicted price across all stations.
+    Determines the "Baseline Price".
+    
+    Strategy:
+    1. Look for the cheapest station that is effectively "On-Route" (within minimal detour limits).
+    2. Fallback: If no on-route station exists, use the global minimum price of all stations.
     """
-    onroute_candidates: List[Dict[str, Any]] = []
+    # Filter 1: Strictly On-Route candidates
+    onroute_candidates = []
     for s in stations:
         price = s.get(pred_key)
         if price is None:
             continue
-        detour_km, detour_min = _get_detour_metrics(s)
-        if abs(detour_km) <= onroute_max_detour_km and abs(detour_min) <= onroute_max_detour_min:
+            
+        d_km, d_min = _get_detour_metrics(s)
+        if d_km <= onroute_dist_limit and d_min <= onroute_time_limit:
             onroute_candidates.append(s)
 
+    # Strategy 1: Cheapest On-Route
     if onroute_candidates:
-        baseline_station = min(onroute_candidates, key=lambda s: s.get(pred_key, float("inf")))
-        return float(baseline_station[pred_key])
+        best_onroute = min(onroute_candidates, key=lambda x: x[pred_key])
+        return float(best_onroute[pred_key])
 
-    # Fallback: global minimum across all stations
-    priced = [s for s in stations if s.get(pred_key) is not None]
-    if not priced:
+    # Strategy 2: Global Cheapest (Fallback)
+    all_priced = [s for s in stations if s.get(pred_key) is not None]
+    if not all_priced:
         return None
-    baseline_station = min(priced, key=lambda s: s.get(pred_key, float("inf")))
-    return float(baseline_station[pred_key])
+    
+    global_best = min(all_priced, key=lambda x: x[pred_key])
+    return float(global_best[pred_key])
 
 
-def _compute_economic_metrics(
-    station: Dict[str, Any],
-    *,
-    baseline_price: float,
+def _calculate_economics(
+    station: StationDict,
     pred_key: str,
-    litres_to_refuel: float,
-    consumption_l_per_100km: float,
-    value_of_time_per_hour: float,
+    baseline_price: float,
+    litres: float,
+    consumption: float,
+    hourly_wage: float,
 ) -> Dict[str, Optional[float]]:
     """
-    Compute economic detour metrics for a single station.
-
-    Notes
-    -----
-    * Detour distance/time are clamped to >= 0 in _get_detour_metrics.
-    * We compute costs using *unrounded* detour litres for accuracy.
-    * We still return detour_fuel_l rounded to 2 decimals for display.
+    Performs the core Economic Math for a single station.
+    
+    Formula:
+        Gross Saving = (Baseline Price - Station Price) * Litres
+        Detour Cost = (Detour Km * Consumption) * Station Price + (Detour Mins * Wage)
+        Net Saving = Gross Saving - Detour Cost
     """
     price = station.get(pred_key)
     if price is None:
-        return {k: None for k in (
-            "gross_saving_eur",
-            "detour_fuel_l",
-            "detour_fuel_cost_eur",
-            "time_cost_eur",
-            "net_saving_eur",
-            "breakeven_liters",
-        )}
+        return {
+            "gross_saving_eur": None,
+            "detour_fuel_l": None,
+            "detour_fuel_cost_eur": None,
+            "time_cost_eur": None,
+            "net_saving_eur": None,
+            "breakeven_liters": None,
+        }
 
-    pA = float(price)           # station price
-    pB = float(baseline_price)  # baseline on-route price
-
+    p_station = float(price)
+    p_baseline = float(baseline_price)
+    
     detour_km, detour_min = _get_detour_metrics(station)
 
-    # Extra fuel for detour (raw for computations, rounded only for display)
-    raw_detour_fuel_l = detour_km * (consumption_l_per_100km / 100.0)
-    detour_fuel_l_display = round(raw_detour_fuel_l, 2)
+    # 1. Cost of Detour Fuel
+    # Formula: (Km * L/100km) -> Litres used
+    detour_litres_raw = detour_km * (consumption / 100.0)
+    detour_cost_eur = detour_litres_raw * p_station
 
-    # Cost of that extra fuel (use raw litres for accuracy)
-    detour_fuel_cost_eur = raw_detour_fuel_l * pA
+    # 2. Cost of Time
+    time_cost_eur = 0.0
+    if hourly_wage > 0.0:
+        time_cost_eur = detour_min * (hourly_wage / 60.0)
 
-    # Time cost (if value_of_time_per_hour > 0)
-    if value_of_time_per_hour > 0.0:
-        time_cost_eur = detour_min * (value_of_time_per_hour / 60.0)
-    else:
-        time_cost_eur = 0.0
+    # 3. Savings
+    gross_saving = (p_baseline - p_station) * litres
+    net_saving = gross_saving - detour_cost_eur - time_cost_eur
 
-    # Gross saving from filling at this station vs baseline
-    gross_saving_eur = (pB - pA) * litres_to_refuel
-
-    # Net saving
-    net_saving_eur = gross_saving_eur - detour_fuel_cost_eur - time_cost_eur
-
-    # Break-even litres: litres required so that net_saving becomes 0.
-    # Only meaningful if station is cheaper than baseline (pB > pA).
-    if pB > pA:
-        breakeven_liters = (detour_fuel_cost_eur + time_cost_eur) / (pB - pA)
-        # Numerical safety (should already be >= 0 due to clamped detours)
-        breakeven_liters = max(float(breakeven_liters), 0.0)
-    else:
-        breakeven_liters = None
+    # 4. Break-even Analysis
+    # "How many liters must I buy to make this detour worth it?"
+    breakeven_liters = None
+    if p_baseline > p_station:
+        total_overhead = detour_cost_eur + time_cost_eur
+        price_diff = p_baseline - p_station
+        breakeven_liters = max(0.0, total_overhead / price_diff)
 
     return {
-        "gross_saving_eur": gross_saving_eur,
-        "detour_fuel_l": detour_fuel_l_display,
-        "detour_fuel_cost_eur": detour_fuel_cost_eur,
+        "gross_saving_eur": gross_saving,
+        "detour_fuel_l": round(detour_litres_raw, 2), # Rounded for display
+        "detour_fuel_cost_eur": detour_cost_eur,
         "time_cost_eur": time_cost_eur,
-        "net_saving_eur": net_saving_eur,
+        "net_saving_eur": net_saving,
         "breakeven_liters": breakeven_liters,
     }
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+# ==========================================
+# Core Logic: Ranking
+# ==========================================
 
 def rank_stations_by_predicted_price(
-    model_input: List[Dict[str, Any]],
+    model_input: List[StationDict],
     fuel_type: str,
-    now: datetime | None = None,
+    now: Optional[datetime] = None,
     *,
-    # Economic detour parameters (all optional; if missing -> fall back to price-only ranking)
+    # Economic Parameters
     litres_to_refuel: Optional[float] = None,
     consumption_l_per_100km: Optional[float] = None,
     value_of_time_per_hour: float = 0.0,
+    # Constraints
     max_detour_km: Optional[float] = None,
     max_detour_min: Optional[float] = None,
     min_net_saving_eur: float = 0.0,
+    # Configuration
     onroute_max_detour_km: float = ONROUTE_MAX_DETOUR_KM,
     onroute_max_detour_min: float = ONROUTE_MAX_DETOUR_MIN,
-) -> List[Dict[str, Any]]:
+) -> List[StationDict]:
     """
-    Rank stations along the route for a given fuel type.
-
-    Two modes
-    ---------
-    1. Economic mode (if ``litres_to_refuel`` and ``consumption_l_per_100km``
-       are both provided and strictly positive):
-
-       * apply hard caps on ``detour_distance_km`` and ``detour_duration_min``,
-       * compute net savings vs. a baseline on–route price,
-       * drop stations with ``net_saving < min_net_saving_eur``,
-       * rank by descending net saving, then by position along the route.
-
-       If no station passes the ``min_net_saving_eur`` threshold but there
-       are stations that satisfy the detour caps, we still return a ranking
-       of the *feasible* stations by net saving (which may be <= 0). This
-       avoids silently reverting to a global cheapest–price ranking and keeps
-       the detour caps and economic interpretation consistent for the UI.
-
-    2. Price–only mode (fallback when economic parameters are missing or no
-       baseline can be computed):
-
-       * rank by lowest predicted price,
-       * tie–break by ``fraction_of_route`` and then ``distance_along_m``.
-
-    All rankings operate on unique ``station_uuid``s (deduplication safety).
+    Main entry point for ranking stations.
+    
+    Returns a list of stations sorted by optimality.
+    
+    Logic Flow:
+    1. Validate inputs and ensure price predictions exist.
+    2. Filter invalid stations (missing prices).
+    3. Determine Mode: Economic vs. Price-Only.
+    4. Apply Detour Constraints (Hard Caps).
+    5. If Economic Mode:
+       - Calculate Baseline Price.
+       - Calculate Net Savings per station.
+       - Sort by Net Saving (Descending).
+    6. If Price-Only Mode (Fallback):
+       - Sort by Absolute Price (Ascending).
     """
     if not model_input:
         return []
 
+    # 1. Setup
     ft = _normalise_fuel_type(fuel_type)
     pred_key = _prediction_key(ft)
-
-    # Use a single "now" for all stations within this ranking call
     if now is None:
         now = datetime.now(timezone.utc)
 
-    # Make sure we have predictions for this fuel
+    # 2. Prediction & Validation
     _ensure_predictions(model_input, ft, now=now)
-
-    # Filter stations with valid predictions
-    valid_stations: List[Dict[str, Any]] = [
-        s for s in model_input if s.get(pred_key) is not None
-    ]
-    if not valid_stations:
+    
+    # Filter valid stations and deduplicate by UUID (keep lowest price variant)
+    valid_map: Dict[str, StationDict] = {}
+    for s in model_input:
+        if s.get(pred_key) is None:
+            continue
+            
+        uuid = s.get("station_uuid")
+        # If UUID missing (rare), track by object ID
+        key = uuid if uuid else str(id(s))
+        
+        existing = valid_map.get(key)
+        # Keep if new, or if new price is lower than existing entry
+        if not existing or s[pred_key] < existing[pred_key]:
+            valid_map[key] = s
+            
+    unique_stations = list(valid_map.values())
+    if not unique_stations:
         return []
 
-    # Deduplicate by station_uuid, keeping the variant with the lowest price
-    by_uuid: Dict[str, Dict[str, Any]] = {}
-    for s in valid_stations:
-        uuid = s.get("station_uuid")
-        if uuid is None:
-            by_uuid[id(s)] = s
-            continue
-
-        existing = by_uuid.get(uuid)
-        if existing is None or s.get(pred_key, float("inf")) < existing.get(
-            pred_key, float("inf")
-        ):
-            by_uuid[uuid] = s
-
-    unique_stations = list(by_uuid.values())
-
-    # ------------------------------------------------------------------
-    # Economic mode (if we have litres + consumption)
-    # ------------------------------------------------------------------
-    economic_mode = (
+    # 3. Determine Mode
+    is_economic_mode = (
         litres_to_refuel is not None
         and consumption_l_per_100km is not None
         and litres_to_refuel > 0
         and consumption_l_per_100km > 0
     )
 
-    # ------------------------------------------------------------------
-    # Detour feasibility caps (apply in BOTH modes)
-    # ------------------------------------------------------------------
-    # Backwards-compatible behaviour:
-    # - In economic mode we always apply detour caps (defaults if missing).
-    # - In price-only mode we only apply caps if the caller provided at least
-    #   one of them (max_detour_km or max_detour_min).
-    apply_detour_caps = economic_mode or (max_detour_km is not None) or (max_detour_min is not None)
-
-    if apply_detour_caps:
-        # Fill missing caps with defaults (and harden against bad types)
-        try:
-            max_detour_km = float(max_detour_km) if max_detour_km is not None else float(DEFAULT_MAX_DETOUR_KM)
-        except (TypeError, ValueError):
-            max_detour_km = float(DEFAULT_MAX_DETOUR_KM)
-
-        try:
-            max_detour_min = float(max_detour_min) if max_detour_min is not None else float(DEFAULT_MAX_DETOUR_MIN)
-        except (TypeError, ValueError):
-            max_detour_min = float(DEFAULT_MAX_DETOUR_MIN)
-
-        # Filter stations outside the user's feasibility constraints
-        capped: List[Dict[str, Any]] = []
+    # 4. Apply Detour Caps
+    # Logic: In economic mode, caps are mandatory (defaulting if None).
+    # In price mode, caps are optional (only applied if user provided them).
+    should_cap = is_economic_mode or (max_detour_km is not None) or (max_detour_min is not None)
+    
+    if should_cap:
+        # Resolve caps with defaults
+        cap_km = float(max_detour_km) if max_detour_km is not None else DEFAULT_MAX_DETOUR_KM
+        cap_min = float(max_detour_min) if max_detour_min is not None else DEFAULT_MAX_DETOUR_MIN
+        
+        filtered_stations = []
         for s in unique_stations:
-            detour_km, detour_min = _get_detour_metrics(s)
-            if detour_km <= max_detour_km and detour_min <= max_detour_min:
-                capped.append(s)
+            d_km, d_min = _get_detour_metrics(s)
+            if d_km <= cap_km and d_min <= cap_min:
+                filtered_stations.append(s)
+        unique_stations = filtered_stations
 
-        unique_stations = capped
-        if not unique_stations:
-            return []
+    if not unique_stations:
+        return []
 
-    if economic_mode:
-        # Baseline price (on–route)
-        baseline_price = _find_baseline_price(
-            unique_stations,
-            pred_key,
-            onroute_max_detour_km=onroute_max_detour_km,
-            onroute_max_detour_min=onroute_max_detour_min,
+    # 5. Economic Ranking Strategy
+    if is_economic_mode:
+        baseline = _find_baseline_price(
+            unique_stations, 
+            pred_key, 
+            onroute_max_detour_km, 
+            onroute_max_detour_min
         )
 
-
-        if baseline_price is not None:
-            baseline_key = f"econ_baseline_price_{ft}"
-            econ_net_key = f"econ_net_saving_eur_{ft}"
-            econ_gross_key = f"econ_gross_saving_eur_{ft}"
-            econ_detour_fuel_key = f"econ_detour_fuel_l_{ft}"
-            econ_detour_fuel_cost_key = f"econ_detour_fuel_cost_eur_{ft}"
-            econ_time_cost_key = f"econ_time_cost_eur_{ft}"
-            econ_breakeven_key = f"econ_breakeven_liters_{ft}"
-
-            economic_candidates: List[Dict[str, Any]] = []
-            feasible_stations: List[Dict[str, Any]] = []
-
+        if baseline is not None:
+            # Keys for injecting results into the station dict
+            k_net = f"econ_net_saving_eur_{ft}"
+            
+            # Calculate metrics for all candidates
+            candidates = []
             for s in unique_stations:
-                detour_km, detour_min = _get_detour_metrics(s)
-
-                # Hard–cap filter: only consider stations within the user's
-                # max detour distance and time.
-                if abs(detour_km) > max_detour_km or abs(detour_min) > max_detour_min:
-                    continue
-
-                metrics = _compute_economic_metrics(
-                    s,
-                    baseline_price=baseline_price,
-                    pred_key=pred_key,
-                    litres_to_refuel=float(litres_to_refuel),
-                    consumption_l_per_100km=float(consumption_l_per_100km),
-                    value_of_time_per_hour=float(value_of_time_per_hour),
+                metrics = _calculate_economics(
+                    s, pred_key, baseline,
+                    float(litres_to_refuel), # type: ignore
+                    float(consumption_l_per_100km), # type: ignore
+                    float(value_of_time_per_hour)
                 )
+                
+                # Inject metrics
+                s[f"econ_baseline_price_{ft}"] = baseline
+                s[f"econ_gross_saving_eur_{ft}"] = metrics["gross_saving_eur"]
+                s[f"econ_detour_fuel_l_{ft}"] = metrics["detour_fuel_l"]
+                s[f"econ_detour_fuel_cost_eur_{ft}"] = metrics["detour_fuel_cost_eur"]
+                s[f"econ_time_cost_eur_{ft}"] = metrics["time_cost_eur"]
+                s[k_net] = metrics["net_saving_eur"]
+                s[f"econ_breakeven_liters_{ft}"] = metrics["breakeven_liters"]
+                
+                candidates.append(s)
 
-                # Attach metrics to station dict for later use in the UI
-                s[baseline_key] = baseline_price
-                s[econ_gross_key] = metrics["gross_saving_eur"]
-                s[econ_detour_fuel_key] = metrics["detour_fuel_l"]
-                s[econ_detour_fuel_cost_key] = metrics["detour_fuel_cost_eur"]
-                s[econ_time_cost_key] = metrics["time_cost_eur"]
-                s[econ_net_key] = metrics["net_saving_eur"]
-                s[econ_breakeven_key] = metrics["breakeven_liters"]
+            # Sort Logic:
+            # 1. Net Saving (High to Low)
+            # 2. Fraction of Route (Low to High - earlier stops preferred if savings equal)
+            # 3. Distance Along (Low to High - tie breaker)
+            def econ_sorter(x: StationDict) -> Tuple:
+                net = x.get(k_net)
+                if net is None: 
+                    return (float("inf"), float("inf"), float("inf"))
+                return (-net, x.get("fraction_of_route", float("inf")), x.get("distance_along_m", float("inf")))
 
-                feasible_stations.append(s)
+            sorted_candidates = sorted(candidates, key=econ_sorter)
 
-                net = metrics["net_saving_eur"]
-                if net is None:
-                    continue
-                if net < min_net_saving_eur:
-                    continue
+            # Filter Logic:
+            # Try to return only those matching min_net_saving.
+            # However, if NO station meets savings threshold, return the sorted list of feasible stations anyway.
+            # This prevents returning an empty list when stations are physically reachable but economically subpar.
+            savings_filtered = [c for c in sorted_candidates if c.get(k_net, -999) >= min_net_saving_eur]
+            
+            return savings_filtered if savings_filtered else sorted_candidates
 
-                economic_candidates.append(s)
+    # 6. Price-Only Ranking Strategy (Fallback)
+    # Sort Logic:
+    # 1. Price (Low to High)
+    # 2. Fraction of Route (Low to High)
+    def price_sorter(x: StationDict) -> Tuple:
+        return (
+            x.get(pred_key, float("inf")), 
+            x.get("fraction_of_route", float("inf")),
+            x.get("distance_along_m", float("inf"))
+        )
 
-            if economic_candidates:
-                # Rank by descending net saving, then earlier on the route
-                def econ_sort_key(station: Dict[str, Any]):
-                    net = station.get(econ_net_key, float("-inf"))
-                    frac = station.get("fraction_of_route", float("inf"))
-                    dist = station.get("distance_along_m", float("inf"))
-                    # Negative first component because we want descending net saving
-                    return (-net, frac, dist)
-
-                return sorted(economic_candidates, key=econ_sort_key)
-
-            if feasible_stations:
-                # No station meets the min_net_saving_eur threshold, but there
-                # *are* stations within the detour caps. Return a ranking of
-                # those feasible stations by (possibly negative) net saving.
-                def feasible_sort_key(station: Dict[str, Any]):
-                    net = station.get(econ_net_key, float("-inf"))
-                    frac = station.get("fraction_of_route", float("inf"))
-                    dist = station.get("distance_along_m", float("inf"))
-                    return (-net, frac, dist)
-
-                return sorted(feasible_stations, key=feasible_sort_key)
-        # If we cannot compute a baseline at all, fall through to price-only
-        # ranking below.
-
-    # ------------------------------------------------------------------
-    # Fallback: classical price-only ranking
-    # ------------------------------------------------------------------
-    def sort_key(station: Dict[str, Any]):
-        price = station.get(pred_key, float("inf"))
-        frac = station.get("fraction_of_route", float("inf"))
-        dist = station.get("distance_along_m", float("inf"))
-        return (price, frac, dist)
-
-    ranked = sorted(unique_stations, key=sort_key)
-    return ranked
+    return sorted(unique_stations, key=price_sorter)
 
 
 def recommend_best_station(
-    model_input: List[Dict[str, Any]],
+    model_input: List[StationDict],
     fuel_type: str,
-    now: datetime | None = None,
+    now: Optional[datetime] = None,
     *,
     litres_to_refuel: Optional[float] = None,
     consumption_l_per_100km: Optional[float] = None,
@@ -476,14 +398,10 @@ def recommend_best_station(
     min_net_saving_eur: float = 0.0,
     onroute_max_detour_km: float = ONROUTE_MAX_DETOUR_KM,
     onroute_max_detour_min: float = ONROUTE_MAX_DETOUR_MIN,
-) -> Dict[str, Any] | None:
+) -> Optional[StationDict]:
     """
-    Select the single best station for a given fuel type.
-
-    If economic parameters are provided, the "best" station is the one
-    with highest net saving (subject to the detour hard caps and minimum
-    net saving). Otherwise it is simply the station with the lowest
-    predicted price according to :func:`rank_stations_by_predicted_price`.
+    Wrapper around ranking that returns only the top-ranked station.
+    Returns None if no stations qualify.
     """
     ranked = rank_stations_by_predicted_price(
         model_input,
@@ -498,6 +416,5 @@ def recommend_best_station(
         onroute_max_detour_km=onroute_max_detour_km,
         onroute_max_detour_min=onroute_max_detour_min,
     )
-    if not ranked:
-        return None
-    return ranked[0]
+    
+    return ranked[0] if ranked else None

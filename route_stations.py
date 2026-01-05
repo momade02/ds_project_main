@@ -1,136 +1,145 @@
 """
-Description: This script uses the Google Maps Directions + Places APIs to:
- - geocode two addresses,
- - calculate a driving route between them,
- - and find gas stations along that route.
+Module: Google Maps Integration for Route and Fuel Station Data.
 
-The functions `google_geocode_structured`, `google_route_driving_car`, and
-`google_places_fuel_along_route` are imported by the main app / integration
-pipeline.
+Description:
+    This module acts as the interface to the Google Maps Platform APIs (Directions,
+    Geocoding, and Places). It is responsible for:
+    1. Geocoding human-readable addresses into coordinates.
+    2. Calculating driving routes between points to get geometry and metrics.
+    3. Identifying gas stations along a specific route corridor using the
+       Places API "Search Along Route" feature.
+    4. calculating detour metrics (extra time and distance) required to visit
+       those stations.
+
+Usage:
+    The functions defined here are intended to be imported by higher-level
+    application logic (e.g., integration pipelines or UI handlers).
+    Running this file directly executes a local test scenario.
 """
 
-# test case long/short/switzerland (only used when running this file directly)
-route_scenario = "short"  # "long", "short" or "switzerland"
-
-# === Setup ===
 import os
-from pathlib import Path
-import json
-import requests
-from shapely.geometry import LineString
-from shapely.ops import transform, substring
-import pyproj
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
-import googlemaps
-import polyline
 import time
+import json
+from datetime import datetime, timedelta
+from typing import Any, TypeAlias, Final
+from zoneinfo import ZoneInfo
+
+import googlemaps  # type: ignore[import-untyped]
+import polyline  # type: ignore[import-untyped]
+import requests
+
+# Custom internal error handling
 from src.app.app_errors import ConfigError
 
+# --- Type Definitions for Improved LLM Readability ---
+# Coordinates format: [longitude, latitude] used by some GeoJSON structures
+LonLatList: TypeAlias = list[float]
+# Coordinates format: (latitude, longitude) used by Google Maps Client
+LatLatTuple: TypeAlias = tuple[float, float]
+# A list of coordinates forming a path
+RoutePathLonLat: TypeAlias = list[LonLatList]
 
-# Hardcoded addresses for local testing only
-if route_scenario == "short":
-    start_address = "Wilhelmstraße 7"
-    start_locality = "Tübingen"
-    start_country = "Germany"
-    end_address = "Charlottenstraße 45"
-    end_locality = "Reutlingen"
-    end_country = "Germany"
-elif route_scenario == "long":
-    start_address = "Wilhelmstraße 7"
-    start_locality = "Tübingen"
-    start_country = "Germany"
-    end_address = "Borsigallee 26"
-    end_locality = "Frankfurt am Main"
-    end_country = "Germany"
-elif route_scenario == "switzerland":
-    start_address = "Zinngärten 9"
-    start_locality = "Stühlingen"
-    start_country = "Germany"
-    end_address = "Lendenbergstrasse 32"
-    end_locality = "Schleitheim"
-    end_country = "Switzerland"
-else:
-    raise ValueError("Unknown route_scenario")
+# Dictionary structure for station data returned by google_places_fuel_along_route
+StationDataDict: TypeAlias = dict[str, Any]
+# Dictionary structure for route-via-waypoint results
+ViaRouteResultDict: TypeAlias = dict[str, Any]
 
-# Search parameter for the gas stations along the route (legacy, not used with Google)
-buffer_meters = 300  # buffer width in meters
 
+# --- Configuration and Constants ---
+# The timezone used for normalizing "now" in departure time calculations.
+# This suggests the application is currently localized for Central Europe.
+LOCAL_TIMEZONE: Final[ZoneInfo] = ZoneInfo("Europe/Berlin")
+
+# API configuration
+GOOGLE_PLACES_SEARCH_URL: Final[str] = "https://places.googleapis.com/v1/places:searchText"
+
+
+# ==========================================
+# Helper Functions
+# ==========================================
 
 def environment_check() -> str:
-    """Return the Google Maps API key from the environment.
-
-    Side-effect free by design: no dotenv loading happens here.
-    Load .env in the application entrypoint (Streamlit/CLI), not in helpers.
     """
+    Retrieves and validates the Google Maps API key from the environment.
+
+    Raises:
+        ConfigError: If the GOOGLE_MAPS_API_KEY environment variable is unset.
+
+    Returns:
+        str: The valid Google Maps API key.
+    """
+    # NOTE: Dotenv loading happens at the application entrypoint, not here.
     google_api_key = os.getenv("GOOGLE_MAPS_API_KEY")
     if not google_api_key:
         raise ConfigError(
             user_message="Google Maps API key is not configured.",
-            remediation="Set GOOGLE_MAPS_API_KEY in your environment (or load it via .env in the entrypoint) and restart.",
+            remediation="Set GOOGLE_MAPS_API_KEY in environment.",
             details="Missing environment variable: GOOGLE_MAPS_API_KEY",
         )
     return google_api_key
 
-def parse_duration(d: str) -> float:
+
+def parse_duration(duration_str: str) -> float:
     """
-    Parse a duration string in the format "{number}s" and return the number as float.
+    Parses a Google API duration string (e.g., "123s") into seconds.
 
-    Parameters
-    ----------
-    d : str
-        Duration string in the format "{number}s".
+    Google API often returns durations as strings terminated with 's'.
 
-    Returns
-    -------
-    float
-        Duration in seconds.
+    Args:
+        duration_str: String format "{number}s".
+
+    Returns:
+        float: Duration in seconds.
+
+    Raises:
+        ValueError: If format does not end in 's'.
     """
-    if not d.endswith("s"):
-        raise ValueError(f"Unexpected duration format: {d}")
-    return float(d[:-1])
+    if not duration_str.endswith("s"):
+        raise ValueError(f"Unexpected duration format: {duration_str}")
+    return float(duration_str[:-1])
 
 
-# ---------------------------------------------------------------------------
-# Google API helpers
-# ---------------------------------------------------------------------------
+# ==========================================
+# Google Maps API Core Integration
+# ==========================================
 
-def google_geocode_structured(street: str, city: str, country: str, api_key: str):
+def google_geocode_structured(
+    street: str, city: str, country: str, api_key: str
+) -> tuple[float, float, str]:
     """
-    Geocode a structured address using googlemaps.Client.
+    Geocodes a structured address using the Google Maps Geocoding API.
 
-    Parameters
-    ----------
-    street : str
-        Street address.
-    city : str
-        City name.
-    country : str
-        Country name.
-    api_key : str
-        Google Maps API key.
+    Args:
+        street: Street address.
+        city: City name.
+        country: Country name.
+        api_key: Valid Google Maps API key.
 
-    Returns
-    -------
-    (float, float, str)
-        (lat, lon, label)
+    Returns:
+        tuple[float, float, str]: A tuple containing:
+            - latitude (float)
+            - longitude (float)
+            - formatted_label (str): The resolved address label from Google.
+
+    Raises:
+        ValueError: If geocoding fails to yield results or coordinates.
     """
     client = googlemaps.Client(key=api_key)
-    address = f"{street}, {city}, {country}"
-    results = client.geocode(address)
+    address_query = f"{street}, {city}, {country}"
+    results = client.geocode(address_query)
 
     if not results:
-        raise ValueError(f"No results for {street}, {city}, {country}")
+        raise ValueError(f"No geocoding results for {address_query}")
 
-    top = results[0]
-    loc = top.get("geometry", {}).get("location", {})
-    lat = loc.get("lat")
-    lon = loc.get("lng")
-    label = top.get("formatted_address", address)
+    # Extract data from the top result
+    top_result = results[0]
+    location_data = top_result.get("geometry", {}).get("location", {})
+    lat = location_data.get("lat")
+    lon = location_data.get("lng")
+    label = top_result.get("formatted_address", address_query)
 
     if lat is None or lon is None:
-        raise ValueError(f"Geocoding returned no coordinates for {address}")
+        raise ValueError(f"Geocoding returned missing coordinates for {address_query}")
 
     return lat, lon, label
 
@@ -142,64 +151,77 @@ def google_route_driving_car(
     end_lon: float,
     api_key: str,
     departure_time: str | datetime = "now",
-):
+) -> tuple[RoutePathLonLat, float, float, datetime]:
     """
-    Get driving route between two coordinates using Google Directions API.
+    Calculates a driving route between origin and destination using Google Directions API.
 
-    Parameters
-    ----------
-    start_lat, start_lon, end_lat, end_lon : float
-        Start / end coordinates.
-    api_key : str
-        Google Maps API key.
-    departure_time : "now" or datetime
-        Desired departure time. If "now", the current local time in
-        Europe/Berlin is used.
+    Used to establish the baseline route geometry and metrics before finding stations.
 
-    Returns
-    -------
-    coords_lonlat : list[list[float, float]]
-        Route polyline as [lon, lat] coordinates.
-    distance_km : float
-        Total distance of the route in kilometers.
-    duration_min : float
-        Total duration of the route in minutes.
-    departure_time : datetime
-        The (possibly normalised) departure time used for ETA calculations.
+    Args:
+        start_lat: Origin latitude.
+        start_lon: Origin longitude.
+        end_lat: Destination latitude.
+        end_lon: Destination longitude.
+        api_key: Valid Google Maps API key.
+        departure_time: "now" or a specific datetime object. Defaults to "now".
+
+    Returns:
+        tuple containing:
+        - RoutePathLonLat: List of [lon, lat] coordinates forming the route polyline.
+        - float: Total distance in kilometers.
+        - float: Total duration in minutes.
+        - datetime: The actual departure time used for the calculation.
+
+    Raises:
+        ValueError: If Google Directions API finds no route.
     """
     client = googlemaps.Client(key=api_key)
 
-    directions = client.directions(
+    if departure_time == "now":
+        departure_time_dt = datetime.now(LOCAL_TIMEZONE)
+    else:
+        # Assume input is already a valid datetime if not "now"
+        departure_time_dt = departure_time # type: ignore
+
+    # Call Directions API
+    # Alternatives=False ensures we get a single best route.
+    # traffic_model="best_guess" uses historical and live traffic data.
+    directions_result = client.directions(
         origin=(start_lat, start_lon),
         destination=(end_lat, end_lon),
         mode="driving",
         alternatives=False,
-        departure_time=departure_time,
+        departure_time=departure_time_dt,
         traffic_model="best_guess",
     )
 
-    if not directions:
+    if not directions_result:
         raise ValueError("No route found by Google Directions API.")
 
-    if departure_time == "now":
-        departure_time = datetime.now(ZoneInfo("Europe/Berlin"))
+    route = directions_result[0]
 
-    route = directions[0]
+    # Sum metrics across all legs of the route
+    # Note: Google API returns distance in meters (value) and duration in seconds (value)
+    distance_meters = sum(
+        leg.get("distance", {}).get("value", 0) for leg in route.get("legs", [])
+    )
+    duration_seconds = sum(
+        leg.get("duration", {}).get("value", 0) for leg in route.get("legs", [])
+    )
 
-    # total distance (m) and duration (s)
-    distance_m = sum(leg.get("distance", {}).get("value", 0) for leg in route.get("legs", []))
-    duration_s = sum(leg.get("duration", {}).get("value", 0) for leg in route.get("legs", []))
+    # Extract geometry. prefer "overview_polyline" for a smoothed full path.
+    encoded_polyline = route.get("overview_polyline", {}).get("points")
+    decoded_points: list[dict[str, float]] = googlemaps.convert.decode_polyline(
+        encoded_polyline
+    )
+    # Convert list of dicts {'lat': x, 'lng': y} to list of lists [lon, lat]
+    coords_lonlat: RoutePathLonLat = [[p["lng"], p["lat"]] for p in decoded_points]
 
-    # prefer overview_polyline for geometry
-    overview = route.get("overview_polyline", {}).get("points")
-    points = googlemaps.convert.decode_polyline(overview)
-    # convert to list of [lon, lat]
-    coords_lonlat = [[p["lng"], p["lat"]] for p in points]
+    # Convert metrics to standard units (km and minutes)
+    distance_km = distance_meters / 1000.0
+    duration_min = duration_seconds / 60.0
 
-    distance_km = distance_m / 1000.0
-    duration_min = duration_s / 60.0
-
-    return coords_lonlat, distance_km, duration_min, departure_time
+    return coords_lonlat, distance_km, duration_min, departure_time_dt
 
 
 def google_route_via_waypoint(
@@ -211,113 +233,117 @@ def google_route_via_waypoint(
     end_lon: float,
     api_key: str,
     departure_time: str | datetime = "now",
-):
+) -> ViaRouteResultDict:
     """
-    Get a driving route that goes from origin → waypoint → destination using
-    Google Directions API. Returns only the overview polyline (single path)
-    and total distance/duration.
+    Calculates a driving route going specifically from Origin -> Waypoint -> Destination.
 
-    Parameters
-    ----------
-    start_lat, start_lon, waypoint_lat, waypoint_lon, end_lat, end_lon : float
-        Coordinates for origin, waypoint (station) and destination.
-    api_key : str
-        Google Maps API key.
-    departure_time : "now" or datetime
-        Desired departure time.
+    Used to verify the exact path and metrics of stopping at a specific station.
 
-    Returns
-    -------
-        dict
-                {
-                    'via_full_coords': [[lon, lat], ...],
-                    'via_distance_km': float,
-                    'via_duration_min': float,
-                    'departure_time': datetime
-                }
+    Args:
+        start_lat, start_lon: Origin coordinates.
+        waypoint_lat, waypoint_lon: Intermediate stop coordinates (e.g., a gas station).
+        end_lat, end_lon: Final destination coordinates.
+        api_key: Valid Google Maps API key.
+        departure_time: "now" or datetime.
+
+    Returns:
+        ViaRouteResultDict: A dictionary with keys:
+            - 'via_full_coords': RoutePathLonLat (polyline list)
+            - 'via_distance_km': float (total distance)
+            - 'via_duration_min': float (total duration)
+            - 'departure_time': datetime used.
     """
     client = googlemaps.Client(key=api_key)
 
-    directions = client.directions(
+    if departure_time == "now":
+        departure_time_dt = datetime.now(LOCAL_TIMEZONE)
+    else:
+        departure_time_dt = departure_time # type: ignore
+
+    # Call Directions API with waypoints parameter
+    directions_result = client.directions(
         origin=(start_lat, start_lon),
         destination=(end_lat, end_lon),
         waypoints=[(waypoint_lat, waypoint_lon)],
         mode="driving",
         alternatives=False,
-        departure_time=departure_time,
+        departure_time=departure_time_dt,
         traffic_model="best_guess",
     )
 
-    if not directions:
-        raise ValueError("No via-station route found by Google Directions API.")
+    if not directions_result:
+        raise ValueError("No via-waypoint route found by Google Directions API.")
 
-    if departure_time == "now":
-        departure_time = datetime.now(ZoneInfo("Europe/Berlin"))
+    route = directions_result[0]
 
-    route = directions[0]
+    # Sum distance/duration over the two legs (Origin->Waypoint, Waypoint->Destination)
+    total_distance_meters = sum(
+        leg.get("distance", {}).get("value", 0) for leg in route.get("legs", [])
+    )
+    total_duration_seconds = sum(
+        leg.get("duration", {}).get("value", 0) for leg in route.get("legs", [])
+    )
 
-    # Total distance and duration over both legs
-    total_distance_m = sum(leg.get("distance", {}).get("value", 0) for leg in route.get("legs", []))
-    total_duration_s = sum(leg.get("duration", {}).get("value", 0) for leg in route.get("legs", []))
-
-    # Overview polyline for the full path (origin → waypoint → destination)
-    overview = route.get("overview_polyline", {}).get("points")
-    if not overview:
+    # Decode geometry
+    encoded_polyline = route.get("overview_polyline", {}).get("points")
+    if not encoded_polyline:
         raise ValueError("Directions API response missing overview polyline.")
-    pts = googlemaps.convert.decode_polyline(overview)
-    full_coords = [[p["lng"], p["lat"]] for p in pts]
+    decoded_points = googlemaps.convert.decode_polyline(encoded_polyline)
+    full_coords_lonlat: RoutePathLonLat = [
+        [p["lng"], p["lat"]] for p in decoded_points
+    ]
 
     return {
-        "via_full_coords": full_coords,
-        "via_distance_km": total_distance_m / 1000.0,
-        "via_duration_min": total_duration_s / 60.0,
-        "departure_time": departure_time,
+        "via_full_coords": full_coords_lonlat,
+        "via_distance_km": total_distance_meters / 1000.0,
+        "via_duration_min": total_duration_seconds / 60.0,
+        "departure_time": departure_time_dt,
     }
 
 
 def google_places_fuel_along_route(
-    segment_coords,
+    segment_coords_lonlat: RoutePathLonLat,
     api_key: str,
     original_distance_km: float,
     original_duration_min: float,
     departure_time: datetime,
     timeout_seconds: int | float = 30,
-):
+) -> list[StationDataDict]:
     """
-    Get fuel stations along a route using Google Places "searchAlongRoute".
+    Finds gas stations along a route corridor using Google Places API (New Version).
 
-    Parameters
-    ----------
-    segment_coords : list[list[float, float]]
-        Route coordinates as [lon, lat].
-    api_key : str
-        Google Maps API key.
-    original_distance_km : float
-        Original route distance in kilometers.
-    original_duration_min : float
-        Original route duration in minutes.
-    departure_time : datetime
-        Departure time (local, Europe/Berlin).
-    timeout_seconds : int or float
-        HTTP timeout for the Places request.
+    This function uses the 'searchAlongRouteParameters' feature of the Places API v1.
+    It automatically handles pagination to retrieve all results.
 
-    Returns
-    -------
-    list[dict]
-        List of fuel stations with keys:
-            name, lat, lon,
-            detour_distance_km, detour_duration_min,
-            distance_along_m, fraction_of_route, eta,
-            open_now, opening_hours
+    Crucially, it calculates detour metrics based on the API's 'routingSummaries' response,
+    which provides the time/distance required to deviate to the station and return to route.
+
+    Args:
+        segment_coords_lonlat: Input route path as list of [lon, lat].
+        api_key: Google Maps API key.
+        original_distance_km: Total distance of the direct route (baseline).
+        original_duration_min: Total duration of the direct route (baseline).
+        departure_time: Departure time used for ETA calculations.
+        timeout_seconds: Max time for API requests. Defaults to 30.
+
+    Returns:
+        list[StationDataDict]: A list of dictionaries, each representing a station
+        with location, detour metrics, ETA, and opening hours data.
     """
-    # segment_coords = [[lon, lat], ... ] but polyline needs [(lat, lon), ...]
-    latlon = [(lat, lon) for lon, lat in segment_coords]
-    encoded_poly = polyline.encode(latlon, precision=5)
+    # 1. Prepare Geometry: Convert [lon, lat] list to [(lat, lon)] tuple list for encoding
+    latlon_tuples: list[LatLatTuple] = [
+        (lat, lon) for lon, lat in segment_coords_lonlat
+    ]
+    # Encode geometry into polyline string format required by Places API
+    encoded_poly_str = polyline.encode(latlon_tuples, precision=5)
 
-    url = "https://places.googleapis.com/v1/places:searchText"
+    # 2. Prepare API Request
+    # Using the new Places API v1 endpoint
     headers = {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": api_key,
+        # FieldMask dictates exactly which fields the API returns to save bandwidth.
+        # We ask for display name, location, hours, routing summaries (critical for detour calc), and next page token.
         "X-Goog-FieldMask": (
             "places.displayName,places.location,"
             "places.regularOpeningHours,"
@@ -326,171 +352,224 @@ def google_places_fuel_along_route(
             "nextPageToken"
         ),
     }
-    base_body = {
+
+    # Base request body for searchAlongRoute
+    base_request_body = {
         "textQuery": "gas station",
-        "languageCode": "de",
+        "languageCode": "de",  # Prefer German results based on context
         "searchAlongRouteParameters": {
-            "polyline": {"encodedPolyline": encoded_poly}
+            "polyline": {"encodedPolyline": encoded_poly_str}
         },
         "routingParameters": {
             "travelMode": "DRIVE",
         },
     }
 
-    stations: list[dict] = []
-    page_token = None
+    stations_found: list[StationDataDict] = []
+    page_token: str | None = None
 
+    # 3. Execute Search with Pagination Loop
     while True:
-        body = dict(base_body)
+        current_request_body = dict(base_request_body)
         if page_token:
-            body["pageToken"] = page_token
+            current_request_body["pageToken"] = page_token
 
         try:
-            r = requests.post(url, headers=headers, json=body, timeout=timeout_seconds)
-            r.raise_for_status()
-            print(
-                f"\n Google Places Search Along Route status code: "
-                f"{r.status_code} Reason: {r.reason}"
+            response = requests.post(
+                GOOGLE_PLACES_SEARCH_URL,
+                headers=headers,
+                json=current_request_body,
+                timeout=timeout_seconds,
             )
-            data = r.json()
-        except requests.Timeout:
+            response.raise_for_status()
+        except requests.Timeout as e:
             raise TimeoutError(
-                f"Google Places Search Along Route timed out after {timeout_seconds} seconds."
-            )
+                f"Google Places Search timed out after {timeout_seconds}s"
+            ) from e
+        except requests.RequestException as e:
+            print(f"API Request Error: {e}")
+            # Break loop on non-transient errors, returning whatever was found so far
+            break
 
-        places = data.get("places", [])
-        routing_summaries = data.get("routingSummaries", [])
+        data_json = response.json()
+        places_list = data_json.get("places", [])
+        # routingSummaries corresponds 1-to-1 with places_list
+        routing_summaries_list = data_json.get("routingSummaries", [])
 
-        for place, routing in zip(places, routing_summaries):
-            legs = routing.get("legs", [])
+        # 4. Process Results in current page
+        for place, routing in zip(places_list, routing_summaries_list):
+            # Extract location
+            loc_data = place.get("location", {})
+            lat = loc_data.get("latitude")
+            lon = loc_data.get("longitude")
 
-            # Leg 0: Origin -> station A
-            leg_OA = legs[0]
-            D_OA = leg_OA["distanceMeters"]          # distance along route in metres
-            T_OA = parse_duration(leg_OA["duration"])  # seconds
-
-            # Leg 1: station A -> Destination
-            leg_AD = legs[1]
-            D_AD = leg_AD["distanceMeters"]
-            T_AD = parse_duration(leg_AD["duration"])
-
-            # Origin -> A -> Destination
-            D_OAD = D_OA + D_AD
-            T_OAD = T_OA + T_AD
-
-            # Detour compared to original route
-            detour_distance_km = D_OAD / 1000.0 - original_distance_km
-            detour_duration_min = T_OAD / 60.0 - original_duration_min
-
-            loc = place.get("location", {})
-            lat = loc.get("latitude")
-            lon = loc.get("longitude")
+            # Skip if crucial coordinate data is missing
             if lat is None or lon is None:
                 continue
 
-            eta = departure_time + timedelta(seconds=T_OA)
+            # Extract routing logic for detour calculation
+            # The API returns 'legs' describing the detour:
+            # Leg 0: Origin -> Station
+            # Leg 1: Station -> Destination
+            legs = routing.get("legs", [])
+            if len(legs) < 2:
+                continue
 
-            # Extract opening hours information
-            opening_hours = place.get("regularOpeningHours", {})
-            open_now = opening_hours.get("openNow")
-            weekday_descriptions = opening_hours.get("weekdayDescriptions", [])
+            leg_origin_to_station = legs[0]
+            leg_station_to_dest = legs[1]
 
-            # Fraction of route: position along route relative to original distance
-            if original_distance_km and original_distance_km > 0:
-                fraction_of_route = D_OA / (original_distance_km * 1000.0)
-            else:
-                fraction_of_route = None
-
-            stations.append(
-                {
-                    "name": place.get("displayName", {}).get("text") or "Unnamed",
-                    "lat": lat,
-                    "lon": lon,
-                    "detour_distance_km": detour_distance_km,
-                    "detour_duration_min": detour_duration_min,
-                    "distance_along_m": D_OA,
-                    "fraction_of_route": fraction_of_route,
-                    "eta": eta.isoformat(),
-                    "open_now": open_now,
-                    "opening_hours": weekday_descriptions,
-                }
+            # Metrics: Origin -> Station
+            dist_meters_oa = leg_origin_to_station.get("distanceMeters", 0)
+            duration_seconds_oa = parse_duration(
+                leg_origin_to_station.get("duration", "0s")
             )
 
-        # pagination
-        next_token = data.get("nextPageToken")
+            # Metrics: Station -> Destination
+            dist_meters_ad = leg_station_to_dest.get("distanceMeters", 0)
+            duration_seconds_ad = parse_duration(
+                leg_station_to_dest.get("duration", "0s")
+            )
+
+            # Total metrics for the route passing through the station (O -> A -> D)
+            total_dist_meters_oad = dist_meters_oa + dist_meters_ad
+            total_duration_seconds_oad = duration_seconds_oa + duration_seconds_ad
+
+            # Calculate Detour Cost: (Route via station) - (Original baseline route)
+            # Convert to km and minutes for final output.
+            detour_distance_km = (
+                total_dist_meters_oad / 1000.0
+            ) - original_distance_km
+            detour_duration_min = (
+                total_duration_seconds_oad / 60.0
+            ) - original_duration_min
+
+            # Calculate Estimated Time of Arrival at the station
+            eta_at_station = departure_time + timedelta(seconds=duration_seconds_oa)
+
+            # Calculate progression along route (fraction 0.0 to 1.0) based on distance to station
+            fraction_of_route = 0.0
+            if original_distance_km > 0:
+                fraction_of_route = (dist_meters_oa / 1000.0) / original_distance_km
+
+            # Extract opening hours data
+            opening_hours_data = place.get("regularOpeningHours", {})
+
+            # Build final station dictionary
+            station_dict: StationDataDict = {
+                "name": place.get("displayName", {}).get("text") or "Unnamed",
+                "lat": lat,
+                "lon": lon,
+                "detour_distance_km": detour_distance_km,
+                "detour_duration_min": detour_duration_min,
+                # Distance from origin to station is useful for sorting
+                "distance_along_m": dist_meters_oa,
+                "fraction_of_route": fraction_of_route,
+                "eta": eta_at_station.isoformat(),
+                "open_now": opening_hours_data.get("openNow"),
+                "opening_hours": opening_hours_data.get("weekdayDescriptions", []),
+            }
+            stations_found.append(station_dict)
+
+        # 5. Handle Pagination
+        next_token = data_json.get("nextPageToken")
         if next_token:
-            time.sleep(0.2)  # brief pause before next page
+            time.sleep(0.2)  # Rate limiting pause recommended by Google
             page_token = next_token
         else:
+            # No more pages
             break
 
-    print(f"\n Found {len(stations)} stations (all pages).")
-    return stations
+    print(f"Google Places: Found {len(stations_found)} stations total.")
+    return stations_found
 
 
-# ---------------------------------------------------------------------------
-# Local test entrypoint
-# ---------------------------------------------------------------------------
-
-def main():
-    """
-    Command-line / direct-run entrypoint for testing the route pipeline.
-    When imported as a module (e.g. by Streamlit), this function is NOT executed.
-    """
-
-    # Local development convenience: load .env here (entrypoint only).
-    try:
-        from dotenv import load_dotenv, find_dotenv
-        load_dotenv(find_dotenv(usecwd=True), override=False)
-    except Exception:
-        pass
-
-    google_api_key = environment_check()
-
-    # geocode start and end addresses
-    start_lat, start_lon, start_label = google_geocode_structured(
-        start_address, start_locality, start_country, google_api_key
-    )
-    end_lat, end_lon, end_label = google_geocode_structured(
-        end_address, end_locality, end_country, google_api_key
-    )
-
-    print("\n--- Check GEOCODING RESULTS ---")
-    print(f"Start: {start_label}")
-    print(f" → lat = {start_lat:.6f}, lon = {start_lon:.6f}")
-    print(f"End: {end_label}")
-    print(f" → lat = {end_lat:.6f}, lon = {end_lon:.6f}")
-
-    # get the route between two coordinates
-    route_coords_lonlat, route_km, route_min, departure_time = google_route_driving_car(
-        start_lat, start_lon, end_lat, end_lon, google_api_key
-    )
-
-    print("\n--- Check ROUTE ---")
-    print(f"Route: {route_km:.1f} km")
-    print(f"Duration: {route_min:.0f} min")
-    print(
-        "Number of points unthinned list: "
-        f"{len(route_coords_lonlat)} coordinates along the route"
-    )
-
-    # get data of fuel stations along the route
-    stations_with_eta = google_places_fuel_along_route(
-        route_coords_lonlat, google_api_key, route_km, route_min, departure_time
-    )
-
-    print("\n--- Stations with ETA ---")
-    for s in stations_with_eta[:5]:
-        print(
-            f"{s.get('name')} → lat={s.get('lat'):.5f}, lon={s.get('lon'):.5f}, "
-            f"detour_distance={s.get('detour_distance_km'):.3f} km, "
-            f"detour_duration={s.get('detour_duration_min'):.2f} min, "
-            f"distance from start to station={s.get('distance_along_m'):.0f} m, "
-            f"fraction_of_route={s.get('fraction_of_route'):.3f} "
-            f"ETA={s.get('eta')}\n"
-            f"open_now={s.get('open_now')}, opening_hours={s.get('opening_hours')}"
-        )
-
+# ==========================================
+# Local Test Entrypoint
+# ==========================================
 
 if __name__ == "__main__":
-    main()
+    # This block only runs when executing the file directly for local testing.
+    # It is NOT executed when imported by other modules like the Streamlit app.
+
+    # --- Test Configuration ---
+    # Select scenario: "short", "long", or "switzerland"
+    TEST_SCENARIO = "short"
+
+    # Hardcoded test addresses based on scenario selection
+    if TEST_SCENARIO == "short":
+        START_ADDR = {"street": "Wilhelmstraße 7", "city": "Tübingen", "country": "Germany"}
+        END_ADDR = {"street": "Charlottenstraße 45", "city": "Reutlingen", "country": "Germany"}
+    elif TEST_SCENARIO == "long":
+        START_ADDR = {"street": "Wilhelmstraße 7", "city": "Tübingen", "country": "Germany"}
+        END_ADDR = {"street": "Borsigallee 26", "city": "Frankfurt am Main", "country": "Germany"}
+    elif TEST_SCENARIO == "switzerland":
+        START_ADDR = {"street": "Zinngärten 9", "city": "Stühlingen", "country": "Germany"}
+        END_ADDR = {"street": "Lendenbergstrasse 32", "city": "Schleitheim", "country": "Switzerland"}
+    else:
+        raise ValueError(f"Unknown test scenario: {TEST_SCENARIO}")
+
+    # --- Test Execution ---
+    try:
+        # Attempt to load .env for local development convenience
+        from dotenv import find_dotenv, load_dotenv  # type: ignore
+
+        load_dotenv(find_dotenv(usecwd=True), override=False)
+        print("Local .env loaded.")
+    except ImportError:
+        print("Skipping .env loading (python-dotenv not installed).")
+    except Exception as e:
+        print(f"Error loading .env: {e}")
+
+    # 1. Setup & Geocoding
+    try:
+        google_key = environment_check()
+
+        print("\n--- Geocoding Addresses ---")
+        s_lat, s_lon, s_label = google_geocode_structured(
+            START_ADDR["street"], START_ADDR["city"], START_ADDR["country"], google_key
+        )
+        print(f"Start: {s_label} ({s_lat:.6f}, {s_lon:.6f})")
+
+        e_lat, e_lon, e_label = google_geocode_structured(
+            END_ADDR["street"], END_ADDR["city"], END_ADDR["country"], google_key
+        )
+        print(f"End:   {e_label} ({e_lat:.6f}, {e_lon:.6f})")
+
+        # 2. Get Baseline Route
+        print("\n--- Calculating Baseline Route ---")
+        route_coords, route_km, route_min, dept_time = google_route_driving_car(
+            s_lat, s_lon, e_lat, e_lon, google_key
+        )
+        print(f"Route Distance: {route_km:.1f} km")
+        print(f"Route Duration: {route_min:.0f} min")
+        print(f"Route Geometry Points: {len(route_coords)}")
+
+        # 3. Find Stations Along Route
+        print("\n--- Searching for Stations Along Route ---")
+        # Note: The timeout can be increased for very long routes if necessary.
+        stations_results = google_places_fuel_along_route(
+            route_coords, google_key, route_km, route_min, dept_time, timeout_seconds=45
+        )
+
+        # 4. Print Sample Results
+        print("\n--- Top 5 Stations found (Sample Info) ---")
+        for i, s in enumerate(stations_results[:5]):
+            print(f"[{i+1}] {s.get('name')}")
+            print(f"    Coords: {s.get('lat'):.5f}, {s.get('lon'):.5f}")
+            print(
+                f"    Detour: +{s.get('detour_distance_km'):.3f}km, "
+                f"+{s.get('detour_duration_min'):.2f}min"
+            )
+            print(
+                f"    Progress: {s.get('distance_along_m'):.0f}m along route "
+                f"({s.get('fraction_of_route'):.2%})"
+            )
+            print(f"    ETA: {s.get('eta')}")
+            print(f"    Open Now: {s.get('open_now')}")
+            print("-" * 40)
+
+    except ConfigError as ce:
+        print(f"\nConfiguration Error: {ce.user_message}")
+        print(f"Remediation: {ce.remediation}")
+    except Exception as ex:
+        print(f"\nAn unexpected error occurred during testing: {ex}")
