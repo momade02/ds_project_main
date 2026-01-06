@@ -348,7 +348,7 @@ def _create_map_visualization(
         icon_url = _pin_icon_data_url(fill_hex, stroke_hex)
 
         # Pixel size of the icon (bigger for best/selected)
-        icon_size = 30 if is_selected else (26 if is_best else 20)
+        icon_size = 45 if is_selected else (39 if is_best else 30)
 
         station_data.append(
             {
@@ -427,8 +427,8 @@ def _create_map_visualization(
             get_size="icon_size",
             size_units="pixels",
             size_scale=1,
-            size_min_pixels=14,
-            size_max_pixels=36,
+            size_min_pixels=30,
+            size_max_pixels=50,
             pickable=True,
             auto_highlight=True,
         )
@@ -503,12 +503,50 @@ def _create_map_visualization(
         },
     }
 
+    # ------------------------------------------------------------------
+    # Start / End Markers Layer
+    # ------------------------------------------------------------------
+    start_end_data = []
+    if route_coords and len(route_coords) >= 2:
+        # Start Point (First coordinate)
+        start_end_data.append({
+            "name": "Start",
+            "lon": route_coords[0][0],
+            "lat": route_coords[0][1],
+            "color": [0, 128, 0, 255],  # Green
+            "type": "Start"
+        })
+        # End Point (Last coordinate)
+        start_end_data.append({
+            "name": "Destination",
+            "lon": route_coords[-1][0],
+            "lat": route_coords[-1][1],
+            "color": [200, 0, 0, 255],  # Red
+            "type": "End"
+        })
+
+    # Create the layer for these two points
+    start_end_layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=start_end_data,
+        get_position=["lon", "lat"],
+        get_fill_color="color",
+        get_line_color=[255, 255, 255],
+        get_line_width=2,
+        stroked=True,
+        filled=True,
+        get_radius=200,          # Radius in meters (adjust size here)
+        radius_min_pixels=5,     # Min size on screen
+        radius_max_pixels=15,    # Max size on screen
+        pickable=True,
+    )
+
     deck = pdk.Deck(
-        layers=[route_layer, *extra_layers, stations_layer],
+        layers=[route_layer, *extra_layers, stations_layer, start_end_layer],
         initial_view_state=view_state,
         tooltip=tooltip,
         map_style=map_style,
-        map_provider=map_provider,
+        map_provider="mapbox",
     )
     return deck
 
@@ -1624,9 +1662,9 @@ def main() -> None:
 
             use_satellite = bool(st.session_state["use_satellite"])
 
-            VOYAGER_STYLE = "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json"
-            map_provider = "mapbox" if use_satellite else "carto"
-            map_style_url = pdk.map_styles.SATELLITE if use_satellite else VOYAGER_STYLE
+            CUSTOM_STYLE = "mapbox://styles/moritzmaidl/cmk2hdk9c000101pf7jrg9wmb"
+            map_provider = "mapbox"
+            map_style_url = "mapbox://styles/mapbox/satellite-streets-v12" if use_satellite else "mapbox://styles/mapbox/streets-v12"
 
             # Button label shows the mode you can switch TO
             toggle_label = "Standard" if use_satellite else "Satellite"
