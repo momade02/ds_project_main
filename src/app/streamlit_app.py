@@ -1,12 +1,7 @@
 """
 Streamlit UI for the route-aware fuel price recommender.
 
-Two environments
-----------------
-1) Test mode (example route, no Google calls)
-   - Uses `run_example()` from `route_tankerkoenig_integration`.
-
-2) Real route (Google route + Supabase + Tankerkönig pipeline)
+Real route (Google route + Supabase + Tankerkönig pipeline)
    - Uses `get_fuel_prices_for_route(...)`.
    - Always uses real-time Tankerkönig prices.
 
@@ -27,8 +22,6 @@ This UI additionally implements an economic detour decision:
 from __future__ import annotations
 
 from app_errors import AppError, ConfigError, ExternalServiceError, DataAccessError, DataQualityError, PredictionError
-
-from urllib.parse import quote
 
 # ---------------------------------------------------------------------------
 # Make sure the project root (containing the `src` package) is on sys.path
@@ -67,7 +60,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.integration.route_tankerkoenig_integration import (
-    run_example,
     get_fuel_prices_for_route,
 )
 from route_stations import environment_check, google_route_via_waypoint
@@ -221,8 +213,8 @@ def _create_map_visualization(
     *,
     fuel_code: Optional[str] = None,
     selected_station_uuid: Optional[str] = None,
-    map_style: Optional[str] = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
-    show_station_labels: bool = True,
+    map_provider: str = "carto",
+    map_style: Optional[str] = "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json",
 ) -> pdk.Deck:
     """
     Create a pydeck map showing:
@@ -461,29 +453,6 @@ def _create_map_visualization(
             opacity=1.0,
         )
 
-    label_layers: List[pdk.Layer] = []
-    if show_station_labels and zoom_level >= 9.5:
-        # Only show labels when sufficiently zoomed in to avoid clutter.
-        label_layers.append(
-            pdk.Layer(
-                "TextLayer",
-                id="station-labels",
-                data=station_data,
-                get_position=["lon", "lat"],
-                size_scale=1,
-                size_min_pixels=10,
-                size_max_pixels=18,
-                get_text="label",
-                get_size=12,
-                size_units="pixels",
-                get_color=[0, 0, 0, 220],
-                get_text_anchor="start",
-                get_alignment_baseline="center",
-                get_pixel_offset=[10, 0],
-                pickable=False,
-            )
-        )
-
     # ------------------------------------------------------------------
     # View state (fit to route if possible)
     # ------------------------------------------------------------------
@@ -535,10 +504,11 @@ def _create_map_visualization(
     }
 
     deck = pdk.Deck(
-        layers=[route_layer, *extra_layers, stations_layer, *label_layers],
+        layers=[route_layer, *extra_layers, stations_layer],
         initial_view_state=view_state,
         tooltip=tooltip,
         map_style=map_style,
+        map_provider=map_provider,
     )
     return deck
 
@@ -1274,11 +1244,12 @@ def _display_station_details_panel(
 
 def main() -> None:
     st.set_page_config(
-        page_title="Route-aware Fuel Price Recommender",
+        page_title="Fuel Station Recommender",
         layout="wide",
     )
 
-    st.title("Route-aware Fuel Price Recommender (Prototype)")
+    st.title("Fuel Station Recommender")
+    st.caption("Plan a route and identify the best-value refueling stop based on current prices and forecasts.")
 
     # Persist last clicked station (map selection)
     if "selected_station_uuid" not in st.session_state:
@@ -1289,28 +1260,8 @@ def main() -> None:
     if "last_params_hash" not in st.session_state:
         st.session_state["last_params_hash"] = None
 
-    st.markdown(
-        """
-This UI wraps the existing pipeline:
-
-- **Integration** (route → stations → historical + real-time prices)
-- **ARDL prediction models** for E5, E10 and Diesel (15 models total)
-- **Decision layer** to rank and recommend stations along the route
-
-The recommendation logic can optionally incorporate your own
-refuelling amount, car consumption and value of time to decide
-whether a detour is economically worthwhile.
-        """
-    )
-
     # Sidebar configuration
     st.sidebar.header("Configuration")
-
-    env_label = st.sidebar.radio(
-        "Environment",
-        options=["Test mode (example route)", "Real route (Google pipeline)"],
-        index=1,
-    )
 
     fuel_label = st.sidebar.selectbox(
         "Fuel type",
@@ -1320,7 +1271,7 @@ whether a detour is economically worthwhile.
     fuel_code = _fuel_label_to_code(fuel_label)
 
     # Route settings (only used in real mode)
-    st.sidebar.markdown("### Route settings (real mode)")
+    st.sidebar.markdown("### Route settings")
 
     start_locality = st.sidebar.text_input(
         "Start locality (city/town)", value="Tübingen"
@@ -1343,11 +1294,13 @@ whether a detour is economically worthwhile.
         "Use economics-based detour decision (net saving, time cost, fuel cost)",
         value=True,
     )
-    st.sidebar.caption("⚠️ When checked, stations may be filtered out based on detour constraints below. Uncheck to see ALL stations.")
+    st.sidebar.caption(
+        "When enabled, stations may be filtered based on detour constraints below. Disable to show all stations."
+    )
     litres_to_refuel = st.sidebar.number_input(
         "Litres to refuel",
         min_value=1.0,
-        max_value=200.0,
+        max_value=1000.0,
         value=40.0,
         step=1.0,
     )
@@ -1392,30 +1345,13 @@ whether a detour is economically worthwhile.
         "Debug mode (show pipeline diagnostics)", value=False
     )
 
-    # Map settings
-    st.sidebar.markdown("### Map")
-    map_style_label = st.sidebar.selectbox(
-        "Basemap style",
-        options=["Light (Positron)", "Dark (Dark Matter)", "Detailed (Voyager)"],
-        index=0,
-    )
-    map_style_url = {
-        "Light (Positron)": "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
-        "Dark (Dark Matter)": "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
-        "Detailed (Voyager)": "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json",
-    }[map_style_label]
-
-    show_station_labels = st.sidebar.checkbox(
-        "Show station labels when zoomed in", value=True
-    )
-
+    # Run button
     run_clicked = st.sidebar.button("Run recommender")
 
     # -----------------------------
     # Parameters hash (controls recompute warnings)
     # -----------------------------
     params = {
-        "env_label": env_label,
         "start_locality": start_locality,
         "end_locality": end_locality,
         "start_address": start_address,
@@ -1437,11 +1373,6 @@ whether a detour is economically worthwhile.
     have_cached = st.session_state.get("last_run") is not None
     cached_is_stale = have_cached and (st.session_state.get("last_params_hash") != params_hash)
 
-    # First-time user gating
-    if not run_clicked and not have_cached:
-        st.info("Configure the settings on the left and click **Run recommender**.")
-        return
-
     # If user changed settings, keep showing cached results but warn
     if not run_clicked and cached_is_stale:
         st.warning("Settings changed. Showing previous results; click **Run recommender** to recompute.")
@@ -1455,42 +1386,27 @@ whether a detour is economically worthwhile.
         # 1) Integration
         route_info = None
 
-        if env_label.startswith("Test"):
-            st.subheader("Mode: Test route (example data)")
-            try:
-                result = run_example()
-                if isinstance(result, tuple) and len(result) == 2:
-                    stations, route_info = result
-                else:
-                    stations = result
-                    route_info = None
-            except Exception as exc:
-                st.error(f"Error while running example integration: {exc}")
-                return
-        else:
-            st.subheader("Mode: Real route (Google pipeline with real-time prices)")
+        if not start_locality or not end_locality:
+            st.error("Please provide at least start and end localities (cities/towns).")
+            return
 
-            if not start_locality or not end_locality:
-                st.error("Please provide at least start and end localities (cities/towns).")
-                return
-
-            try:
-                stations, route_info = get_fuel_prices_for_route(
-                    start_locality=start_locality,
-                    end_locality=end_locality,
-                    start_address=start_address,
-                    end_address=end_address,
-                    use_realtime=True,
-                )
-            except AppError as exc:
-                st.error(exc.user_message)
-                if exc.remediation:
-                    st.info(exc.remediation)
-                return
-            except Exception as exc:
-                st.error("Unexpected error. Please try again. If it persists, check logs.")
-                st.caption(str(exc))
-                return
+        try:
+            stations, route_info = get_fuel_prices_for_route(
+                start_locality=start_locality,
+                end_locality=end_locality,
+                start_address=start_address,
+                end_address=end_address,
+                use_realtime=True,
+            )
+        except AppError as exc:
+            st.error(exc.user_message)
+            if exc.remediation:
+                st.info(exc.remediation)
+            return
+        except Exception as exc:
+            st.error("Unexpected error. Please try again. If it persists, check logs.")
+            st.caption(str(exc))
+            return
 
         if not stations:
             st.warning("No stations returned by the integration pipeline.")
@@ -1525,7 +1441,7 @@ whether a detour is economically worthwhile.
             best_station = recommend_best_station(stations, fuel_code)
 
         if not ranked:
-            st.error("⚠️ No stations passed the economic filters!")
+            st.error("No stations passed the economic filters.")
             st.info(f"""
             **Possible solutions:**
             - Uncheck "Use economics-based detour decision" in the sidebar (left side)
@@ -1543,12 +1459,12 @@ whether a detour is economically worthwhile.
             st.markdown(f"**Stations after economic filtering:** {len(ranked)} out of {len(stations)}")
             if filtered_count > 0:
                 st.warning(f"""
-                ⚠️ **{filtered_count} stations were filtered out** due to economic constraints:
+                **{filtered_count} stations were filtered out** by the current economics constraints:
                 - Max detour distance: {max_detour_km} km
-                - Max detour time: {max_detour_min} min  
+                - Max detour time: {max_detour_min} min
                 - Min net saving: {min_net_saving_eur} €
-                
-                💡 **To see more stations:** Uncheck "Use economics-based detour decision" or adjust the values above in the sidebar.
+
+                To include more stations, disable the economics-based decision or relax the constraints above.
                 """)
 
         best_uuid = None
@@ -1580,7 +1496,6 @@ whether a detour is economically worthwhile.
     # -----------------------------
     cached = st.session_state.get("last_run")
     if not cached:
-        st.info("Configure the settings and click **Run recommender**.")
         return
 
     stations = cached["stations"]
@@ -1620,8 +1535,8 @@ whether a detour is economically worthwhile.
         # Interactive station selection buttons
         # ----------------------------------------------------------------------
         st.markdown("---")
-        st.markdown("#### 🏆 Top 10 Stations - Click for Detailed Analysis")
-        st.caption("Select a station to open a separate page with detailed price charts and analysis")
+        st.markdown("#### Top stations")
+        st.caption("Select a station to open a dedicated analysis page (price history, comparisons, and economics).")
         
         # Create buttons for top stations (up to 10)
         max_buttons = min(10, len(ranked))
@@ -1647,12 +1562,12 @@ whether a detour is economically worthwhile.
     # ----------------------------------------------------------------------
     # Map visualization (only for real route mode)
     # ----------------------------------------------------------------------
-    if not env_label.startswith("Test") and route_info is not None:
+    if isinstance(route_info, dict) and route_info.get("route_coords"):
         st.markdown("### Route and stations map")
         
         try:
             # Use route data from integration
-            route_coords = route_info['route_coords']
+            route_coords = route_info.get("route_coords")
 
             # Compute via-station route (origin → best station → destination), if possible
             via_overview = None
@@ -1700,49 +1615,113 @@ whether a detour is economically worthwhile.
                     map_width_px=700,
                     map_height_px=500,
                 )
+            
+            # -----------------------------
+            # Basemap toggle state (Standard <-> Satellite)
+            # -----------------------------
+            if "use_satellite" not in st.session_state:
+                st.session_state["use_satellite"] = False
 
-            # Create and display map with ALL stations
-            deck = _create_map_visualization(
-                route_coords,
-                ranked,
-                best_station_uuid=best_uuid,
-                via_full_coords=via_overview,
-                zoom_level=zoom_for_markers,
-                fuel_code=fuel_code,
-                selected_station_uuid=st.session_state.get("selected_station_uuid"),
-                map_style=map_style_url,
-                show_station_labels=show_station_labels,
-            )
+            use_satellite = bool(st.session_state["use_satellite"])
 
-            st.caption("Hover for quick info. Click a station marker to open the details panel.")
+            VOYAGER_STYLE = "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json"
+            map_provider = "mapbox" if use_satellite else "carto"
+            map_style_url = pdk.map_styles.SATELLITE if use_satellite else VOYAGER_STYLE
 
-            selected_uuid_from_event: Optional[str] = None
-            if _supports_pydeck_selections():
-                event = st.pydeck_chart(
-                    deck,
-                    on_select="rerun",
-                    selection_mode="single-object",
-                    key="route_map",
+            # Button label shows the mode you can switch TO
+            toggle_label = "Standard" if use_satellite else "Satellite"
+
+            # -----------------------------
+            # Map block with overlay button (upper-right on map)
+            # -----------------------------
+            map_block = st.container()
+            with map_block:
+                # Anchor + CSS: position the first button in this block over the map
+                st.markdown(
+                    """
+                    <style>
+                    /* Make ONLY the block that contains our anchor a positioning context */
+                    div[data-testid="stVerticalBlock"]:has(#map-overlay-anchor) {
+                        position: relative;
+                    }
+
+                    /* Move ONLY the basemap toggle (works whether Streamlit uses id or class) */
+                    #st-key-toggle_basemap, .st-key-toggle_basemap {
+                        position: absolute;
+                        top: 70px;     /* adjust as needed */
+                        left: 12px;    /* upper-left */
+                        z-index: 10000;
+                    }
+
+                    /* Button look (border/"Rand" + compact + background) */
+                    #st-key-toggle_basemap button, .st-key-toggle_basemap button {
+                        padding: 0.25rem 0.75rem;
+                        border: 1px solid rgba(31, 41, 55, 0.35) !important;
+                        border-radius: 10px !important;
+                        background: rgba(255, 255, 255, 0.90) !important;
+                        box-shadow: 0 2px 8px rgba(0,0,0,0.12) !important;
+                    }
+
+                    /* Optional hover */
+                    #st-key-toggle_basemap button:hover, .st-key-toggle_basemap button:hover {
+                        border-color: rgba(31, 41, 55, 0.55) !important;
+                    }
+                    </style>
+
+                    <div id="map-overlay-anchor"></div>
+                    """,
+                    unsafe_allow_html=True,
                 )
 
-                # Extract clicked station from selection state
-                try:
-                    selection = event.selection
-                    objects = getattr(selection, "objects", None)
-                    if objects is None and isinstance(selection, dict):
-                        objects = selection.get("objects")
+                # IMPORTANT: keep this as the first/only button inside map_block
+                if st.button(toggle_label, key="toggle_basemap"):
+                    st.session_state["use_satellite"] = not use_satellite
+                    st.rerun()
 
-                    if objects and "stations" in objects and objects["stations"]:
-                        selected_obj = objects["stations"][0]
-                        selected_uuid_from_event = selected_obj.get("station_uuid") or None
-                except Exception:
-                    selected_uuid_from_event = None
-            else:
-                st.pydeck_chart(deck)
-                st.caption(
-                    "Note: Your Streamlit version does not expose pydeck click selections. "
-                    "Upgrade Streamlit to enable click-to-details interaction."
+                # Build ONE deck (use ranked stations so markers match the filtered set)
+                deck = _create_map_visualization(
+                    route_coords=route_coords,
+                    stations=ranked,
+                    best_station_uuid=best_uuid,
+                    via_full_coords=via_overview,
+                    zoom_level=zoom_for_markers,
+                    fuel_code=fuel_code,
+                    selected_station_uuid=st.session_state.get("selected_station_uuid"),
+                    map_provider=map_provider,
+                    map_style=map_style_url,
                 )
+
+                st.caption("Hover for quick info. Click a station marker to show details below.")
+
+                selected_uuid_from_event: Optional[str] = None
+                if _supports_pydeck_selections():
+                    event = st.pydeck_chart(
+                        deck,
+                        on_select="rerun",
+                        selection_mode="single-object",
+                        key="route_map",
+                        use_container_width=True,
+                        height=560,
+                    )
+
+                    # Extract clicked station from selection state
+                    try:
+                        selection = event.selection
+                        objects = getattr(selection, "objects", None)
+                        if objects is None and isinstance(selection, dict):
+                            objects = selection.get("objects")
+
+                        if objects and "stations" in objects and objects["stations"]:
+                            selected_obj = objects["stations"][0]
+                            selected_uuid_from_event = selected_obj.get("station_uuid") or None
+                    except Exception:
+                        selected_uuid_from_event = None
+                else:
+                    st.pydeck_chart(deck, use_container_width=True, height=560)
+                    st.caption(
+                        "Note: Your Streamlit version does not expose pydeck click selections. "
+                        "Upgrade Streamlit to enable click-to-details interaction."
+                    )
 
             if selected_uuid_from_event:
                 st.session_state["selected_station_uuid"] = selected_uuid_from_event
