@@ -617,7 +617,6 @@ def get_fuel_prices_for_route(
 
     return enriched_data, route_meta
 
-
 # ==========================================
 # Execution Test (Direct Run)
 # ==========================================
