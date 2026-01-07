@@ -2,6 +2,7 @@ geopy
 googlemaps
 joblib
 numpy
+plotly
 pandas
 polyline
 pyproj
