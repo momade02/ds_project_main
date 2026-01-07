@@ -240,6 +240,8 @@ def rank_stations_by_predicted_price(
     # Configuration
     onroute_max_detour_km: float = ONROUTE_MAX_DETOUR_KM,
     onroute_max_detour_min: float = ONROUTE_MAX_DETOUR_MIN,
+    # NEW
+    audit_log: Optional[Dict[str, Any]] = None,
 ) -> List[StationDict]:
     """
     Main entry point for ranking stations.
@@ -266,6 +268,83 @@ def rank_stations_by_predicted_price(
     pred_key = _prediction_key(ft)
     if now is None:
         now = datetime.now(timezone.utc)
+
+    # ------------------------------------------------------------------
+    # Optional audit log (exact exclusion reasons)
+    # ------------------------------------------------------------------
+    audit_enabled = audit_log is not None
+    if audit_enabled:
+        audit_log.clear()
+        audit_log["reasons_by_uuid"] = {}          # uuid -> [reasons...]
+        audit_log["primary_reason_by_uuid"] = {}   # uuid -> primary reason
+        audit_log["counts"] = {}                   # reason -> count
+        audit_log["ranked_uuids"] = []
+        audit_log["excluded_uuids"] = []
+        audit_log["notes"] = []
+        audit_log["thresholds"] = {
+            "fuel_type": fuel_type,
+            "is_economic_mode": bool(litres_to_refuel is not None and consumption_l_per_100km is not None),
+            "max_detour_km": max_detour_km,
+            "max_detour_min": max_detour_min,
+            "min_net_saving_eur": float(min_net_saving_eur),
+            "onroute_max_detour_km": float(onroute_max_detour_km),
+            "onroute_max_detour_min": float(onroute_max_detour_min),
+        }
+
+    def _uid(s: StationDict) -> str:
+        u = s.get("station_uuid") or s.get("uuid") or s.get("id")
+        if u:
+            return str(u)
+        # fallback for safety
+        return f"{s.get('lat')}_{s.get('lon')}"
+
+    def _add_reason(s: StationDict, reason: str) -> None:
+        if not audit_enabled:
+            return
+        u = _uid(s)
+        audit_log["reasons_by_uuid"].setdefault(u, [])
+        if reason not in audit_log["reasons_by_uuid"][u]:
+            audit_log["reasons_by_uuid"][u].append(reason)
+
+    def _finalize_audit(ranked_list: List[StationDict], all_considered: List[StationDict]) -> None:
+        """Set primary reasons + counts + ranked/excluded lists."""
+        if not audit_enabled:
+            return
+
+        ranked_set = {_uid(s) for s in ranked_list}
+        all_set = {_uid(s) for s in all_considered}
+
+        audit_log["ranked_uuids"] = sorted(list(ranked_set))
+        audit_log["excluded_uuids"] = sorted(list(all_set - ranked_set))
+
+        # priority order for primary reason
+        priority = [
+            "Detour distance above cap",
+            "Detour time above cap",
+            "Missing predicted price",
+            "Below minimum net saving",
+            "Missing economics metrics",
+            "Duplicate station removed",
+            "Not ranked (other)",
+        ]
+
+        counts: Dict[str, int] = {}
+        for u in all_set:
+            reasons = audit_log["reasons_by_uuid"].get(u, [])
+            if u in ranked_set:
+                # Ranked: keep reason list for transparency, but primary is Ranked
+                primary = "Ranked"
+            else:
+                # Excluded: choose best primary by priority
+                primary = "Not ranked (other)"
+                for p in priority:
+                    if p in reasons:
+                        primary = p
+                        break
+            audit_log["primary_reason_by_uuid"][u] = primary
+            counts[primary] = counts.get(primary, 0) + 1
+
+        audit_log["counts"] = counts
 
     # 2. Prediction & Validation
     _ensure_predictions(model_input, ft, now=now)
@@ -301,6 +380,9 @@ def rank_stations_by_predicted_price(
     # Logic: In economic mode, caps are mandatory (defaulting if None).
     # In price mode, caps are optional (only applied if user provided them).
     should_cap = is_economic_mode or (max_detour_km is not None) or (max_detour_min is not None)
+
+    # Keep a stable "considered set" for audit BEFORE caps remove entries
+    considered_for_audit = list(unique_stations)
     
     if should_cap:
         # Resolve caps with defaults
@@ -310,7 +392,16 @@ def rank_stations_by_predicted_price(
         filtered_stations = []
         for s in unique_stations:
             d_km, d_min = _get_detour_metrics(s)
-            if d_km <= cap_km and d_min <= cap_min:
+
+            failed = False
+            if d_km > cap_km:
+                _add_reason(s, "Detour distance above cap")
+                failed = True
+            if d_min > cap_min:
+                _add_reason(s, "Detour time above cap")
+                failed = True
+
+            if not failed:
                 filtered_stations.append(s)
         unique_stations = filtered_stations
 
@@ -364,25 +455,76 @@ def rank_stations_by_predicted_price(
             sorted_candidates = sorted(candidates, key=econ_sorter)
 
             # Filter Logic:
-            # Try to return only those matching min_net_saving.
-            # However, if NO station meets savings threshold, return the sorted list of feasible stations anyway.
-            # This prevents returning an empty list when stations are physically reachable but economically subpar.
-            savings_filtered = [c for c in sorted_candidates if c.get(k_net, -999) >= min_net_saving_eur]
-            
-            return savings_filtered if savings_filtered else sorted_candidates
+            # Mark missing prediction/econ metrics (net_saving None)
+            for c in sorted_candidates:
+                if c.get(k_net) is None:
+                    _add_reason(c, "Missing predicted price")
+
+            # Apply min-net-saving as a "soft filter":
+            # - If at least one station passes, exclude the rest and mark them.
+            # - If none pass, keep all (but still label those below threshold for transparency).
+            savings_filtered = []
+            below_threshold = []
+            for c in sorted_candidates:
+                net = c.get(k_net)
+                try:
+                    net_f = float(net) if net is not None else None
+                except (TypeError, ValueError):
+                    net_f = None
+
+                if net_f is not None and net_f >= float(min_net_saving_eur):
+                    savings_filtered.append(c)
+                else:
+                    below_threshold.append(c)
+
+            if savings_filtered:
+                for c in below_threshold:
+                    _add_reason(c, "Below minimum net saving")
+                # ranked are those that survive
+                ranked_out = savings_filtered
+            else:
+                # threshold not binding; keep all but label
+                if audit_enabled:
+                    audit_log["notes"].append(
+                        "Minimum net saving threshold not met by any station; returning full sorted list."
+                    )
+                for c in below_threshold:
+                    _add_reason(c, "Below minimum net saving")
+                ranked_out = sorted_candidates
+
+            _finalize_audit(ranked_out, considered_for_audit)
+            return ranked_out
+
+    # If we reach here, we are NOT returning from the economic branch.
+    # That means either:
+    # - not economic mode, OR
+    # - economic mode but baseline could not be computed.
+    # In both cases: fall back to price-only ranking.
+
+    if audit_enabled and is_economic_mode:
+        audit_log["notes"].append("Economic mode requested but baseline price could not be computed; falling back to price-only ranking.")
 
     # 6. Price-Only Ranking Strategy (Fallback)
     # Sort Logic:
     # 1. Price (Low to High)
     # 2. Fraction of Route (Low to High)
+    # 3. Distance Along (Low to High)
     def price_sorter(x: StationDict) -> Tuple:
         return (
-            x.get(pred_key, float("inf")), 
+            x.get(pred_key, float("inf")),
             x.get("fraction_of_route", float("inf")),
-            x.get("distance_along_m", float("inf"))
+            x.get("distance_along_m", float("inf")),
         )
 
-    return sorted(unique_stations, key=price_sorter)
+    sorted_candidates = sorted(unique_stations, key=price_sorter)
+
+    # (Optional but consistent) Mark missing predicted prices among considered set
+    for c in model_input:
+        if c.get(pred_key) is None:
+            _add_reason(c, "Missing predicted price")
+
+    _finalize_audit(sorted_candidates, considered_for_audit if "considered_for_audit" in locals() else model_input)
+    return sorted_candidates
 
 
 def recommend_best_station(
