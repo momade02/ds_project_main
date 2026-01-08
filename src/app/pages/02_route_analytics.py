@@ -91,6 +91,127 @@ def _is_missing_number(x: Any) -> bool:
     except Exception:
         return False
 
+def _as_float(x: Any) -> Optional[float]:
+    """Best-effort numeric conversion used for robust display computations."""
+    if _is_missing_number(x):
+        return None
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
+def _compute_baseline_price_for_display(
+    stations: List[Dict[str, Any]],
+    *,
+    fuel_code: str,
+    onroute_max_detour_km: float = 1.0,
+    onroute_max_detour_min: float = 5.0,
+) -> Optional[float]:
+    """
+    Recompute a baseline price similar to the decision layer:
+    - cheapest predicted price among "on-route" stations (per onroute thresholds)
+    - fallback: global cheapest predicted price
+    """
+    pred_key = f"pred_price_{fuel_code}"
+
+    onroute_prices: List[float] = []
+    all_prices: List[float] = []
+
+    for s in stations or []:
+        p = _as_float(s.get(pred_key))
+        if p is None:
+            continue
+        all_prices.append(p)
+
+        km, mins = _detour_metrics(s)
+        if km <= float(onroute_max_detour_km) and mins <= float(onroute_max_detour_min):
+            onroute_prices.append(p)
+
+    if onroute_prices:
+        return min(onroute_prices)
+    if all_prices:
+        return min(all_prices)
+    return None
+
+
+def _ensure_breakeven_liters_for_display(
+    stations: List[Dict[str, Any]],
+    *,
+    fuel_code: str,
+    baseline_price: Optional[float] = None,
+    onroute_max_detour_km: float = 1.0,
+    onroute_max_detour_min: float = 5.0,
+) -> None:
+    """
+    Backfill missing econ_breakeven_liters_* values in-place so tables/captions do not show "-".
+
+    Break-even litres:
+        (detour_fuel_cost + time_cost) / (baseline_price - station_price)
+    Only meaningful if station_price < baseline_price.
+    """
+    if not stations:
+        return
+
+    econ_breakeven_key = f"econ_breakeven_liters_{fuel_code}"
+    econ_baseline_key = f"econ_baseline_price_{fuel_code}"
+    econ_detour_fuel_cost_key = f"econ_detour_fuel_cost_eur_{fuel_code}"
+    econ_detour_fuel_l_key = f"econ_detour_fuel_l_{fuel_code}"
+    econ_time_cost_key = f"econ_time_cost_eur_{fuel_code}"
+
+    pred_key = f"pred_price_{fuel_code}"
+    curr_key = f"price_current_{fuel_code}"
+
+    # 1) Determine baseline price (prefer what decision layer already computed)
+    b = _as_float(baseline_price)
+    if b is None:
+        for s in stations:
+            b = _as_float(s.get(econ_baseline_key))
+            if b is not None:
+                break
+    if b is None:
+        b = _compute_baseline_price_for_display(
+            stations,
+            fuel_code=fuel_code,
+            onroute_max_detour_km=onroute_max_detour_km,
+            onroute_max_detour_min=onroute_max_detour_min,
+        )
+    if b is None:
+        return
+
+    # 2) Backfill per station if missing
+    for s in stations:
+        existing = s.get(econ_breakeven_key)
+        if existing is not None and not _is_missing_number(existing):
+            continue
+
+        # station price: prefer prediction, fallback to current
+        p_station = _as_float(s.get(pred_key))
+        if p_station is None:
+            p_station = _as_float(s.get(curr_key))
+        if p_station is None:
+            continue
+
+        diff = float(b) - float(p_station)
+        if diff <= 0:
+            # Not cheaper than baseline => no meaningful break-even litres
+            continue
+
+        detour_cost = _as_float(s.get(econ_detour_fuel_cost_key))
+        if detour_cost is None:
+            # fallback if only detour liters exist
+            detour_l = _as_float(s.get(econ_detour_fuel_l_key))
+            if detour_l is not None:
+                detour_cost = detour_l * float(p_station)
+
+        time_cost = _as_float(s.get(econ_time_cost_key))
+        if time_cost is None:
+            time_cost = 0.0
+
+        if detour_cost is None:
+            continue
+
+        s[econ_breakeven_key] = max(0.0, (float(detour_cost) + float(time_cost)) / diff)
 
 def _coerce_bool(x: Any) -> Optional[bool]:
     if x is None:
@@ -303,111 +424,6 @@ def _compute_net_vs_onroute_worst(
     gross = (float(onroute_worst) - chosen) * litres
     return gross - detour_fuel_cost_f - time_cost_f
 
-def _as_float(x: Any) -> Optional[float]:
-    """Best-effort numeric conversion used for robust display computations."""
-    if _is_missing_number(x):
-        return None
-    try:
-        return float(x)
-    except (TypeError, ValueError):
-        return None
-
-
-def _compute_baseline_price_for_display(
-    stations: List[Dict[str, Any]],
-    *,
-    fuel_code: str,
-    onroute_max_detour_km: float = 1.0,
-    onroute_max_detour_min: float = 5.0,
-) -> Optional[float]:
-    """
-    Recompute a baseline price similar to the decision layer:
-    cheapest "on-route" station by predicted price, with a global-min fallback.
-    """
-    pred_key = f"pred_price_{fuel_code}"
-
-    onroute_prices: List[float] = []
-    all_prices: List[float] = []
-
-    for s in stations or []:
-        p = _as_float(s.get(pred_key))
-        if p is None:
-            continue
-        all_prices.append(p)
-
-        d_km, d_min = _detour_metrics(s)
-        if d_km is None or d_min is None:
-            continue
-        if float(d_km) <= float(onroute_max_detour_km) and float(d_min) <= float(onroute_max_detour_min):
-            onroute_prices.append(p)
-
-    if onroute_prices:
-        return min(onroute_prices)
-    if all_prices:
-        return min(all_prices)
-    return None
-
-
-def _ensure_breakeven_liters_for_display(
-    stations: List[Dict[str, Any]],
-    *,
-    fuel_code: str,
-    baseline_price: Optional[float] = None,
-) -> None:
-    """
-    Backfill missing econ_breakeven_liters_* values in-place so tables/captions do not show "-".
-
-    Break-even litres = (detour fuel cost + time cost) / (baseline price - station price),
-    only when the station price is cheaper than the baseline.
-    """
-    if not stations:
-        return
-
-    econ_breakeven_key = f"econ_breakeven_liters_{fuel_code}"
-    econ_baseline_key = f"econ_baseline_price_{fuel_code}"
-    econ_detour_fuel_cost_key = f"econ_detour_fuel_cost_eur_{fuel_code}"
-    econ_detour_fuel_l_key = f"econ_detour_fuel_l_{fuel_code}"
-    econ_time_cost_key = f"econ_time_cost_eur_{fuel_code}"
-    pred_key = f"pred_price_{fuel_code}"
-    curr_key = f"price_current_{fuel_code}"
-
-    # 1) Determine baseline price (prefer what decision layer already computed)
-    b = _as_float(baseline_price)
-    if b is None:
-        for s in stations:
-            b = _as_float(s.get(econ_baseline_key))
-            if b is not None:
-                break
-    if b is None:
-        b = _compute_baseline_price_for_display(stations, fuel_code=fuel_code)
-    if b is None:
-        return
-
-    # 2) Backfill per station if missing
-    for s in stations:
-        existing = s.get(econ_breakeven_key)
-        if existing is not None and not _is_missing_number(existing):
-            continue
-
-        p_station = _as_float(s.get(pred_key)) or _as_float(s.get(curr_key))
-        if p_station is None:
-            continue
-
-        detour_cost = _as_float(s.get(econ_detour_fuel_cost_key))
-        if detour_cost is None:
-            detour_l = _as_float(s.get(econ_detour_fuel_l_key))
-            if detour_l is not None:
-                detour_cost = detour_l * p_station
-
-        time_cost = _as_float(s.get(econ_time_cost_key)) or 0.0
-        if detour_cost is None:
-            continue
-
-        diff = b - p_station
-        if diff <= 0:
-            continue
-
-        s[econ_breakeven_key] = max(0.0, (detour_cost + time_cost) / diff)
 
 def _exclusion_reason(
     s: Dict[str, Any],
@@ -615,10 +631,17 @@ def main() -> None:
             d4.metric("Time cost", _fmt_eur(best_station.get(econ_time_cost_key)))
             d5.metric("Net saving (model)", _fmt_eur(best_station.get(econ_net_key)))
 
-            _ensure_breakeven_liters_for_display([best_station], fuel_code=fuel_code)
-            be_num = _as_float(best_station.get(econ_breakeven_key))
-            if be_num is not None:
-                st.caption(f"Break-even litres: {be_num:.1f} L")
+            # Ensure break-even litres is present for display (defensive)
+            _ensure_breakeven_liters_for_display(
+                [best_station],
+                fuel_code=fuel_code,
+                onroute_max_detour_km=float(filter_thresholds.get("onroute_max_detour_km", 1.0) or 1.0),
+                onroute_max_detour_min=float(filter_thresholds.get("onroute_max_detour_min", 5.0) or 5.0),
+            )
+
+            be = _as_float(best_station.get(econ_breakeven_key))
+            if be is not None:
+                st.caption(f"Break-even litres: {be:.1f} L")
 
         with st.expander("How the predicted price is chosen (price basis)", expanded=False):
             st.write(
@@ -726,11 +749,114 @@ def main() -> None:
 
     st.markdown("")
 
+    # B2a. Value view: stations not worse than the worst on-route option
+    # This is a display-only table intended to be more consistent for end users.
+    st.markdown("#### Stations better than the worst on-route option (value view)")
+
+    pred_key = f"pred_price_{fuel_code}"
+
+    # Reconstruct the "hard-pass" candidate set (what the decision layer would consider before the min-net-saving soft filter).
+    cap_km_f = float(cap_km) if cap_km is not None else None
+    cap_min_f = float(cap_min) if cap_min is not None else None
+
+    hard_pass: List[Dict[str, Any]] = []
+    for s in stations:
+        # Require a usable prediction for the selected fuel.
+        p = s.get(pred_key)
+        try:
+            p_f = float(p) if p is not None else None
+        except (TypeError, ValueError):
+            p_f = None
+        if p_f is None:
+            continue
+
+        # Require passing detour caps (hard constraints).
+        km, mins = _detour_metrics(s)
+        if (cap_km_f is not None and km > cap_km_f) or (cap_min_f is not None and mins > cap_min_f):
+            continue
+
+        hard_pass.append(s)
+
+    # Compute the on-route worst price within the hard-pass set.
+    onroute_km = float(filter_thresholds.get("onroute_max_detour_km", 1.0) or 1.0)
+    onroute_min = float(filter_thresholds.get("onroute_max_detour_min", 5.0) or 5.0)
+
+    onroute_worst_price = _compute_onroute_worst_price(
+        hard_pass,
+        fuel_code=fuel_code,
+        onroute_max_detour_km=onroute_km,
+        onroute_max_detour_min=onroute_min,
+    )
+
+    if onroute_worst_price is None:
+        st.info(
+            "Could not compute the on-route worst price (no stations qualify as on-route under the current thresholds)."
+        )
+    else:
+        # Keep stations whose predicted price is not worse than the on-route worst predicted price.
+        value_view: List[Dict[str, Any]] = []
+        for s in hard_pass:
+            p = s.get(pred_key)
+            try:
+                p_f = float(p) if p is not None else None
+            except (TypeError, ValueError):
+                p_f = None
+            if p_f is None:
+                continue
+
+            if p_f <= float(onroute_worst_price) + 1e-9:
+                value_view.append(s)
+
+        # Backfill break-even liters (mainly for older cached runs or partial station dicts).
+        if use_economics and value_view:
+            _ensure_breakeven_liters_for_display(value_view, fuel_code=fuel_code)
+
+        if value_view:
+            # Sort with the same primary logic as the decision layer (when available).
+            if use_economics:
+                econ_net_key = f"econ_net_saving_eur_{fuel_code}"
+
+                def _net_sort_key(sta: Dict[str, Any]) -> Tuple:
+                    net = sta.get(econ_net_key)
+                    try:
+                        net_f = float(net) if net is not None else float("-inf")
+                    except (TypeError, ValueError):
+                        net_f = float("-inf")
+                    return (
+                        -net_f,
+                        sta.get("fraction_of_route", float("inf")),
+                        sta.get("distance_along_m", float("inf")),
+                    )
+
+                value_view_sorted = sorted(value_view, key=_net_sort_key)
+            else:
+                value_view_sorted = sorted(
+                    value_view,
+                    key=lambda x: (
+                        x.get(pred_key, float("inf")),
+                        x.get("fraction_of_route", float("inf")),
+                        x.get("distance_along_m", float("inf")),
+                    ),
+                )
+
+            value_df = build_ranking_dataframe(value_view_sorted, fuel_code=fuel_code, debug_mode=debug_mode)
+            st.dataframe(value_df, use_container_width=True, hide_index=True)
+            st.caption(
+                f"Filter used: predicted price ≤ on-route worst predicted price ({float(onroute_worst_price):.3f} €/L), "
+                "within the same detour caps as the decision."
+            )
+        else:
+            st.info("No stations are better than the on-route worst price under the current detour caps.")
+
+    st.markdown("")
+
     # B2. Ranked table
     st.markdown("#### Ranked stations (comparison table)")
     if ranked:
+        # Backfill break-even litres for display (defensive for older caches / partial station dicts)
         if use_economics:
             _ensure_breakeven_liters_for_display(ranked, fuel_code=fuel_code)
+
         ranked_df = build_ranking_dataframe(ranked, fuel_code=fuel_code, debug_mode=debug_mode)
 
         st.dataframe(ranked_df, use_container_width=True, hide_index=True)
