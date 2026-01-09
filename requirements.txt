@@ -10,7 +10,7 @@ python-dotenv
 requests
 scipy
 shapely
-streamlit
+streamlit==1.52.2
 supabase
 pydeck
 scikit-learn==1.6.1
