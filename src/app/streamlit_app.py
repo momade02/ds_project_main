@@ -692,6 +692,17 @@ def main() -> None:
         layout="wide",
     )
 
+    st.markdown(
+        """
+        <style>
+        [data-testid="stToolbar"] { visibility: hidden !important; height: 0 !important; }
+        header { visibility: hidden !important; height: 0 !important; }
+        footer { visibility: hidden !important; height: 0 !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     # --- Permanent layout debug overlay + reduced top whitespace ---
     st.markdown(
         """
