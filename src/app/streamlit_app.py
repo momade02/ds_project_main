@@ -362,11 +362,11 @@ def _display_best_station(
             dist_str = "—"
 
     hero_items = [
+        ("Safe up to:", "—" if net_vs_worst is None else _format_eur(net_vs_worst)),        
         (f"Predicted {fuel_code.upper()} price:", _format_price(pred_price)),
         (f"Current {fuel_code.upper()} price:", _format_price(current_price)),
         ("Distance to station:", dist_str),
         ("Worst on-route price:", "—" if onroute_worst is None else _format_price(onroute_worst)),
-        ("Safe up to:", "—" if net_vs_worst is None else _format_eur(net_vs_worst)),
         ("Detour distance", _format_km(detour_km)),
     ]
 
@@ -1090,7 +1090,7 @@ def main() -> None:
         }      
 
         section[data-testid="stMain"] div.st-key-map_style_mode {
-        margin-top: 0px !important;
+        margin-top: -20px !important;
         }  
 
         /* Map title row: title + help icon inline */
@@ -1159,19 +1159,38 @@ def main() -> None:
         margin: 0 !important;
         }
 
-        /* Reduce spacing BELOW the header row (title + toggle) */
+        /* Map header row: shrink the "box" height so it ends close under the text */
         section[data-testid="stMain"]
         div[data-testid="stHorizontalBlock"]:has(div.st-key-map_style_mode) {
-        margin-bottom: -1.5rem !important;  /* <- negative pulls the map upward */
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
+        margin-top: 0.5rem !important;
+        margin-bottom: -1.0rem !important;   /* keep a small pull-up, reduce if needed */
         }
 
-        /* Optional: tighten the subtitle/caption under the title (if you render one) */
+        /* Remove extra spacing inside the left column that contains title/caption */
+        section[data-testid="stMain"]
+        div[data-testid="stHorizontalBlock"]:has(div.st-key-map_style_mode)
+        div[data-testid="column"]:first-child
+        div[data-testid="stVerticalBlock"] {
+        gap: 0 !important;                 /* important: kills default vertical spacing */
+        }
+
+        /* Tighten the title and caption margins */
+        section[data-testid="stMain"]
+        div[data-testid="stHorizontalBlock"]:has(div.st-key-map_style_mode)
+        :is(h1, h2, h3, h4) {
+        margin: 0 !important;
+        padding: 0 !important;
+        }
+
         section[data-testid="stMain"]
         div[data-testid="stHorizontalBlock"]:has(div.st-key-map_style_mode)
         div[data-testid="stCaptionContainer"] {
-        margin-top: -1.2rem !important;
-        margin-bottom: -0.25rem !important;
-        } 
+        margin-top: 0.10rem !important;
+        margin-bottom: -0.8rem !important;
+        padding-bottom: 0 !important;
+        }
 
         </style>
         """,
