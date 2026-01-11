@@ -13,7 +13,7 @@ try:
 except Exception:  # pragma: no cover
     st = None  # type: ignore
 
-from src.app.ui.formatting import (
+from ui.formatting import (
     _station_uuid,
     _safe_text,
     _fmt_price,
