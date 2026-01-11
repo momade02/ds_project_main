@@ -1090,7 +1090,7 @@ def main() -> None:
         }      
 
         section[data-testid="stMain"] div.st-key-map_style_mode {
-        margin-top: 15px !important;
+        margin-top: 0px !important;
         }  
 
         /* Map title row: title + help icon inline */
