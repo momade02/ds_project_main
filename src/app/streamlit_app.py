@@ -911,25 +911,99 @@ def main() -> None:
         border-color: rgba(31, 41, 55, 0.55) !important;
         }
 
-        /* --- Top sidebar "Run recommender" button (key=run_recommender_btn_top) --- */
-        section[data-testid="stSidebar"] div.st-key-run_recommender_btn_top button {
-        background-color: #2E7D32 !important;  /* decent green */
+        /* --- Sidebar "Run recommender" button (Action only; key=run_recommender_btn) --- */
+        section[data-testid="stSidebar"] div.st-key-run_recommender_btn button{
+        background-color: #2E7D32 !important;
         color: #ffffff !important;
         border: 1px solid #2E7D32 !important;
         }
-
-        section[data-testid="stSidebar"] div.st-key-run_recommender_btn_top button:hover {
+        section[data-testid="stSidebar"] div.st-key-run_recommender_btn button:hover{
         background-color: #256628 !important;
         border-color: #256628 !important;
         }
-
-        section[data-testid="stSidebar"] div.st-key-run_recommender_btn_top button:active {
+        section[data-testid="stSidebar"] div.st-key-run_recommender_btn button:active{
         background-color: #1F5622 !important;
         border-color: #1F5622 !important;
         }
-
-        section[data-testid="stSidebar"] div.st-key-run_recommender_btn_top button:focus {
+        section[data-testid="stSidebar"] div.st-key-run_recommender_btn button:focus{
         box-shadow: 0 0 0 0.2rem rgba(46, 125, 50, 0.35) !important;
+        }
+
+        /* Space below the top nav buttons */
+        section[data-testid="stSidebar"] div.st-key-sidebar_view{
+        margin-bottom: 14px !important;
+        }
+
+        /* Hide the actual label text for buttons 2–4 */
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(2) button span,
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(3) button span,
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(4) button span,
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(2) span,
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(3) span,
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(4) span{
+        display: none !important;
+        }
+
+        /* Center the icon cleanly in buttons 2–4 */
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(2) button,
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(3) button,
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(4) button,
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(2),
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(3),
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(4){
+        justify-content: center !important;
+        gap: 0 !important;
+        padding-left: 0rem !important;
+        padding-right: 1.6rem !important;
+        }
+
+        /* Base icon pseudo-element */
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(2) button::after,
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(3) button::after,
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(4) button::after,
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(2)::after,
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(3)::after,
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(4)::after{
+        content: "" !important;
+        display: inline-block !important;
+        width: 30px !important;
+        height: 30px !important;
+        background-repeat: no-repeat !important;
+        background-position: center !important;
+        background-size: contain !important;
+        }
+
+        /* Info icon: ? in circle (button 2) */
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(2) button::after,
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(2)::after{
+        background-image: url("data:image/svg+xml;utf8,\
+        <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>\
+        <circle cx='12' cy='12' r='9' fill='none' stroke='%2331333F' stroke-width='2'/>\
+        <path d='M9.9 9.2a2.6 2.6 0 0 1 4.7 1.6c0 1.7-1.5 2.1-2.2 2.7-.5.4-.6.7-.6 1.8' fill='none' stroke='%2331333F' stroke-width='2' stroke-linecap='round'/>\
+        <circle cx='12' cy='17.3' r='1.1' fill='%2331333F'/>\
+        </svg>");
+        }
+
+        /* Settings icon: gear (button 3) */
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(3) button::after,
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(3)::after{
+        background-image: url("data:image/svg+xml;utf8,\
+        <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>\
+        <path fill='none' stroke='%2331333F' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='\
+        M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z'/>\
+        <path fill='none' stroke='%2331333F' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='\
+        M19.4 12a7.7 7.7 0 0 0-.1-1l2-1.6-2-3.5-2.4 1a7.4 7.4 0 0 0-1.7-1L15 3h-4l-.2 2.9a7.4 7.4 0 0 0-1.7 1l-2.4-1-2 3.5 2 1.6a7.7 7.7 0 0 0-.1 1c0 .3 0 .7.1 1l-2 1.6 2 3.5 2.4-1a7.4 7.4 0 0 0 1.7 1L11 21h4l.2-2.9a7.4 7.4 0 0 0 1.7-1l2.4 1 2-3.5-2-1.6c.1-.3.1-.7.1-1z'/>\
+        </svg>");
+        }
+
+        /* Profile icon: head/shoulders (button 4) */
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(4) button::after,
+        section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(4)::after{
+        background-image: url("data:image/svg+xml;utf8,\
+        <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>\
+        <circle cx='12' cy='9' r='3.2' fill='none' stroke='%2331333F' stroke-width='2'/>\
+        <path d='M6.5 20c1.5-3.3 3.8-4.8 5.5-4.8S15.9 16.7 17.5 20' fill='none' stroke='%2331333F' stroke-width='2' stroke-linecap='round'/>\
+        </svg>");
         }
 
         /* Force sidebar width (unsupported CSS override) */
@@ -1206,7 +1280,7 @@ def main() -> None:
         "Home": "streamlit_app.py",
         "Analytics": "pages/02_route_analytics.py",
         "Station": "pages/03_station_details.py",
-        "Explorer": "pages/04_explorer.py",
+        "Explorer": "pages/04_station_explorer.py",
     }
 
     # Initialize only once (no default parameter needed afterwards)
@@ -1238,25 +1312,21 @@ def main() -> None:
         st.session_state["last_params_hash"] = None
 
     # ----------------------------------------------------------------------
-    # Sidebar "two-page" switcher: Action vs Status
+    # Sidebar switcher: Action / Info / Settings / Profile
     # ----------------------------------------------------------------------
     if "sidebar_view" not in st.session_state:
         st.session_state["sidebar_view"] = "Action"
+    # Backward compatibility: if "Status" is still in session_state, map it to "Info"
+    elif st.session_state.get("sidebar_view") == "Status":
+        st.session_state["sidebar_view"] = "Info"
 
     sidebar_view = st.sidebar.segmented_control(
         label="",
-        options=["Action", "Status"],
+        options=["Action", "Info", "Settings", "Profile"],
         selection_mode="single",
         label_visibility="collapsed",
         width="stretch",
         key="sidebar_view",
-    )
-
-    # Top "Run" button (always visible, full sidebar width)
-    run_clicked_top = st.sidebar.button(
-        "Run recommender",
-        use_container_width=True,
-        key="run_recommender_btn_top",
     )
 
     # Helper: read prior values even when Action widgets are not rendered
@@ -1267,6 +1337,12 @@ def main() -> None:
     # ACTION VIEW (all inputs + run button)
     # ----------------------------------------------------------------------
     if sidebar_view == "Action":
+
+        run_clicked = st.sidebar.button(
+            "Run recommender",
+            use_container_width=True,
+            key="run_recommender_btn",
+        )
 
         st.sidebar.markdown("### Route")
 
@@ -1392,22 +1468,18 @@ def main() -> None:
             key="debug_mode",
         )
 
-        run_clicked = run_clicked_top
-
     # ----------------------------------------------------------------------
-    # STATUS VIEW (explain + show current state; no action widgets)
+    # INFO / SETTINGS / PROFILE (placeholders only for now; no Run button)
     # ----------------------------------------------------------------------
-    else:
-        # Read current values from session_state so the app logic still works
-        fuel_label = _ss("fuel_label", "E5")
-        fuel_code = _fuel_label_to_code(fuel_label)
-
+    elif sidebar_view == "Info":
+        # Read values from session_state so the rest of the app (hashing/cached display) doesn't break
         start_locality = _ss("start_locality", "Tübingen")
         end_locality = _ss("end_locality", "Sindelfingen")
-
-        # Kept for compatibility with downstream kwargs
         start_address = ""
         end_address = ""
+
+        fuel_label = _ss("fuel_label", "E5")
+        fuel_code = _fuel_label_to_code(fuel_label)
 
         use_economics = bool(_ss("use_economics", True))
         litres_to_refuel = float(_ss("litres_to_refuel", 40.0))
@@ -1416,42 +1488,52 @@ def main() -> None:
         max_detour_km = float(_ss("max_detour_km", 5.0))
         max_detour_min = float(_ss("max_detour_min", 10.0))
         min_net_saving_eur = float(_ss("min_net_saving_eur", 0.0))
-        debug_mode = bool(_ss("debug_mode", False))
+        debug_mode = bool(_ss("debug_mode", True))
 
-        run_clicked = run_clicked_top
+        run_clicked = False
+        st.sidebar.info("Placeholder: Info (content will be added later).")
 
-        st.sidebar.subheader("What the app currently does")
-        st.sidebar.markdown(
-            """
-    - Builds a route (Google routing) and collects stations along/near the route.
-    - Pulls current Tankerkönig prices and historical context.
-    - Predicts arrival-time prices (ARDL horizon logic) and ranks stations.
-    - Optionally applies an economics filter (detour fuel + time cost + thresholds).
-            """.strip()
-        )
+    elif sidebar_view == "Settings":
+        start_locality = _ss("start_locality", "Tübingen")
+        end_locality = _ss("end_locality", "Sindelfingen")
+        start_address = ""
+        end_address = ""
 
-        cached = st.session_state.get("last_run")
-        if not cached:
-            st.sidebar.info("No run cached yet. Switch to **Action** and click **Run recommender**.")
-        else:
-            summary = cached.get("run_summary") or {}
-            computed_at = cached.get("computed_at")
+        fuel_label = _ss("fuel_label", "E5")
+        fuel_code = _fuel_label_to_code(fuel_label)
 
-            st.sidebar.markdown("### Current state")
-            if computed_at:
-                st.sidebar.caption(f"Last run: {computed_at}")
+        use_economics = bool(_ss("use_economics", True))
+        litres_to_refuel = float(_ss("litres_to_refuel", 40.0))
+        consumption_l_per_100km = float(_ss("consumption_l_per_100km", 7.0))
+        value_of_time_eur_per_hour = float(_ss("value_of_time_eur_per_hour", 0.0))
+        max_detour_km = float(_ss("max_detour_km", 5.0))
+        max_detour_min = float(_ss("max_detour_min", 10.0))
+        min_net_saving_eur = float(_ss("min_net_saving_eur", 0.0))
+        debug_mode = bool(_ss("debug_mode", True))
 
-            # Keep this compact; Route Analytics already has the detailed story
-            st.sidebar.write(
-                {
-                    "fuel": fuel_label,
-                    "route": f"{start_locality} → {end_locality}",
-                    "use_economics": bool(summary.get("use_economics", use_economics)),
-                    "stations_total": summary.get("stations_total"),
-                    "stations_ranked": summary.get("stations_ranked"),
-                    "stations_filtered_out": summary.get("stations_filtered_out"),
-                }
-            )
+        run_clicked = False
+        st.sidebar.info("Placeholder: Settings (content will be added later).")
+
+    else:  # "Profile"
+        start_locality = _ss("start_locality", "Tübingen")
+        end_locality = _ss("end_locality", "Sindelfingen")
+        start_address = ""
+        end_address = ""
+
+        fuel_label = _ss("fuel_label", "E5")
+        fuel_code = _fuel_label_to_code(fuel_label)
+
+        use_economics = bool(_ss("use_economics", True))
+        litres_to_refuel = float(_ss("litres_to_refuel", 40.0))
+        consumption_l_per_100km = float(_ss("consumption_l_per_100km", 7.0))
+        value_of_time_eur_per_hour = float(_ss("value_of_time_eur_per_hour", 0.0))
+        max_detour_km = float(_ss("max_detour_km", 5.0))
+        max_detour_min = float(_ss("max_detour_min", 10.0))
+        min_net_saving_eur = float(_ss("min_net_saving_eur", 0.0))
+        debug_mode = bool(_ss("debug_mode", True))
+
+        run_clicked = False
+        st.sidebar.info("Placeholder: Profile (content will be added later).")
 
     # -----------------------------
     # Parameters hash (controls recompute warnings)
