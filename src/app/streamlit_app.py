@@ -993,44 +993,9 @@ def main() -> None:
         padding-top: 1.1rem;              /* remove manual offset */
         }
 
-        /* --- Sidebar Route: keep icon column narrow (also on iOS portrait) --- */
-
-        /* Ensure the horizontal block does not wrap. */
-        section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"]:has(.route-icon-col) {
-        flex-wrap: nowrap !important;
-        align-items: flex-start !important;
-        gap: 0.60rem !important;
-        }
-
-        /* Force the *column that contains the icon markup* to a fixed width. */
-        section[data-testid="stSidebar"] div[data-testid="column"]:has(.route-icon-col) {
-        flex: 0 0 34px !important;
-        width: 34px !important;
-        min-width: 34px !important;
-        max-width: 34px !important;
-
-        /* defensive: some Streamlit layouts apply width constraints */
-        overflow: hidden !important;
-        }
-
-        /* Force the other column (inputs) to take remaining space. */
-        section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"]:has(.route-icon-col)
-        > div[data-testid="column"]:not(:has(.route-icon-col)) {
-        flex: 1 1 auto !important;
-        min-width: 0 !important;
-        }
-
-        /* Also pin the icon container itself so it cannot stretch. */
-        section[data-testid="stSidebar"] .route-icon-col {
-        width: 34px !important;
-        min-width: 34px !important;
-        max-width: 34px !important;
-        display: flex !important;
-        justify-content: center !important;
-        }
 
         /* Optional: reduce vertical gap between the two inputs (sidebar only). */
-        section[data-testid="stSidebar"] div.st-key-start_locality { margin-bottom: -0.35rem !important; }
+        section[data-testid="stSidebar"] div.st-key-start_locality { margin-bottom: -1.4rem !important; }
 
         /* =========================
         Sidebar Route (no columns)
@@ -1059,7 +1024,7 @@ def main() -> None:
         section[data-testid="stSidebar"] div.st-key-start_locality::after {
         content: "";
         position: absolute;
-        right: 14px;
+        right: 13px;
         top: 50%;
         transform: translateY(-50%);
         width: 14px;
@@ -1093,14 +1058,14 @@ def main() -> None:
 
         /* The three connector dots: aligned to the right gutter between inputs */
         section[data-testid="stSidebar"] .route-dots-right {
-        width: 46px;
+        width: 40px;
         margin-left: auto;
-        margin-top: -0.55rem;      /* pulls dots closer to the top input */
-        margin-bottom: -0.35rem;   /* pulls bottom input closer (reduce spacing) */
+        margin-top: -0rem;      /* pulls dots closer to the top input */
+        margin-bottom: -0.30rem;   /* pulls bottom input closer (reduce spacing) */
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 6px;
+        gap: 3px;
         pointer-events: none;
         }
 
@@ -1195,7 +1160,7 @@ def main() -> None:
             value=_ss("start_locality", "Tübingen"),
             key="start_locality",
             label_visibility="collapsed",
-            placeholder="City or full address",
+            placeholder="Start: city or full address",
         )
 
         # Right-side connector dots between the two inputs (visual only)
@@ -1213,7 +1178,7 @@ def main() -> None:
             value=_ss("end_locality", "Sindelfingen"),
             key="end_locality",
             label_visibility="collapsed",
-            placeholder="City or full address",
+            placeholder="Destination: city or full address",
         )
 
         start_address = ""
