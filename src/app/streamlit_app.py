@@ -993,30 +993,43 @@ def main() -> None:
         padding-top: 1.1rem;              /* remove manual offset */
         }
 
-        /* --- Sidebar Route: keep icon + inputs side-by-side on mobile --- */
-        /* Scope only the horizontal block that contains the route icon column. */
+        /* --- Sidebar Route: keep icon column narrow (also on iOS portrait) --- */
+
+        /* Ensure the horizontal block does not wrap. */
         section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"]:has(.route-icon-col) {
         flex-wrap: nowrap !important;
         align-items: flex-start !important;
         gap: 0.60rem !important;
         }
 
-        /* Make the icon column fixed-width so it never expands and never triggers wrapping. */
-        section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"]:has(.route-icon-col)
-        > div[data-testid="column"]:nth-child(1) {
+        /* Force the *column that contains the icon markup* to a fixed width. */
+        section[data-testid="stSidebar"] div[data-testid="column"]:has(.route-icon-col) {
         flex: 0 0 34px !important;
         width: 34px !important;
         min-width: 34px !important;
+        max-width: 34px !important;
+
+        /* defensive: some Streamlit layouts apply width constraints */
+        overflow: hidden !important;
         }
 
-        /* Let the input column take the remaining width. */
+        /* Force the other column (inputs) to take remaining space. */
         section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"]:has(.route-icon-col)
-        > div[data-testid="column"]:nth-child(2) {
+        > div[data-testid="column"]:not(:has(.route-icon-col)) {
         flex: 1 1 auto !important;
         min-width: 0 !important;
         }
 
-        /* Optional: reduce vertical gap between the two inputs (sidebar only) */
+        /* Also pin the icon container itself so it cannot stretch. */
+        section[data-testid="stSidebar"] .route-icon-col {
+        width: 34px !important;
+        min-width: 34px !important;
+        max-width: 34px !important;
+        display: flex !important;
+        justify-content: center !important;
+        }
+
+        /* Optional: reduce vertical gap between the two inputs (sidebar only). */
         section[data-testid="stSidebar"] div.st-key-start_locality { margin-bottom: -0.35rem !important; }
 
         </style>
