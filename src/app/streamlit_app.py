@@ -80,7 +80,7 @@ from ui.formatting import (
     _fuel_label_to_code,
 )
 
-from src.app.services.route_recommender import RouteRunInputs, run_route_recommendation
+from services.route_recommender import RouteRunInputs, run_route_recommendation
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -939,12 +939,6 @@ def main() -> None:
         }
 
         /* --- Route input: stable icon column (no SVG) --- */
-        .route-icon-col {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        padding-top: 0.35rem;   /* aligns with first input */
-        }
 
         .route-start-circle {
         width: 14px;
@@ -998,6 +992,32 @@ def main() -> None:
         height: 100%;                /* take full column height */
         padding-top: 1.1rem;              /* remove manual offset */
         }
+
+        /* --- Sidebar Route: keep icon + inputs side-by-side on mobile --- */
+        /* Scope only the horizontal block that contains the route icon column. */
+        section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"]:has(.route-icon-col) {
+        flex-wrap: nowrap !important;
+        align-items: flex-start !important;
+        gap: 0.60rem !important;
+        }
+
+        /* Make the icon column fixed-width so it never expands and never triggers wrapping. */
+        section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"]:has(.route-icon-col)
+        > div[data-testid="column"]:nth-child(1) {
+        flex: 0 0 34px !important;
+        width: 34px !important;
+        min-width: 34px !important;
+        }
+
+        /* Let the input column take the remaining width. */
+        section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"]:has(.route-icon-col)
+        > div[data-testid="column"]:nth-child(2) {
+        flex: 1 1 auto !important;
+        min-width: 0 !important;
+        }
+
+        /* Optional: reduce vertical gap between the two inputs (sidebar only) */
+        section[data-testid="stSidebar"] div.st-key-start_locality { margin-bottom: -0.35rem !important; }
 
         </style>
         """,
