@@ -58,7 +58,7 @@ from src.decision.recommender import (
     ONROUTE_MAX_DETOUR_MIN,
 )
 
-from src.app.ui.maps import (
+from ui.maps import (
     _calculate_zoom_for_bounds,
     _supports_pydeck_selections,
     _create_map_visualization,
@@ -911,6 +911,94 @@ def main() -> None:
         border-color: rgba(31, 41, 55, 0.55) !important;
         }
 
+        /* --- Top sidebar "Run recommender" button (key=run_recommender_btn_top) --- */
+        section[data-testid="stSidebar"] div.st-key-run_recommender_btn_top button {
+        background-color: #2E7D32 !important;  /* decent green */
+        color: #ffffff !important;
+        border: 1px solid #2E7D32 !important;
+        }
+
+        section[data-testid="stSidebar"] div.st-key-run_recommender_btn_top button:hover {
+        background-color: #256628 !important;
+        border-color: #256628 !important;
+        }
+
+        section[data-testid="stSidebar"] div.st-key-run_recommender_btn_top button:active {
+        background-color: #1F5622 !important;
+        border-color: #1F5622 !important;
+        }
+
+        section[data-testid="stSidebar"] div.st-key-run_recommender_btn_top button:focus {
+        box-shadow: 0 0 0 0.2rem rgba(46, 125, 50, 0.35) !important;
+        }
+
+        /* Force sidebar width (unsupported CSS override) */
+        section[data-testid="stSidebar"] {
+        width: 380px !important;      /* pick your default */
+        min-width: 380px !important;
+        }
+
+        /* --- Route input: stable icon column (no SVG) --- */
+        .route-icon-col {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding-top: 0.35rem;   /* aligns with first input */
+        }
+
+        .route-start-circle {
+        width: 14px;
+        height: 14px;
+        border-radius: 999px;
+        border: 2px solid rgba(49, 51, 63, 0.55);
+        box-sizing: border-box;
+        }
+
+        .route-dots {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        margin: 8px 0;
+        }
+
+        .route-dots span {
+        width: 3px;
+        height: 3px;
+        border-radius: 999px;
+        background: rgba(49, 51, 63, 0.35);
+        }
+
+        /* Teardrop pin using pure CSS */
+        .route-pin {
+        width: 14px;
+        height: 14px;
+        background: #D32F2F;
+        border-radius: 999px 999px 999px 0;
+        transform: rotate(-45deg);
+        position: relative;
+        margin-top: 2px;
+        }
+
+        .route-pin::after {
+        content: "";
+        width: 6px;
+        height: 6px;
+        background: rgba(255, 255, 255, 0.95);
+        border-radius: 999px;
+        position: absolute;
+        top: 4px;
+        left: 4px;
+        }
+
+        .route-icon-col {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;     /* vertical centering */
+        height: 100%;                /* take full column height */
+        padding-top: 1.1rem;              /* remove manual offset */
+        }
+
         </style>
         """,
         unsafe_allow_html=True,
@@ -971,6 +1059,13 @@ def main() -> None:
         key="sidebar_view",
     )
 
+    # Top "Run" button (always visible, full sidebar width)
+    run_clicked_top = st.sidebar.button(
+        "Run recommender",
+        use_container_width=True,
+        key="run_recommender_btn_top",
+    )
+
     # Helper: read prior values even when Settings widgets are not rendered
     def _ss(key: str, default):
         return st.session_state.get(key, default)
@@ -979,6 +1074,43 @@ def main() -> None:
     # SETTINGS VIEW (all inputs + run button)
     # ----------------------------------------------------------------------
     if sidebar_view == "Settings":
+
+        st.sidebar.markdown("### Route")
+
+        ico_col, inp_col = st.sidebar.columns([0.12, 0.88], vertical_alignment="top", gap="small")
+
+        with ico_col:
+            st.markdown(
+                """
+        <div class="route-icon-col">
+        <div class="route-start-circle"></div>
+        <div class="route-dots"><span></span><span></span><span></span></div>
+        <div class="route-pin"></div>
+        </div>
+        """.strip(),
+                unsafe_allow_html=True,
+            )
+
+        with inp_col:
+            start_locality = st.text_input(
+                "Start",
+                value=_ss("start_locality", "Tübingen"),
+                key="start_locality",
+                label_visibility="collapsed",
+                placeholder="Start: city or full address",
+            )
+            end_locality = st.text_input(
+                "Destination",
+                value=_ss("end_locality", "Sindelfingen"),
+                key="end_locality",
+                label_visibility="collapsed",
+                placeholder="Destionation: city or full address",
+            )
+
+        start_address = ""
+        end_address = ""
+
+
         st.sidebar.subheader("Fuel type")
 
         fuel_label = st.sidebar.selectbox(
@@ -991,41 +1123,20 @@ def main() -> None:
 
         fuel_code = _fuel_label_to_code(fuel_label)
 
-        # Route settings (only used in real mode)
-        st.sidebar.markdown("### Route settings")
-
-        start_locality = st.sidebar.text_input(
-            "Start locality (city/town)",
-            value=_ss("start_locality", "Tübingen"),
-            key="start_locality",
-        )
-        start_address = st.sidebar.text_input(
-            "Start address (optional)",
-            value=_ss("start_address", ""),
-            key="start_address",
-        )
-
-        end_locality = st.sidebar.text_input(
-            "End locality (city/town)",
-            value=_ss("end_locality", "Sindelfingen"),
-            key="end_locality",
-        )
-        end_address = st.sidebar.text_input(
-            "End address (optional)",
-            value=_ss("end_address", ""),
-            key="end_address",
-        )
-
         # Detour economics
-        st.sidebar.markdown("### Detour economics")
+        st.sidebar.markdown(
+            "### Detour economics",
+            help=(
+                "Decide how detours are evaluated. The recommender combines your detour limits "
+                "(extra distance/time) with detour costs (extra fuel and optional value of time) "
+                "and the expected price advantage to compute a net saving for each candidate station."
+            ),
+            )
 
         use_economics = st.sidebar.checkbox(
-            "Use economics-based detour decision (net saving, time cost, fuel cost)",
+            "Economics-based decision",
             value=_ss("use_economics", True),
             key="use_economics",
-        )
-        st.sidebar.caption(
-            "When enabled, stations may be filtered based on detour constraints below. Disable to show all stations."
         )
 
         litres_to_refuel = st.sidebar.number_input(
@@ -1067,24 +1178,32 @@ def main() -> None:
             value=float(_ss("max_detour_min", 10.0)),
             step=1.0,
             key="max_detour_min",
+            help=(
+                "The maximum additional travel time you are willing to accept for a detour compared to the baseline route. "
+                "Stations requiring more extra time are excluded (hard constraint)."
+            ),
         )
         min_net_saving_eur = st.sidebar.number_input(
-            "Minimum net saving to accept detour (€, 0 = no threshold)",
+            "Min net saving (€)",
             min_value=0.0,
             max_value=100.0,
             value=float(_ss("min_net_saving_eur", 0.0)),
             step=0.5,
             key="min_net_saving_eur",
+            help=(
+                "Minimum required net benefit for accepting a detour. Net saving = fuel price saving − "
+                "detour fuel cost − optional time cost. Set to 0 to allow any positive or zero net saving."
+            ),
         )
 
         # Optional diagnostics
         debug_mode = st.sidebar.checkbox(
-            "Debug mode (show pipeline diagnostics)",
-            value=_ss("debug_mode", False),
+            "Debug mode",
+            value=_ss("debug_mode", True),
             key="debug_mode",
         )
 
-        run_clicked = st.sidebar.button("Run recommender", key="run_recommender_btn")
+        run_clicked = run_clicked_top
 
     # ----------------------------------------------------------------------
     # STATUS VIEW (explain + show current state; no settings widgets)
@@ -1095,9 +1214,11 @@ def main() -> None:
         fuel_code = _fuel_label_to_code(fuel_label)
 
         start_locality = _ss("start_locality", "Tübingen")
-        start_address = _ss("start_address", "")
         end_locality = _ss("end_locality", "Sindelfingen")
-        end_address = _ss("end_address", "")
+
+        # Kept for compatibility with downstream kwargs
+        start_address = ""
+        end_address = ""
 
         use_economics = bool(_ss("use_economics", True))
         litres_to_refuel = float(_ss("litres_to_refuel", 40.0))
@@ -1108,7 +1229,7 @@ def main() -> None:
         min_net_saving_eur = float(_ss("min_net_saving_eur", 0.0))
         debug_mode = bool(_ss("debug_mode", False))
 
-        run_clicked = False  # Status view does not execute a run
+        run_clicked = run_clicked_top
 
         st.sidebar.subheader("What the app currently does")
         st.sidebar.markdown(
@@ -1170,7 +1291,7 @@ def main() -> None:
 
     # If user changed settings, keep showing cached results but warn
     if not run_clicked and cached_is_stale:
-        st.warning("Settings changed. Showing previous results; click **Run recommender** to recompute.")
+        st.warning("Settings changed. Showing previous results.")
 
     # -----------------------------
     # Compute (ONLY when run_clicked)
@@ -1182,7 +1303,7 @@ def main() -> None:
         route_info = None
 
         if not start_locality or not end_locality:
-            st.error("Please provide at least start and end localities (cities/towns).")
+            st.error("Please provide a Start and Destination (city or full address).")
             return
 
         try:
