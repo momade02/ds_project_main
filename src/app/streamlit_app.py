@@ -42,6 +42,8 @@ import pandas as pd
 import streamlit as st
 import pydeck as pdk
 
+from datetime import datetime
+
 from config.settings import load_env_once
 
 load_env_once()
@@ -56,7 +58,7 @@ from src.decision.recommender import (
     ONROUTE_MAX_DETOUR_MIN,
 )
 
-from src.app.ui.maps import (
+from ui.maps import (
     _calculate_zoom_for_bounds,
     _supports_pydeck_selections,
     _create_map_visualization,
@@ -84,20 +86,19 @@ from src.app.services.route_recommender import RouteRunInputs, run_route_recomme
 # Helper functions
 # ---------------------------------------------------------------------------
 
-def _reverse_geocode_station_address(station: Dict[str, Any]) -> Optional[str]:
+def _reverse_geocode_station_payload(station: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    Return a formatted address for the given station using Google reverse geocoding.
-    This is intentionally used ONLY for the recommended station (Page 1) to keep API calls minimal.
-    Caches results in session_state to avoid repeated calls on reruns.
+    Returns the first Google reverse-geocode result payload for the station.
+    Cached in session_state to avoid repeated API calls on reruns.
     """
     if not station:
         return None
 
     station_uuid = _station_uuid(station) or f"{station.get('lat')}_{station.get('lon')}"
-    if "address_cache" not in st.session_state:
-        st.session_state["address_cache"] = {}
+    if "reverse_geocode_cache" not in st.session_state:
+        st.session_state["reverse_geocode_cache"] = {}
 
-    cache: Dict[str, str] = st.session_state["address_cache"]
+    cache: Dict[str, Dict[str, Any]] = st.session_state["reverse_geocode_cache"]
     if station_uuid in cache:
         return cache[station_uuid]
 
@@ -113,28 +114,53 @@ def _reverse_geocode_station_address(station: Dict[str, Any]) -> Optional[str]:
         return None
 
     try:
-        # Use the same key + validation flow you already rely on in the app.
         api_key = environment_check()
-
-        # Import locally to avoid import-time issues in some deployments.
         import googlemaps  # type: ignore[import-untyped]
 
         client = googlemaps.Client(key=api_key)
         results = client.reverse_geocode((lat_f, lon_f), language="de")
-
         if not results:
             return None
 
-        formatted = results[0].get("formatted_address")
-        if formatted:
-            cache[station_uuid] = formatted
-            return formatted
-
-        return None
+        cache[station_uuid] = results[0]
+        return results[0]
 
     except Exception:
-        # Non-fatal: address is optional for UI rendering
         return None
+
+
+def _reverse_geocode_station_city(station: Dict[str, Any]) -> Optional[str]:
+    """
+    Extract a city/locality-like name from Google reverse-geocode payload.
+    """
+    payload = _reverse_geocode_station_payload(station)
+    if not payload:
+        return None
+
+    comps = payload.get("address_components") or []
+    # Prefer "locality", then common fallbacks used in some regions.
+    preferred_type_order = [
+        "locality",
+        "postal_town",
+        "administrative_area_level_3",
+        "administrative_area_level_2",
+    ]
+
+    for t in preferred_type_order:
+        for c in comps:
+            types = c.get("types") or []
+            if t in types:
+                name = c.get("long_name")
+                return str(name).strip() if name else None
+
+    return None
+
+def _reverse_geocode_station_address(station: Dict[str, Any]) -> Optional[str]:
+    payload = _reverse_geocode_station_payload(station)
+    if not payload:
+        return None
+    formatted = payload.get("formatted_address")
+    return str(formatted).strip() if formatted else None
 
 
 def _compute_onroute_worst_and_net_vs_worst(
@@ -214,6 +240,19 @@ def _compute_onroute_worst_and_net_vs_worst(
 
     return onroute_worst, net_vs_worst
 
+def _render_metric_grid(items: list[tuple[str, str]]) -> None:
+    # Build HTML WITHOUT leading indentation/newline, otherwise Markdown treats it as code.
+    cards = []
+    for label, value in items:
+        cards.append(
+            "<div class='metric-card'>"
+            f"<div class='metric-label'>{_safe_text(label)}</div>"
+            f"<div class='metric-value'>{_safe_text(value)}</div>"
+            "</div>"
+        )
+
+    html_block = "<div class='metric-grid'>" + "".join(cards) + "</div>"
+    st.markdown(html_block, unsafe_allow_html=True)
 
 def _display_best_station(
     best_station: Dict[str, Any],
@@ -246,19 +285,29 @@ def _display_best_station(
 
     station_name = best_station.get("tk_name") or best_station.get("osm_name") or best_station.get("name")
     brand = best_station.get("brand")
-    city = best_station.get("city")
+    city = _reverse_geocode_station_city(best_station) or best_station.get("city")
 
     # Line 1: brand preferred; if missing, fall back to station name
-    title_line = brand if (brand and str(brand).strip()) else station_name
+    base_name = brand if (brand and str(brand).strip()) else station_name
+    city_clean = str(city).strip() if city else ""
+    title_line = f"{base_name} in {city_clean}" if (base_name and city_clean) else base_name
 
     # Line 2: full address (reverse geocode best station only)
     formatted_address = _reverse_geocode_station_address(best_station)
     subtitle_line = formatted_address or (f"{brand}, {city}" if (brand or city) else "")
 
-    st.markdown("### Recommended station")
-    st.markdown(f"**{_safe_text(title_line)}**")
-    if subtitle_line:
-        st.caption(_safe_text(subtitle_line))
+    label_html = _safe_text("Recommended station:")
+    name_html = _safe_text(title_line) if title_line else ""
+    addr_html = _safe_text(subtitle_line) if subtitle_line else ""
+
+    station_header_html = (
+        "<div class='station-header'>"
+        f"<div class='label'>{label_html}</div>"
+        f"<div class='name'>{name_html}</div>"
+        + (f"<div class='addr'>{addr_html}</div>" if addr_html else "")
+        + "</div>"
+    )
+    st.markdown(station_header_html, unsafe_allow_html=True)
 
     # ------------------------------------------------------------------
     # Required fields for the 6-metric hero card (avoid NameError)
@@ -312,27 +361,16 @@ def _display_best_station(
         except (TypeError, ValueError):
             dist_str = "—"
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric(
-            label=f"Predicted {fuel_code.upper()} price",
-            value=_format_price(pred_price),
-        )
-    with col2:
-        st.metric(
-            label=f"Current {fuel_code.upper()} price",
-            value=_format_price(current_price),
-        )
-    with col3:
-        st.metric("Distance along route", dist_str)
+    hero_items = [
+        (f"Predicted {fuel_code.upper()} price:", _format_price(pred_price)),
+        (f"Current {fuel_code.upper()} price:", _format_price(current_price)),
+        ("Distance to station:", dist_str),
+        ("Worst on-route price:", "—" if onroute_worst is None else _format_price(onroute_worst)),
+        ("Safe up to:", "—" if net_vs_worst is None else _format_eur(net_vs_worst)),
+        ("Detour distance", _format_km(detour_km)),
+    ]
 
-    col4, col5, col6 = st.columns(3)
-    with col4:
-        st.metric("On-route worst price", "—" if onroute_worst is None else _format_price(onroute_worst))
-    with col5:
-        st.metric("Net saving vs on-route worst", "—" if net_vs_worst is None else _format_eur(net_vs_worst))
-    with col6:
-        st.metric("Detour distance", _format_km(detour_km))
+    _render_metric_grid(hero_items)
 
     # ------------------------------------------------------------------
     # Compact hero mode (Page 1): stop here after the 6 required metrics
@@ -695,8 +733,28 @@ def main() -> None:
     st.markdown(
         """
         <style>
+
         /* Reduce the default top padding above the first element */
         div.block-container { padding-top: 1rem; }
+
+        /* --- Sidebar: pull content to the very top --- */
+
+        /* Reduce padding in the sidebar header area (collapse button row) */
+        section[data-testid="stSidebar"] div[data-testid="stSidebarHeader"] {
+        padding-top: 0rem !important;
+        padding-bottom: 0rem !important;
+        }
+
+        /* Reduce top padding of the actual sidebar content container */
+        section[data-testid="stSidebar"] div[data-testid="stSidebarUserContent"] {
+        padding-top: 0rem !important;
+        }
+
+        /* Ensure the first element doesn't add its own top spacing */
+        section[data-testid="stSidebar"] div[data-testid="stSidebarUserContent"] > div:first-child {
+        margin-top: -1rem !important;
+        padding-top: 0 !important;
+        }
 
         /* Outline the main structural containers so you see the usable layout */
         section[data-testid="stSidebar"] { outline: 2px dashed rgba(0,0,0,0.25); outline-offset: -2px; }
@@ -708,6 +766,239 @@ def main() -> None:
 
         /* Outline columns */
         div[data-testid="column"] { outline: 1px dashed rgba(0,128,0,0.20); outline-offset: -1px; }
+
+        /* Tighten spacing above Streamlit caption blocks */
+        div[data-testid="stCaptionContainer"] { margin-top: -1.3rem !important; }
+
+        /* Recommended station hero card */
+        .station-header {
+        margin: 0.25rem auto 0.85rem auto;
+        padding: 1.05rem 1.15rem;
+        max-width: 980px;
+
+        text-align: center;
+
+        /* theme-consistent: teal-tinted surface */
+        background: rgba(14, 116, 144, 0.08);                 /* based on primaryColor */
+        border: 1px solid rgba(14, 116, 144, 0.22);
+        border-radius: 1.05rem;
+        box-shadow: 0 6px 18px rgba(31, 41, 55, 0.08);
+        }
+
+        /* --- Sidebar segmented control: equal-size buttons --- */
+        section[data-testid="stSidebar"] div[data-testid="stSegmentedControl"] [data-baseweb="button-group"]{
+        display: flex !important;
+        width: 100% !important;
+        }
+
+        section[data-testid="stSidebar"] div[data-testid="stSegmentedControl"] [data-baseweb="button-group"] > div{
+        flex: 1 1 0 !important;   /* equal widths */
+        }
+
+        section[data-testid="stSidebar"] div[data-testid="stSegmentedControl"] [data-baseweb="button-group"] button{
+        width: 100% !important;
+        justify-content: center !important; /* center text */
+        }
+
+        /* Keep dashed debug feel without being too loud */
+        .station-header { outline: 1px dashed rgba(14, 116, 144, 0.35); outline-offset: -4px; }
+
+        .station-header .label {
+        margin: 0 0 0.30rem 0 !important;
+        font-size: 1.10rem;
+        font-weight: 650;
+        letter-spacing: 0.01em;
+        opacity: 0.95;
+        }
+
+        .station-header .name {
+        margin: 0 0 0.25rem 0 !important;
+        font-size: 1.70rem;     /* slightly larger than before */
+        font-weight: 780;
+        line-height: 1.15;
+        }
+
+        .station-header .addr {
+        margin: 0 !important;
+        font-size: 1.05rem;     /* a bit larger */
+        font-weight: 600;
+        opacity: 0.82;
+        line-height: 1.25;
+        }
+
+        /* -----------------------------
+        Responsive metric grid (3 cols desktop, 2 cols mobile)
+        ------------------------------ */
+        .metric-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.75rem;
+        margin-top: 0.25rem;
+        }
+
+        @media (max-width: 900px) {
+        .metric-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        }
+
+        /* Only collapse to 1 column on very narrow screens */
+        @media (max-width: 420px) {
+        .metric-grid {
+            grid-template-columns: 1fr;
+        }
+        }
+
+        .metric-card {
+        padding: 0.85rem 0.95rem;
+        border: 1px solid rgba(49, 51, 63, 0.18);
+        border-radius: 0.9rem;
+        }
+
+        /* Keep your “dashed debug” feel for these custom cards too */
+        .metric-grid { outline: 1px dashed rgba(0, 0, 255, 0.20); outline-offset: -1px; }
+        .metric-card { outline: 1px dashed rgba(0, 128, 0, 0.20); outline-offset: -1px; }
+
+        .metric-label {
+        font-size: 0.95rem;
+        opacity: 0.85;
+        margin: 0 0 0.35rem 0;
+        line-height: 1.2;
+        }
+
+        .metric-value {
+        font-size: 1.7rem;
+        font-weight: 650;
+        margin: 0;
+        line-height: 1.05;
+        }
+
+        /* -----------------------------
+        Map header row (title + toggle inline)
+        ------------------------------ */
+       /* Map section header (force title + subtitle on separate lines) */
+        .map-header { 
+        display: block !important;
+        margin-top: 0.70rem;
+        margin-bottom: 0.35rem;
+        }
+
+        .map-title {
+        display: block !important;
+        font-size: 1.20rem;
+        font-weight: 700;
+        margin: 0 !important;
+        line-height: 1.15;
+        }
+
+        .map-subtitle {
+        display: block !important;
+        margin: 0.20rem 0 0 0 !important;  /* small gap below title */
+        opacity: 0.80;
+        font-size: 0.98rem;
+        line-height: 1.25;
+}
+
+        /* Make the map toggle button look consistent and compact */
+        .st-key-toggle_basemap button {
+        padding: 0.30rem 0.80rem !important;
+        border: 1px solid rgba(31, 41, 55, 0.35) !important;
+        border-radius: 10px !important;
+        background: rgba(255, 255, 255, 0.90) !important;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.10) !important;
+        }
+        .st-key-toggle_basemap button:hover {
+        border-color: rgba(31, 41, 55, 0.55) !important;
+        }
+
+        /* --- Top sidebar "Run recommender" button (key=run_recommender_btn_top) --- */
+        section[data-testid="stSidebar"] div.st-key-run_recommender_btn_top button {
+        background-color: #2E7D32 !important;  /* decent green */
+        color: #ffffff !important;
+        border: 1px solid #2E7D32 !important;
+        }
+
+        section[data-testid="stSidebar"] div.st-key-run_recommender_btn_top button:hover {
+        background-color: #256628 !important;
+        border-color: #256628 !important;
+        }
+
+        section[data-testid="stSidebar"] div.st-key-run_recommender_btn_top button:active {
+        background-color: #1F5622 !important;
+        border-color: #1F5622 !important;
+        }
+
+        section[data-testid="stSidebar"] div.st-key-run_recommender_btn_top button:focus {
+        box-shadow: 0 0 0 0.2rem rgba(46, 125, 50, 0.35) !important;
+        }
+
+        /* Force sidebar width (unsupported CSS override) */
+        section[data-testid="stSidebar"] {
+        width: 380px !important;      /* pick your default */
+        min-width: 380px !important;
+        }
+
+        /* --- Route input: stable icon column (no SVG) --- */
+        .route-icon-col {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding-top: 0.35rem;   /* aligns with first input */
+        }
+
+        .route-start-circle {
+        width: 14px;
+        height: 14px;
+        border-radius: 999px;
+        border: 2px solid rgba(49, 51, 63, 0.55);
+        box-sizing: border-box;
+        }
+
+        .route-dots {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        margin: 8px 0;
+        }
+
+        .route-dots span {
+        width: 3px;
+        height: 3px;
+        border-radius: 999px;
+        background: rgba(49, 51, 63, 0.35);
+        }
+
+        /* Teardrop pin using pure CSS */
+        .route-pin {
+        width: 14px;
+        height: 14px;
+        background: #D32F2F;
+        border-radius: 999px 999px 999px 0;
+        transform: rotate(-45deg);
+        position: relative;
+        margin-top: 2px;
+        }
+
+        .route-pin::after {
+        content: "";
+        width: 6px;
+        height: 6px;
+        background: rgba(255, 255, 255, 0.95);
+        border-radius: 999px;
+        position: absolute;
+        top: 4px;
+        left: 4px;
+        }
+
+        .route-icon-col {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;     /* vertical centering */
+        height: 100%;                /* take full column height */
+        padding-top: 1.1rem;              /* remove manual offset */
+        }
+
         </style>
         """,
         unsafe_allow_html=True,
@@ -715,7 +1006,34 @@ def main() -> None:
     # --- end ---
 
     st.title("Fuel Station Recommender")
-    st.caption("##### Plan a route and identify the best-value refueling stop based on current prices and forecasts.")
+    st.caption("##### Plan a route and identify the best-value refueling stops.")
+
+    # --- Top navigation (nicer UI) ---
+    NAV_TARGETS = {
+        "Home": "streamlit_app.py",
+        "Analytics": "pages/02_route_analytics.py",
+        "Station": "pages/03_station_details.py",
+        "Explorer": "pages/04_explorer.py",
+    }
+
+    # Initialize only once (no default parameter needed afterwards)
+    if "top_nav" not in st.session_state:
+        st.session_state["top_nav"] = "Home"
+
+    selected = st.segmented_control(
+        label="",
+        options=list(NAV_TARGETS.keys()),
+        selection_mode="single",
+        label_visibility="collapsed",
+        width="stretch",
+        key="top_nav",  # this is the single source of truth
+    )
+
+    target = NAV_TARGETS.get(selected, "streamlit_app.py")
+
+    # Only switch away from Home when needed
+    if target != "streamlit_app.py":
+        st.switch_page(target)
 
     # Persist last clicked station (map selection)
     if "selected_station_uuid" not in st.session_state:
@@ -726,95 +1044,225 @@ def main() -> None:
     if "last_params_hash" not in st.session_state:
         st.session_state["last_params_hash"] = None
 
-    # Sidebar configuration
-    st.sidebar.subheader("Fuel type")
+    # ----------------------------------------------------------------------
+    # Sidebar "two-page" switcher: Settings vs Status
+    # ----------------------------------------------------------------------
+    if "sidebar_view" not in st.session_state:
+        st.session_state["sidebar_view"] = "Settings"
 
-    fuel_label = st.sidebar.selectbox(
-        "Fuel type",
-        options=["E5", "E10", "Diesel"],
-        index=0,
+    sidebar_view = st.sidebar.segmented_control(
+        label="",
+        options=["Settings", "Status"],
+        selection_mode="single",
         label_visibility="collapsed",
+        width="stretch",
+        key="sidebar_view",
     )
 
-    fuel_code = _fuel_label_to_code(fuel_label)
-
-    # Route settings (only used in real mode)
-    st.sidebar.markdown("### Route settings")
-
-    start_locality = st.sidebar.text_input(
-        "Start locality (city/town)", value="Tübingen"
-    )
-    start_address = st.sidebar.text_input(
-        "Start address (optional)", value=""
+    # Top "Run" button (always visible, full sidebar width)
+    run_clicked_top = st.sidebar.button(
+        "Run recommender",
+        use_container_width=True,
+        key="run_recommender_btn_top",
     )
 
-    end_locality = st.sidebar.text_input(
-        "End locality (city/town)", value="Sindelfingen"
-    )
-    end_address = st.sidebar.text_input(
-        "End address (optional)", value=""
-    )
+    # Helper: read prior values even when Settings widgets are not rendered
+    def _ss(key: str, default):
+        return st.session_state.get(key, default)
 
-    # Detour economics
-    st.sidebar.markdown("### Detour economics")
+    # ----------------------------------------------------------------------
+    # SETTINGS VIEW (all inputs + run button)
+    # ----------------------------------------------------------------------
+    if sidebar_view == "Settings":
 
-    use_economics = st.sidebar.checkbox(
-        "Use economics-based detour decision (net saving, time cost, fuel cost)",
-        value=True,
-    )
-    st.sidebar.caption(
-        "When enabled, stations may be filtered based on detour constraints below. Disable to show all stations."
-    )
-    litres_to_refuel = st.sidebar.number_input(
-        "Litres to refuel",
-        min_value=1.0,
-        max_value=1000.0,
-        value=40.0,
-        step=1.0,
-    )
-    consumption_l_per_100km = st.sidebar.number_input(
-        "Car consumption (L/100 km)",
-        min_value=0.0,
-        max_value=30.0,
-        value=7.0,
-        step=0.5,
-    )
-    value_of_time_eur_per_hour = st.sidebar.number_input(
-        "Value of time (€/hour)",
-        min_value=0.0,
-        max_value=200.0,
-        value=0.0,
-        step=5.0,
-    )
-    max_detour_km = st.sidebar.number_input(
-        "Maximum extra distance (km)",
-        min_value=0.5,
-        max_value=200.0,
-        value=5.0,
-        step=0.5,
-    )
-    max_detour_min = st.sidebar.number_input(
-        "Maximum extra time (min)",
-        min_value=1.0,
-        max_value=240.0,
-        value=10.0,
-        step=1.0,
-    )
-    min_net_saving_eur = st.sidebar.number_input(
-        "Minimum net saving to accept detour (€, 0 = no threshold)",
-        min_value=0.0,
-        max_value=100.0,
-        value=0.0,
-        step=0.5,
-    )
+        st.sidebar.markdown("### Route")
 
-    # Optional diagnostics
-    debug_mode = st.sidebar.checkbox(
-        "Debug mode (show pipeline diagnostics)", value=False
-    )
+        ico_col, inp_col = st.sidebar.columns([0.12, 0.88], vertical_alignment="top", gap="small")
 
-    # Run button
-    run_clicked = st.sidebar.button("Run recommender")
+        with ico_col:
+            st.markdown(
+                """
+        <div class="route-icon-col">
+        <div class="route-start-circle"></div>
+        <div class="route-dots"><span></span><span></span><span></span></div>
+        <div class="route-pin"></div>
+        </div>
+        """.strip(),
+                unsafe_allow_html=True,
+            )
+
+        with inp_col:
+            start_locality = st.text_input(
+                "Start",
+                value=_ss("start_locality", "Tübingen"),
+                key="start_locality",
+                label_visibility="collapsed",
+                placeholder="Start: city or full address",
+            )
+            end_locality = st.text_input(
+                "Destination",
+                value=_ss("end_locality", "Sindelfingen"),
+                key="end_locality",
+                label_visibility="collapsed",
+                placeholder="Destionation: city or full address",
+            )
+
+        start_address = ""
+        end_address = ""
+
+
+        st.sidebar.subheader("Fuel type")
+
+        fuel_label = st.sidebar.selectbox(
+            "Fuel type",
+            options=["E5", "E10", "Diesel"],
+            index=["E5", "E10", "Diesel"].index(_ss("fuel_label", "E5")),
+            label_visibility="collapsed",
+            key="fuel_label",
+        )
+
+        fuel_code = _fuel_label_to_code(fuel_label)
+
+        # Detour economics
+        st.sidebar.markdown(
+            "### Detour economics",
+            help=(
+                "Decide how detours are evaluated. The recommender combines your detour limits "
+                "(extra distance/time) with detour costs (extra fuel and optional value of time) "
+                "and the expected price advantage to compute a net saving for each candidate station."
+            ),
+            )
+
+        use_economics = st.sidebar.checkbox(
+            "Economics-based decision",
+            value=_ss("use_economics", True),
+            key="use_economics",
+        )
+
+        litres_to_refuel = st.sidebar.number_input(
+            "Litres to refuel",
+            min_value=1.0,
+            max_value=1000.0,
+            value=float(_ss("litres_to_refuel", 40.0)),
+            step=1.0,
+            key="litres_to_refuel",
+        )
+        consumption_l_per_100km = st.sidebar.number_input(
+            "Car consumption (L/100 km)",
+            min_value=0.0,
+            max_value=30.0,
+            value=float(_ss("consumption_l_per_100km", 7.0)),
+            step=0.5,
+            key="consumption_l_per_100km",
+        )
+        value_of_time_eur_per_hour = st.sidebar.number_input(
+            "Value of time (€/hour)",
+            min_value=0.0,
+            max_value=200.0,
+            value=float(_ss("value_of_time_eur_per_hour", 0.0)),
+            step=5.0,
+            key="value_of_time_eur_per_hour",
+        )
+        max_detour_km = st.sidebar.number_input(
+            "Maximum extra distance (km)",
+            min_value=0.5,
+            max_value=200.0,
+            value=float(_ss("max_detour_km", 5.0)),
+            step=0.5,
+            key="max_detour_km",
+        )
+        max_detour_min = st.sidebar.number_input(
+            "Maximum extra time (min)",
+            min_value=1.0,
+            max_value=240.0,
+            value=float(_ss("max_detour_min", 10.0)),
+            step=1.0,
+            key="max_detour_min",
+            help=(
+                "The maximum additional travel time you are willing to accept for a detour compared to the baseline route. "
+                "Stations requiring more extra time are excluded (hard constraint)."
+            ),
+        )
+        min_net_saving_eur = st.sidebar.number_input(
+            "Min net saving (€)",
+            min_value=0.0,
+            max_value=100.0,
+            value=float(_ss("min_net_saving_eur", 0.0)),
+            step=0.5,
+            key="min_net_saving_eur",
+            help=(
+                "Minimum required net benefit for accepting a detour. Net saving = fuel price saving − "
+                "detour fuel cost − optional time cost. Set to 0 to allow any positive or zero net saving."
+            ),
+        )
+
+        # Optional diagnostics
+        debug_mode = st.sidebar.checkbox(
+            "Debug mode",
+            value=_ss("debug_mode", True),
+            key="debug_mode",
+        )
+
+        run_clicked = run_clicked_top
+
+    # ----------------------------------------------------------------------
+    # STATUS VIEW (explain + show current state; no settings widgets)
+    # ----------------------------------------------------------------------
+    else:
+        # Read current values from session_state so the app logic still works
+        fuel_label = _ss("fuel_label", "E5")
+        fuel_code = _fuel_label_to_code(fuel_label)
+
+        start_locality = _ss("start_locality", "Tübingen")
+        end_locality = _ss("end_locality", "Sindelfingen")
+
+        # Kept for compatibility with downstream kwargs
+        start_address = ""
+        end_address = ""
+
+        use_economics = bool(_ss("use_economics", True))
+        litres_to_refuel = float(_ss("litres_to_refuel", 40.0))
+        consumption_l_per_100km = float(_ss("consumption_l_per_100km", 7.0))
+        value_of_time_eur_per_hour = float(_ss("value_of_time_eur_per_hour", 0.0))
+        max_detour_km = float(_ss("max_detour_km", 5.0))
+        max_detour_min = float(_ss("max_detour_min", 10.0))
+        min_net_saving_eur = float(_ss("min_net_saving_eur", 0.0))
+        debug_mode = bool(_ss("debug_mode", False))
+
+        run_clicked = run_clicked_top
+
+        st.sidebar.subheader("What the app currently does")
+        st.sidebar.markdown(
+            """
+    - Builds a route (Google routing) and collects stations along/near the route.
+    - Pulls current Tankerkönig prices and historical context.
+    - Predicts arrival-time prices (ARDL horizon logic) and ranks stations.
+    - Optionally applies an economics filter (detour fuel + time cost + thresholds).
+            """.strip()
+        )
+
+        cached = st.session_state.get("last_run")
+        if not cached:
+            st.sidebar.info("No run cached yet. Switch to **Settings** and click **Run recommender**.")
+        else:
+            summary = cached.get("run_summary") or {}
+            computed_at = cached.get("computed_at")
+
+            st.sidebar.markdown("### Current state")
+            if computed_at:
+                st.sidebar.caption(f"Last run: {computed_at}")
+
+            # Keep this compact; Route Analytics already has the detailed story
+            st.sidebar.write(
+                {
+                    "fuel": fuel_label,
+                    "route": f"{start_locality} → {end_locality}",
+                    "use_economics": bool(summary.get("use_economics", use_economics)),
+                    "stations_total": summary.get("stations_total"),
+                    "stations_ranked": summary.get("stations_ranked"),
+                    "stations_filtered_out": summary.get("stations_filtered_out"),
+                }
+            )
 
     # -----------------------------
     # Parameters hash (controls recompute warnings)
@@ -843,7 +1291,7 @@ def main() -> None:
 
     # If user changed settings, keep showing cached results but warn
     if not run_clicked and cached_is_stale:
-        st.warning("Settings changed. Showing previous results; click **Run recommender** to recompute.")
+        st.warning("Settings changed. Showing previous results.")
 
     # -----------------------------
     # Compute (ONLY when run_clicked)
@@ -855,7 +1303,7 @@ def main() -> None:
         route_info = None
 
         if not start_locality or not end_locality:
-            st.error("Please provide at least start and end localities (cities/towns).")
+            st.error("Please provide a Start and Destination (city or full address).")
             return
 
         try:
@@ -954,6 +1402,8 @@ def main() -> None:
         last_run["litres_to_refuel"] = litres_to_refuel
         last_run["debug_mode"] = debug_mode
 
+        last_run["computed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         st.session_state["last_run"] = last_run
         st.session_state["last_params_hash"] = params_hash
 
@@ -986,11 +1436,39 @@ def main() -> None:
     # Map visualization (only for real route mode)
     # ----------------------------------------------------------------------
     if isinstance(route_info, dict) and route_info.get("route_coords"):
-        st.markdown("### Route and stations map")
-        
         try:
-            # Use route data from integration
-            route_coords = route_info.get("route_coords")
+            # -----------------------------
+            # Map section header row
+            # -----------------------------
+            if "map_style_mode" not in st.session_state:
+                st.session_state["map_style_mode"] = "Standard"
+
+            h_left, h_right = st.columns([0.70, 0.30], vertical_alignment="center")
+            with h_left:
+                st.markdown(
+                    "<div class='map-header'>"
+                    "<div class='map-title'>Route and stations map</div>"
+                    "<div class='map-subtitle'>Hover or click a station marker to show details.</div>"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+
+            with h_right:
+                st.segmented_control(
+                    label="",
+                    options=["Standard", "Satellite"],
+                    selection_mode="single",
+                    label_visibility="collapsed",
+                    width="stretch",
+                    key="map_style_mode",
+                )
+
+            use_satellite = (st.session_state.get("map_style_mode") == "Satellite")
+
+            # -----------------------------
+            # Map data (SOURCE OF TRUTH: route_info)
+            # -----------------------------
+            route_coords = route_info.get("route_coords") or []
 
             # Compute via-station route (origin → best station → destination), if possible
             via_overview = None
@@ -998,8 +1476,10 @@ def main() -> None:
                 try:
                     start_lon, start_lat = route_coords[0][0], route_coords[0][1]
                     end_lon, end_lat = route_coords[-1][0], route_coords[-1][1]
+
                     st_lat = float(best_station.get("lat")) if best_station.get("lat") is not None else None
                     st_lon = float(best_station.get("lon")) if best_station.get("lon") is not None else None
+
                     if st_lat is not None and st_lon is not None:
                         api_key = environment_check()
                         via = google_route_via_waypoint(
@@ -1010,145 +1490,89 @@ def main() -> None:
                             end_lat=end_lat,
                             end_lon=end_lon,
                             api_key=api_key,
-                            departure_time=route_info.get('departure_time', 'now'),
+                            departure_time=route_info.get("departure_time", "now"),
                         )
-                        via_overview = via.get('via_full_coords')
+                        via_overview = via.get("via_full_coords")
                 except Exception:
-                    # Non-fatal: still show baseline route
-                    via_overview = None
+                    via_overview = None  # non-fatal
 
-            # Get best station UUID for highlighting (check both possible keys)
-            best_uuid = None
-            if best_station:
-                best_uuid = best_station.get("tk_uuid") or best_station.get("station_uuid")
-
-            # Calculate zoom level based on route extent (for marker scaling)
-            zoom_for_markers = 7.5  # Default
+            # Calculate zoom level based on route extent (robust fallback)
+            zoom_for_markers = 7.5
             if route_coords:
-                lons = [coord[0] for coord in route_coords]
-                lats = [coord[1] for coord in route_coords]
-                
-                # Use Web Mercator formula for precise zoom calculation
-                zoom_for_markers = _calculate_zoom_for_bounds(
-                    lon_min=min(lons),
-                    lon_max=max(lons),
-                    lat_min=min(lats),
-                    lat_max=max(lats),
-                    padding_percent=0.10,
-                    map_width_px=700,
-                    map_height_px=500,
-                )
-            
-            # -----------------------------
-            # Basemap toggle state (Standard <-> Satellite)
-            # -----------------------------
-            if "use_satellite" not in st.session_state:
-                st.session_state["use_satellite"] = False
+                try:
+                    lons = [c[0] for c in route_coords if c and c[0] is not None]
+                    lats = [c[1] for c in route_coords if c and c[1] is not None]
+                    if lons and lats:
+                        z = _calculate_zoom_for_bounds(
+                            lon_min=min(lons),
+                            lon_max=max(lons),
+                            lat_min=min(lats),
+                            lat_max=max(lats),
+                            padding_percent=0.10,
+                            map_width_px=700,
+                            map_height_px=500,
+                        )
+                        if z is not None:
+                            zoom_for_markers = float(z)
+                except Exception:
+                    zoom_for_markers = 7.5
 
-            use_satellite = bool(st.session_state["use_satellite"])
-
-            CUSTOM_STYLE = "mapbox://styles/moritzmaidl/cmk2hdk9c000101pf7jrg9wmb"
+            # -----------------------------
+            # Map rendering
+            # -----------------------------
             map_provider = "mapbox"
-            map_style_url = "mapbox://styles/mapbox/satellite-streets-v12" if use_satellite else "mapbox://styles/mapbox/streets-v12"
+            map_style_url = (
+                "mapbox://styles/mapbox/satellite-streets-v12"
+                if use_satellite
+                else "mapbox://styles/mapbox/streets-v12"
+            )
 
-            # Button label shows the mode you can switch TO
-            toggle_label = "Standard" if use_satellite else "Satellite"
+            deck = _create_map_visualization(
+                route_coords=route_coords,
+                stations=ranked,
+                best_station_uuid=best_uuid,
+                via_full_coords=via_overview,
+                zoom_level=zoom_for_markers,
+                fuel_code=fuel_code,
+                selected_station_uuid=st.session_state.get("selected_station_uuid"),
+                map_provider=map_provider,
+                map_style=map_style_url,
+            )
 
-            # -----------------------------
-            # Map block with overlay button (upper-right on map)
-            # -----------------------------
-            map_block = st.container()
-            with map_block:
-                # Anchor + CSS: position the first button in this block over the map
-                st.markdown(
-                    """
-                    <style>
-                    /* Make ONLY the block that contains our anchor a positioning context */
-                    div[data-testid="stVerticalBlock"]:has(#map-overlay-anchor) {
-                        position: relative;
-                    }
+            selected_uuid_from_event: Optional[str] = None
 
-                    /* Move ONLY the basemap toggle (works whether Streamlit uses id or class) */
-                    #st-key-toggle_basemap, .st-key-toggle_basemap {
-                        position: absolute;
-                        top: 70px;     /* adjust as needed */
-                        left: 12px;    /* upper-left */
-                        z-index: 10000;
-                    }
-
-                    /* Button look (border/"Rand" + compact + background) */
-                    #st-key-toggle_basemap button, .st-key-toggle_basemap button {
-                        padding: 0.25rem 0.75rem;
-                        border: 1px solid rgba(31, 41, 55, 0.35) !important;
-                        border-radius: 10px !important;
-                        background: rgba(255, 255, 255, 0.90) !important;
-                        box-shadow: 0 2px 8px rgba(0,0,0,0.12) !important;
-                    }
-
-                    /* Optional hover */
-                    #st-key-toggle_basemap button:hover, .st-key-toggle_basemap button:hover {
-                        border-color: rgba(31, 41, 55, 0.55) !important;
-                    }
-                    </style>
-
-                    <div id="map-overlay-anchor"></div>
-                    """,
-                    unsafe_allow_html=True,
+            if _supports_pydeck_selections():
+                event = st.pydeck_chart(
+                    deck,
+                    on_select="rerun",
+                    selection_mode="single-object",
+                    key="route_map",
+                    use_container_width=True,
+                    height=560,
                 )
 
-                # IMPORTANT: keep this as the first/only button inside map_block
-                if st.button(toggle_label, key="toggle_basemap"):
-                    st.session_state["use_satellite"] = not use_satellite
-                    st.rerun()
+                try:
+                    selection = event.selection
+                    objects = getattr(selection, "objects", None)
+                    if objects is None and isinstance(selection, dict):
+                        objects = selection.get("objects")
 
-                # Build ONE deck (use ranked stations so markers match the filtered set)
-                deck = _create_map_visualization(
-                    route_coords=route_coords,
-                    stations=ranked,
-                    best_station_uuid=best_uuid,
-                    via_full_coords=via_overview,
-                    zoom_level=zoom_for_markers,
-                    fuel_code=fuel_code,
-                    selected_station_uuid=st.session_state.get("selected_station_uuid"),
-                    map_provider=map_provider,
-                    map_style=map_style_url,
+                    if objects and "stations" in objects and objects["stations"]:
+                        selected_obj = objects["stations"][0]
+                        selected_uuid_from_event = selected_obj.get("station_uuid") or None
+                except Exception:
+                    selected_uuid_from_event = None
+            else:
+                st.pydeck_chart(deck, use_container_width=True, height=560)
+                st.caption(
+                    "Note: Your Streamlit version does not expose pydeck click selections. "
+                    "Upgrade Streamlit to enable click-to-details interaction."
                 )
 
-                st.caption("Hover for quick info. Click a station marker to show details below.")
-
-                selected_uuid_from_event: Optional[str] = None
-                if _supports_pydeck_selections():
-                    event = st.pydeck_chart(
-                        deck,
-                        on_select="rerun",
-                        selection_mode="single-object",
-                        key="route_map",
-                        use_container_width=True,
-                        height=560,
-                    )
-
-                    # Extract clicked station from selection state
-                    try:
-                        selection = event.selection
-                        objects = getattr(selection, "objects", None)
-                        if objects is None and isinstance(selection, dict):
-                            objects = selection.get("objects")
-
-                        if objects and "stations" in objects and objects["stations"]:
-                            selected_obj = objects["stations"][0]
-                            selected_uuid_from_event = selected_obj.get("station_uuid") or None
-                    except Exception:
-                        selected_uuid_from_event = None
-                else:
-                    st.pydeck_chart(deck, use_container_width=True, height=560)
-                    st.caption(
-                        "Note: Your Streamlit version does not expose pydeck click selections. "
-                        "Upgrade Streamlit to enable click-to-details interaction."
-                    )
-
+            # Persist selection regardless of which branch ran
             if selected_uuid_from_event:
                 st.session_state["selected_station_uuid"] = selected_uuid_from_event
-            
+
         except Exception as e:
             st.warning(f"Could not display map: {e}")
 

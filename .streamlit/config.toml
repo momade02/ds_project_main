@@ -2,15 +2,6 @@
 # Streamlit App Configuration
 # =========================
 
-# --- Mapbox / Satellite basemap support (Option C) ---
-# Preferred (future-proof): set MAPBOX_API_KEY as an environment variable.
-# Streamlit docs recommend MAPBOX_API_KEY or pydeck.Deck(api_keys={...}).
-#
-# Note: The [mapbox].token option is DEPRECATED and will be removed on or after 2026-05-01.
-# Keep token empty here and use MAPBOX_API_KEY instead.
-[mapbox]
-token = ""
-
 [theme]
 base = "light"
 
@@ -35,3 +26,6 @@ codeFont = "JetBrains Mono:https://fonts.googleapis.com/css2?family=JetBrains+Mo
 [theme.sidebar]
 backgroundColor = "#F1F4EF"
 secondaryBackgroundColor = "#EEF1EC"
+
+[client]
+showSidebarNavigation = false
