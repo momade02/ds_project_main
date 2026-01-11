@@ -1032,6 +1032,86 @@ def main() -> None:
         /* Optional: reduce vertical gap between the two inputs (sidebar only). */
         section[data-testid="stSidebar"] div.st-key-start_locality { margin-bottom: -0.35rem !important; }
 
+        /* =========================
+        Sidebar Route (no columns)
+        Icons on the RIGHT + inputs narrower
+        ========================= */
+
+        /* Reserve a fixed right gutter so inputs are proactively less wide */
+        section[data-testid="stSidebar"] div.st-key-start_locality,
+        section[data-testid="stSidebar"] div.st-key-end_locality {
+        position: relative !important;
+        }
+
+        /* Narrow the visible input box by reducing its max-width */
+        section[data-testid="stSidebar"] div.st-key-start_locality .stTextInput,
+        section[data-testid="stSidebar"] div.st-key-end_locality .stTextInput {
+        max-width: calc(100% - 46px) !important;   /* <- controls “proactively less wide” */
+        }
+
+        /* Ensure the input itself doesn’t overlap the icon area */
+        section[data-testid="stSidebar"] div.st-key-start_locality input,
+        section[data-testid="stSidebar"] div.st-key-end_locality input {
+        padding-right: 0.75rem !important;
+        }
+
+        /* Start icon: circle on the right, vertically centered to the input */
+        section[data-testid="stSidebar"] div.st-key-start_locality::after {
+        content: "";
+        position: absolute;
+        right: 14px;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 14px;
+        height: 14px;
+        border-radius: 999px;
+        border: 2px solid rgba(49, 51, 63, 0.55);
+        box-sizing: border-box;
+        pointer-events: none;
+        }
+
+        /* Destination icon: red pin on the right */
+        section[data-testid="stSidebar"] div.st-key-end_locality::after {
+        content: "";
+        position: absolute;
+        right: 10px;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 20px;
+        height: 20px;
+        background-repeat: no-repeat;
+        background-position: center;
+        background-size: contain;
+        pointer-events: none;
+
+        /* Inline SVG pin */
+        background-image: url("data:image/svg+xml;utf8,\
+        <svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'>\
+        <path fill='%23D32F2F' d='M12 2c-3.31 0-6 2.69-6 6 0 4.5 6 14 6 14s6-9.5 6-14c0-3.31-2.69-6-6-6zm0 8.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 5.5 12 5.5s2.5 1.12 2.5 2.5S13.38 10.5 12 10.5z'/>\
+        </svg>");
+        }
+
+        /* The three connector dots: aligned to the right gutter between inputs */
+        section[data-testid="stSidebar"] .route-dots-right {
+        width: 46px;
+        margin-left: auto;
+        margin-top: -0.55rem;      /* pulls dots closer to the top input */
+        margin-bottom: -0.35rem;   /* pulls bottom input closer (reduce spacing) */
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        pointer-events: none;
+        }
+
+        section[data-testid="stSidebar"] .route-dots-right span {
+        width: 4px;
+        height: 4px;
+        border-radius: 999px;
+        background: rgba(49, 51, 63, 0.35);
+        display: block;
+        }
+
         </style>
         """,
         unsafe_allow_html=True,
@@ -1110,35 +1190,31 @@ def main() -> None:
 
         st.sidebar.markdown("### Route")
 
-        ico_col, inp_col = st.sidebar.columns([0.12, 0.88], vertical_alignment="top", gap="small")
+        start_locality = st.sidebar.text_input(
+            "Start",
+            value=_ss("start_locality", "Tübingen"),
+            key="start_locality",
+            label_visibility="collapsed",
+            placeholder="City or full address",
+        )
 
-        with ico_col:
-            st.markdown(
-                """
-        <div class="route-icon-col">
-        <div class="route-start-circle"></div>
-        <div class="route-dots"><span></span><span></span><span></span></div>
-        <div class="route-pin"></div>
-        </div>
-        """.strip(),
-                unsafe_allow_html=True,
-            )
+        # Right-side connector dots between the two inputs (visual only)
+        st.sidebar.markdown(
+            """
+            <div class="route-dots-right" aria-hidden="true">
+            <span></span><span></span><span></span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-        with inp_col:
-            start_locality = st.text_input(
-                "Start",
-                value=_ss("start_locality", "Tübingen"),
-                key="start_locality",
-                label_visibility="collapsed",
-                placeholder="Start: city or full address",
-            )
-            end_locality = st.text_input(
-                "Destination",
-                value=_ss("end_locality", "Sindelfingen"),
-                key="end_locality",
-                label_visibility="collapsed",
-                placeholder="Destionation: city or full address",
-            )
+        end_locality = st.sidebar.text_input(
+            "Destination",
+            value=_ss("end_locality", "Sindelfingen"),
+            key="end_locality",
+            label_visibility="collapsed",
+            placeholder="City or full address",
+        )
 
         start_address = ""
         end_address = ""
