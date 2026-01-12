@@ -274,7 +274,7 @@ def render_sidebar(
     st.session_state["sidebar_view"] = _coerce_sidebar_view(st.session_state.get("sidebar_view"))
 
     view = st.sidebar.segmented_control(
-        label="",
+        label="Sidebar sections",
         options=["Action", "Help", "Settings", "Profile"],
         selection_mode="single",
         label_visibility="collapsed",
@@ -325,7 +325,7 @@ def render_sidebar_shell(
     st.session_state["sidebar_view"] = _coerce_sidebar_view(st.session_state.get("sidebar_view"))
 
     view = st.sidebar.segmented_control(
-        label="",
+        label="Sidebar sections",
         options=["Action", "Help", "Settings", "Profile"],
         selection_mode="single",
         label_visibility="collapsed",

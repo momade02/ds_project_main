@@ -45,7 +45,7 @@ from src.integration.historical_data import (
     get_cheapest_and_most_expensive_hours,
 )
 
-from src.app.ui.formatting import (
+from ui.formatting import (
     _station_uuid,
     _fmt_price,
     _fmt_eur,

@@ -753,7 +753,7 @@ def main() -> None:
         st.session_state["top_nav"] = "Home"
 
     selected = st.segmented_control(
-        label="",
+        label="Page navigation",
         options=list(NAV_TARGETS.keys()),
         selection_mode="single",
         label_visibility="collapsed",

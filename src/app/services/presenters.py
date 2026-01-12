@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from src.app.ui.formatting import (
+from ui.formatting import (
     _describe_price_basis,
     _format_price,
     _format_eur,
