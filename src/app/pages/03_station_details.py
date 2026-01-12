@@ -22,6 +22,7 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 
+from ui.sidebar import render_sidebar_shell
 
 # ---------------------------------------------------------------------
 # Import bootstrap (align with your other pages)
@@ -55,6 +56,7 @@ from src.app.ui.formatting import (
     _safe_text,
 )
 
+from ui.styles import apply_app_css
 
 # =====================================================================
 # PLOTLY CHART FUNCTIONS
@@ -306,30 +308,53 @@ def _station_label(s: Dict[str, Any], idx: int) -> str:
 
 def main() -> None:
     st.set_page_config(page_title="Station Details", layout="wide")
+
+    apply_app_css()
+
     st.title("Station Details & Analysis")
 
-    # Sidebar controls
+    st.caption("##### Inspect a selected station: price basis, economics, and supporting details.")
+
+    NAV_TARGETS = {
+        "Home": "streamlit_app.py",
+        "Analytics": "pages/02_route_analytics.py",
+        "Station": "pages/03_station_details.py",
+        "Explorer": "pages/04_station_explorer.py",
+    }
+    CURRENT = "Station"
+
+    if st.session_state.get("_active_page") != CURRENT:
+        st.session_state["_active_page"] = CURRENT
+        st.session_state["top_nav"] = CURRENT
+
+    selected = st.segmented_control(
+        label="",
+        options=list(NAV_TARGETS.keys()),
+        selection_mode="single",
+        label_visibility="collapsed",
+        width="stretch",
+        key="top_nav",
+    )
+
+    target = NAV_TARGETS.get(selected, NAV_TARGETS[CURRENT])
+    if target != NAV_TARGETS[CURRENT]:
+        st.switch_page(target)
+
+    # Sidebar controls (moved into Action tab)
     cached = st.session_state.get("last_run") or {}
     debug_default = bool(cached.get("debug_mode", False))
-    debug_mode = st.sidebar.checkbox("Debug mode", value=debug_default)
 
-    # Navigation
-    nav1, nav2, nav3, nav4 = st.columns([1, 1, 1, 3])
-    with nav1:
-        if st.button("← Trip Planner", use_container_width=True):
-            st.switch_page("streamlit_app.py")
-    with nav2:
-        if st.button("Route Analytics", use_container_width=True):
-            st.switch_page("pages/02_route_analytics.py")
-    with nav3:
-        explorer_path = (Path(__file__).resolve().parent / "04_station_explorer.py")
-        if explorer_path.exists():
-            if st.button("Station Explorer", use_container_width=True):
-                st.switch_page("pages/04_station_explorer.py")
-        else:
-            st.caption("Station Explorer: coming next")
+    def _action_tab() -> None:
+        st.sidebar.checkbox(
+            "Debug mode",
+            value=debug_default,
+            key="debug_mode",  # shared key across pages (intentionally)
+        )
 
-    st.markdown("---")
+    render_sidebar_shell(action_renderer=_action_tab)
+
+    # Use persisted value even when Action tab isn't visible
+    debug_mode = bool(st.session_state.get("debug_mode", debug_default))
 
     # Gather session state inputs
     selected_uuid = st.session_state.get("selected_station_uuid") or ""

@@ -45,6 +45,27 @@ div[data-testid="stCaptionContainer"] { margin-top: -1.3rem !important; }
 
 
 /* ==========================================================================
+   TOP NAV (Page 1 segmented control: st.key = "top_nav")
+   ========================================================================== */
+
+/* Reduce vertical gap between subtitle caption and the top nav segmented control */
+section[data-testid="stMain"] div.st-key-top_nav {
+  margin-top: -0.7rem !important;   /* increase/decrease to taste */
+  margin-bottom: -0.7rem !important;
+}
+
+/* Make the top nav labels bold (BaseWeb typography inside the buttons) */
+section[data-testid="stMain"] div.st-key-top_nav [data-baseweb="button-group"] button [data-baseweb="typo"] {
+  font-weight: 700 !important;
+}
+
+/* Fallback: force bold on any nested label element Streamlit/BaseWeb uses */
+section[data-testid="stMain"] div.st-key-top_nav [data-baseweb="button-group"] button * {
+  font-weight: 700 !important;
+}
+
+
+/* ==========================================================================
    RECOMMENDED STATION HERO + METRIC GRID
    ========================================================================== */
 

@@ -84,6 +84,8 @@ from services.route_recommender import RouteRunInputs, run_route_recommendation
 
 from ui.styles import apply_app_css
 
+from ui.sidebar import render_sidebar
+
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
@@ -775,228 +777,31 @@ def main() -> None:
         st.session_state["last_params_hash"] = None
 
     # ----------------------------------------------------------------------
-    # Sidebar switcher: Action / Info / Settings / Profile
+    # Sidebar (standardized)
     # ----------------------------------------------------------------------
-    if "sidebar_view" not in st.session_state:
-        st.session_state["sidebar_view"] = "Action"
-    # Backward compatibility: if "Status" is still in session_state, map it to "Info"
-    elif st.session_state.get("sidebar_view") == "Status":
-        st.session_state["sidebar_view"] = "Info"
+    sidebar = render_sidebar()
 
-    sidebar_view = st.sidebar.segmented_control(
-        label="",
-        options=["Action", "Info", "Settings", "Profile"],
-        selection_mode="single",
-        label_visibility="collapsed",
-        width="stretch",
-        key="sidebar_view",
-    )
+    sidebar_view = sidebar.view
+    run_clicked = sidebar.run_clicked
 
-    # Helper: read prior values even when Action widgets are not rendered
-    def _ss(key: str, default):
-        return st.session_state.get(key, default)
+    start_locality = sidebar.start_locality
+    end_locality = sidebar.end_locality
+    start_address = sidebar.start_address
+    end_address = sidebar.end_address
 
-    # ----------------------------------------------------------------------
-    # ACTION VIEW (all inputs + run button)
-    # ----------------------------------------------------------------------
-    if sidebar_view == "Action":
+    fuel_label = sidebar.fuel_label
+    fuel_code = sidebar.fuel_code
 
-        run_clicked = st.sidebar.button(
-            "Run recommender",
-            use_container_width=True,
-            key="run_recommender_btn",
-        )
+    use_economics = sidebar.use_economics
+    litres_to_refuel = sidebar.litres_to_refuel
+    consumption_l_per_100km = sidebar.consumption_l_per_100km
+    value_of_time_eur_per_hour = sidebar.value_of_time_eur_per_hour
+    max_detour_km = sidebar.max_detour_km
+    max_detour_min = sidebar.max_detour_min
+    min_net_saving_eur = sidebar.min_net_saving_eur
 
-        st.sidebar.markdown("### Route")
+    debug_mode = sidebar.debug_mode
 
-        start_locality = st.sidebar.text_input(
-            "Start",
-            value=_ss("start_locality", "Tübingen"),
-            key="start_locality",
-            label_visibility="collapsed",
-            placeholder="Start: city or full address",
-        )
-
-        # Right-side connector dots between the two inputs (visual only)
-        st.sidebar.markdown(
-            """
-            <div class="route-dots-right" aria-hidden="true">
-            <span></span><span></span><span></span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        end_locality = st.sidebar.text_input(
-            "Destination",
-            value=_ss("end_locality", "Sindelfingen"),
-            key="end_locality",
-            label_visibility="collapsed",
-            placeholder="Destination: city or full address",
-        )
-
-        start_address = ""
-        end_address = ""
-
-
-        st.sidebar.subheader("Fuel type")
-
-        fuel_label = st.sidebar.selectbox(
-            "Fuel type",
-            options=["E5", "E10", "Diesel"],
-            index=["E5", "E10", "Diesel"].index(_ss("fuel_label", "E5")),
-            label_visibility="collapsed",
-            key="fuel_label",
-        )
-
-        fuel_code = _fuel_label_to_code(fuel_label)
-
-        # Detour economics
-        st.sidebar.markdown(
-            "### Detour economics",
-            help=(
-                "Decide how detours are evaluated. The recommender combines your detour limits "
-                "(extra distance/time) with detour costs (extra fuel and optional value of time) "
-                "and the expected price advantage to compute a net saving for each candidate station."
-            ),
-            )
-
-        use_economics = st.sidebar.checkbox(
-            "Economics-based decision",
-            value=_ss("use_economics", True),
-            key="use_economics",
-        )
-
-        litres_to_refuel = st.sidebar.number_input(
-            "Litres to refuel",
-            min_value=1.0,
-            max_value=1000.0,
-            value=float(_ss("litres_to_refuel", 40.0)),
-            step=1.0,
-            key="litres_to_refuel",
-        )
-        consumption_l_per_100km = st.sidebar.number_input(
-            "Car consumption (L/100 km)",
-            min_value=0.0,
-            max_value=30.0,
-            value=float(_ss("consumption_l_per_100km", 7.0)),
-            step=0.5,
-            key="consumption_l_per_100km",
-        )
-        value_of_time_eur_per_hour = st.sidebar.number_input(
-            "Value of time (€/hour)",
-            min_value=0.0,
-            max_value=200.0,
-            value=float(_ss("value_of_time_eur_per_hour", 0.0)),
-            step=5.0,
-            key="value_of_time_eur_per_hour",
-        )
-        max_detour_km = st.sidebar.number_input(
-            "Maximum extra distance (km)",
-            min_value=0.5,
-            max_value=200.0,
-            value=float(_ss("max_detour_km", 5.0)),
-            step=0.5,
-            key="max_detour_km",
-        )
-        max_detour_min = st.sidebar.number_input(
-            "Maximum extra time (min)",
-            min_value=1.0,
-            max_value=240.0,
-            value=float(_ss("max_detour_min", 10.0)),
-            step=1.0,
-            key="max_detour_min",
-            help=(
-                "The maximum additional travel time you are willing to accept for a detour compared to the baseline route. "
-                "Stations requiring more extra time are excluded (hard constraint)."
-            ),
-        )
-        min_net_saving_eur = st.sidebar.number_input(
-            "Min net saving (€)",
-            min_value=0.0,
-            max_value=100.0,
-            value=float(_ss("min_net_saving_eur", 0.0)),
-            step=0.5,
-            key="min_net_saving_eur",
-            help=(
-                "Minimum required net benefit for accepting a detour. Net saving = fuel price saving − "
-                "detour fuel cost − optional time cost. Set to 0 to allow any positive or zero net saving."
-            ),
-        )
-
-        # Optional diagnostics
-        debug_mode = st.sidebar.checkbox(
-            "Debug mode",
-            value=_ss("debug_mode", True),
-            key="debug_mode",
-        )
-
-    # ----------------------------------------------------------------------
-    # INFO / SETTINGS / PROFILE (placeholders only for now; no Run button)
-    # ----------------------------------------------------------------------
-    elif sidebar_view == "Info":
-        # Read values from session_state so the rest of the app (hashing/cached display) doesn't break
-        start_locality = _ss("start_locality", "Tübingen")
-        end_locality = _ss("end_locality", "Sindelfingen")
-        start_address = ""
-        end_address = ""
-
-        fuel_label = _ss("fuel_label", "E5")
-        fuel_code = _fuel_label_to_code(fuel_label)
-
-        use_economics = bool(_ss("use_economics", True))
-        litres_to_refuel = float(_ss("litres_to_refuel", 40.0))
-        consumption_l_per_100km = float(_ss("consumption_l_per_100km", 7.0))
-        value_of_time_eur_per_hour = float(_ss("value_of_time_eur_per_hour", 0.0))
-        max_detour_km = float(_ss("max_detour_km", 5.0))
-        max_detour_min = float(_ss("max_detour_min", 10.0))
-        min_net_saving_eur = float(_ss("min_net_saving_eur", 0.0))
-        debug_mode = bool(_ss("debug_mode", True))
-
-        run_clicked = False
-        st.sidebar.info("Placeholder: Info (content will be added later).")
-
-    elif sidebar_view == "Settings":
-        start_locality = _ss("start_locality", "Tübingen")
-        end_locality = _ss("end_locality", "Sindelfingen")
-        start_address = ""
-        end_address = ""
-
-        fuel_label = _ss("fuel_label", "E5")
-        fuel_code = _fuel_label_to_code(fuel_label)
-
-        use_economics = bool(_ss("use_economics", True))
-        litres_to_refuel = float(_ss("litres_to_refuel", 40.0))
-        consumption_l_per_100km = float(_ss("consumption_l_per_100km", 7.0))
-        value_of_time_eur_per_hour = float(_ss("value_of_time_eur_per_hour", 0.0))
-        max_detour_km = float(_ss("max_detour_km", 5.0))
-        max_detour_min = float(_ss("max_detour_min", 10.0))
-        min_net_saving_eur = float(_ss("min_net_saving_eur", 0.0))
-        debug_mode = bool(_ss("debug_mode", True))
-
-        run_clicked = False
-        st.sidebar.info("Placeholder: Settings (content will be added later).")
-
-    else:  # "Profile"
-        start_locality = _ss("start_locality", "Tübingen")
-        end_locality = _ss("end_locality", "Sindelfingen")
-        start_address = ""
-        end_address = ""
-
-        fuel_label = _ss("fuel_label", "E5")
-        fuel_code = _fuel_label_to_code(fuel_label)
-
-        use_economics = bool(_ss("use_economics", True))
-        litres_to_refuel = float(_ss("litres_to_refuel", 40.0))
-        consumption_l_per_100km = float(_ss("consumption_l_per_100km", 7.0))
-        value_of_time_eur_per_hour = float(_ss("value_of_time_eur_per_hour", 0.0))
-        max_detour_km = float(_ss("max_detour_km", 5.0))
-        max_detour_min = float(_ss("max_detour_min", 10.0))
-        min_net_saving_eur = float(_ss("min_net_saving_eur", 0.0))
-        debug_mode = bool(_ss("debug_mode", True))
-
-        run_clicked = False
-        st.sidebar.info("Placeholder: Profile (content will be added later).")
 
     # -----------------------------
     # Parameters hash (controls recompute warnings)

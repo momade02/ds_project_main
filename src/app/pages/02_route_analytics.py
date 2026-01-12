@@ -46,6 +46,9 @@ from ui.formatting import (
 )
 from src.app.services.presenters import build_ranking_dataframe
 
+from ui.styles import apply_app_css
+
+from ui.sidebar import render_sidebar_shell
 
 # -----------------------------
 # Helpers
@@ -477,13 +480,50 @@ def _station_label(s: Dict[str, Any], idx: Optional[int] = None, tag: str = "") 
 def main() -> None:
     st.set_page_config(page_title="Route Analytics", layout="wide")
 
+    apply_app_css()
+
+    # Header (consistent across pages)
+    st.title("Route Analytics")
+    st.caption("##### Understand the recommendation.")
+
+    NAV_TARGETS = {
+        "Home": "streamlit_app.py",
+        "Analytics": "pages/02_route_analytics.py",
+        "Station": "pages/03_station_details.py",
+        "Explorer": "pages/04_station_explorer.py",
+    }
+    CURRENT = "Analytics"
+
+    # Ensure the correct tab is selected when landing on this page,
+    # but do not overwrite user interaction during the same run.
+    if st.session_state.get("_active_page") != CURRENT:
+        st.session_state["_active_page"] = CURRENT
+        st.session_state["top_nav"] = CURRENT
+
+    selected = st.segmented_control(
+        label="",
+        options=list(NAV_TARGETS.keys()),
+        selection_mode="single",
+        label_visibility="collapsed",
+        width="stretch",
+        key="top_nav",
+    )
+
+    target = NAV_TARGETS.get(selected, NAV_TARGETS[CURRENT])
+    if target != NAV_TARGETS[CURRENT]:
+        st.switch_page(target)
+
+    render_sidebar_shell(
+        action_placeholder="Placeholder: Action (nothing to configure on Route Analytics yet)."
+    )
+
     cached = _get_last_run()
     if not cached:
-        st.title("Route Analytics")
         st.info("No cached run found. Run a route recommendation first on the main page.")
         if st.button("Open main page"):
             st.switch_page("streamlit_app.py")
         return
+
 
     fuel_code: str = str(cached.get("fuel_code") or "e5").lower()
     run_summary: Dict[str, Any] = cached.get("run_summary") or {}
@@ -510,23 +550,6 @@ def main() -> None:
     filter_counts: Dict[str, int] = filter_log.get("counts") or {}
     filter_notes: List[str] = filter_log.get("notes") or []
     filter_thresholds: Dict[str, Any] = filter_log.get("thresholds") or {}
-
-    # ------------------------------------------------------------------
-    # Header / Navigation
-    # ------------------------------------------------------------------
-    st.title("Route Analytics")
-
-    nav1, nav2, nav3 = st.columns([1, 1, 2])
-    with nav1:
-        if st.button("Back to main page", use_container_width=True):
-            st.switch_page("streamlit_app.py")
-    with nav2:
-        if st.button("Open Station Explorer", use_container_width=True):
-            st.switch_page("pages/04_station_explorer.py")
-    with nav3:
-        st.caption("This page explains how the recommendation was produced and why stations were excluded.")
-
-    st.markdown("---")
 
     # ------------------------------------------------------------------
     # SECTION A — Your route & recommendation
