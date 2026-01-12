@@ -8,6 +8,10 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import streamlit as st
 
+from ui.styles import apply_app_css
+
+from ui.sidebar import render_sidebar_shell
+
 from config.settings import load_env_once
 
 load_env_once()
@@ -68,22 +72,34 @@ def _build_results_table(stations: List[Dict[str, Any]], fuel_code: str) -> pd.D
 
 def main() -> None:
     st.set_page_config(page_title="Station Explorer", layout="wide")
+    apply_app_css()
     st.title("Station Explorer")
-    st.caption("Browse fuel stations near a location without computing a route.")
+    st.caption("##### Browse fuel stations near a location without computing a route.")
 
-    # Navigation
-    nav1, nav2, nav3, nav4 = st.columns([1, 1, 1, 3])
-    with nav1:
-        if st.button("← Trip Planner", use_container_width=True):
-            st.switch_page("streamlit_app.py")
-    with nav2:
-        if st.button("Route Analytics", use_container_width=True):
-            st.switch_page("pages/02_route_analytics.py")
-    with nav3:
-        if st.button("Station Details", use_container_width=True):
-            st.switch_page("pages/03_station_details.py")
+    NAV_TARGETS = {
+        "Home": "streamlit_app.py",
+        "Analytics": "pages/02_route_analytics.py",
+        "Station": "pages/03_station_details.py",
+        "Explorer": "pages/04_station_explorer.py",
+    }
+    CURRENT = "Explorer"
 
-    st.markdown("---")
+    if st.session_state.get("_active_page") != CURRENT:
+        st.session_state["_active_page"] = CURRENT
+        st.session_state["top_nav"] = CURRENT
+
+    selected = st.segmented_control(
+        label="",
+        options=list(NAV_TARGETS.keys()),
+        selection_mode="single",
+        label_visibility="collapsed",
+        width="stretch",
+        key="top_nav",
+    )
+
+    target = NAV_TARGETS.get(selected, NAV_TARGETS[CURRENT])
+    if target != NAV_TARGETS[CURRENT]:
+        st.switch_page(target)
 
     # Persistent state
     if "explorer_results" not in st.session_state:
@@ -91,28 +107,85 @@ def main() -> None:
     if "explorer_center" not in st.session_state:
         st.session_state["explorer_center"] = None
 
-    # Sidebar inputs
-    st.sidebar.header("Explorer Settings")
 
-    location_query = st.sidebar.text_input(
-        "City / ZIP / Address",
-        value=st.session_state.get("explorer_last_query", "Tübingen"),
-        help="Examples: 'Tübingen', '72074 Tübingen', 'Wilhelmstraße 7, Tübingen'",
-    )
+    # ------------------------------------------------------------
+    # Sidebar (standard tabs) — Explorer controls live in Action tab
+    # ------------------------------------------------------------
+    run_clicked = {"value": False}
 
-    fuel_label = st.sidebar.selectbox("Fuel type", options=["E5", "E10", "Diesel"], index=0)
+    def _action_tab() -> None:
+        st.sidebar.header("Explorer Settings")
+
+        st.sidebar.text_input(
+            "City / ZIP / Address",
+            value=st.session_state.get("explorer_location_query", st.session_state.get("explorer_last_query", "Tübingen")),
+            help="Examples: 'Tübingen', '72074 Tübingen', 'Wilhelmstraße 7, Tübingen'",
+            key="explorer_location_query",
+        )
+
+        st.sidebar.selectbox(
+            "Fuel type",
+            options=["E5", "E10", "Diesel"],
+            index=["E5", "E10", "Diesel"].index(st.session_state.get("explorer_fuel_label", "E5"))
+            if st.session_state.get("explorer_fuel_label", "E5") in ["E5", "E10", "Diesel"] else 0,
+            key="explorer_fuel_label",
+        )
+
+        st.sidebar.slider(
+            "Search radius (km)",
+            min_value=1.0,
+            max_value=25.0,
+            value=float(st.session_state.get("explorer_radius_km", 10.0)),
+            step=1.0,
+            key="explorer_radius_km",
+        )
+
+        st.sidebar.checkbox(
+            "Only show open stations (requires realtime)",
+            value=bool(st.session_state.get("explorer_only_open", False)),
+            key="explorer_only_open",
+        )
+
+        st.sidebar.checkbox(
+            "Use realtime prices (Tankerkönig)",
+            value=bool(st.session_state.get("explorer_use_realtime", True)),
+            key="explorer_use_realtime",
+        )
+
+        st.sidebar.slider(
+            "Max stations to load (performance)",
+            min_value=50,
+            max_value=400,
+            value=int(st.session_state.get("explorer_limit", 200)),
+            step=50,
+            key="explorer_limit",
+        )
+
+        st.sidebar.checkbox(
+            "Debug mode",
+            value=bool(st.session_state.get("debug_mode", False)),
+            key="debug_mode",  # shared key across pages
+        )
+
+        run_clicked["value"] = st.sidebar.button(
+            "Search stations",
+            use_container_width=True,
+            key="explorer_search_btn",
+        )
+
+    sidebar_view = render_sidebar_shell(action_renderer=_action_tab)
+
+    # Read values from session_state so they remain available even on non-Action tabs
+    location_query = str(st.session_state.get("explorer_location_query", st.session_state.get("explorer_last_query", "Tübingen")))
+    fuel_label = str(st.session_state.get("explorer_fuel_label", "E5"))
     fuel_code = _fuel_label_to_code(fuel_label)
+    radius_km = float(st.session_state.get("explorer_radius_km", 10.0))
+    only_open = bool(st.session_state.get("explorer_only_open", False))
+    use_realtime = bool(st.session_state.get("explorer_use_realtime", True))
+    limit = int(st.session_state.get("explorer_limit", 200))
+    debug_mode = bool(st.session_state.get("debug_mode", False))
 
-    radius_km = st.sidebar.slider("Search radius (km)", min_value=1.0, max_value=25.0, value=10.0, step=1.0)
-
-    only_open = st.sidebar.checkbox("Only show open stations (requires realtime)", value=False)
-    use_realtime = st.sidebar.checkbox("Use realtime prices (Tankerkönig)", value=True)
-
-    limit = st.sidebar.slider("Max stations to load (performance)", min_value=50, max_value=400, value=200, step=50)
-
-    debug_mode = st.sidebar.checkbox("Debug mode", value=False)
-
-    run = st.sidebar.button("Search stations")
+    run = bool(run_clicked["value"]) and (sidebar_view == "Action")
 
     # Execute search
     if run:
@@ -132,9 +205,10 @@ def main() -> None:
             st.session_state["explorer_center"] = payload["center"]
             st.session_state["explorer_results"] = payload["stations"]
 
-            # Reset selection on new search
-            st.session_state["selected_station_uuid"] = None
-            st.session_state["selected_station_data"] = None
+            # Optional: set a "best" selection to reuse your Station Details flow
+            best_uuid = pick_best_station_uuid(payload["stations"])
+            if best_uuid:
+                st.session_state["selected_station_uuid"] = best_uuid
 
         except AppError as exc:
             st.error(exc.user_message)
