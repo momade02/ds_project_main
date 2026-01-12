@@ -2,6 +2,9 @@
 # Streamlit App Configuration
 # =========================
 
+[mapbox]
+token = "pk.eyJ1IjoibW9yaXR6bWFpZGwiLCJhIjoiY21rMTd6eWZ4MDM1ZTNzcXhwMTQ1bGoweSJ9.d4F_dBOh69xJjJhDVYW4nw"
+
 [theme]
 base = "light"
 

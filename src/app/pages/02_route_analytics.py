@@ -44,7 +44,7 @@ from ui.formatting import (
     _fmt_km,
     _fmt_min,
 )
-from src.app.services.presenters import build_ranking_dataframe
+from services.presenters import build_ranking_dataframe
 
 from ui.styles import apply_app_css
 

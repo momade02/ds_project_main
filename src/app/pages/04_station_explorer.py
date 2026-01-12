@@ -74,7 +74,7 @@ def main() -> None:
     st.set_page_config(page_title="Station Explorer", layout="wide")
     apply_app_css()
     st.title("Station Explorer")
-    st.caption("##### Browse fuel stations near a location without computing a route.")
+    st.caption("##### Browse fuel stations near a location.")
 
     NAV_TARGETS = {
         "Home": "streamlit_app.py",
@@ -206,7 +206,7 @@ def main() -> None:
             st.session_state["explorer_results"] = payload["stations"]
 
             # Optional: set a "best" selection to reuse your Station Details flow
-            best_uuid = pick_best_station_uuid(payload["stations"])
+            best_uuid = pick_best_station_uuid(payload["stations"], fuel_code=fuel_code)
             if best_uuid:
                 st.session_state["selected_station_uuid"] = best_uuid
 
