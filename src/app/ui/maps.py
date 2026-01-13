@@ -10,6 +10,7 @@ import json
 import os
 
 import pydeck as pdk
+from torch import fill
 
 try:
     import streamlit as st
@@ -217,7 +218,7 @@ def create_map_visualization(
         fill_hex = "#00C800" if is_best else "#FFA500"
         stroke_hex = "#FFFFFF" if is_selected else "#000000"
         icon_url = _pin_icon_data_url(fill_hex, stroke_hex)
-        icon_size = 45 if is_selected else (39 if is_best else 30)
+        icon_size = 60 if is_selected else (50 if is_best else 40)
 
         station_data.append(
             {
@@ -294,8 +295,8 @@ def create_map_visualization(
             get_size="icon_size",
             size_units="pixels",
             size_scale=1,
-            size_min_pixels=30,
-            size_max_pixels=50,
+            size_min_pixels=10,
+            size_max_pixels=100,
             pickable=True,
             auto_highlight=True,
         )
@@ -399,6 +400,7 @@ def create_mapbox_gl_html(
     via_full_coords: list[list[float]] | None,
     use_satellite: bool,
     selected_station_uuid: str | None,
+    marker_category_by_uuid: dict[str, str] | None = None,
     height_px: int = 560,
 ) -> str:
     """
@@ -444,6 +446,10 @@ def create_mapbox_gl_html(
         name = s.get("tk_name") or s.get("osm_name") or s.get("name") or "Station"
         brand = s.get("brand") or ""
 
+        props_category = None
+        if marker_category_by_uuid and suuid:
+            props_category = marker_category_by_uuid.get(suuid)
+
         features.append(
             {
                 "type": "Feature",
@@ -454,6 +460,7 @@ def create_mapbox_gl_html(
                     "brand": str(brand),
                     "is_best": is_best,
                     "is_selected": is_selected,
+                    "marker_category": str(props_category or ("best" if is_best else "better")),
                 },
             }
         )
@@ -581,10 +588,35 @@ def create_mapbox_gl_html(
         }});
       }}
 
-      // Stations as SVG pin markers
+            // Stations as SVG pin markers
       const popup = new mapboxgl.Popup({{ closeButton: false, closeOnClick: false }});
 
-      (stationsGeo.features || []).forEach((f) => {{
+      // ---- Ensure layering: draw non-best first, then best, then selected last ----
+      const features = (stationsGeo.features || []).slice();
+
+      function _truthy(v) {{
+        return (v === true || v === "true");
+      }}
+
+      // Sort so that: other/better first, best later, selected last (highest priority)
+      features.sort((a, b) => {{
+        const pa = (a && a.properties) ? a.properties : {{}};
+        const pb = (b && b.properties) ? b.properties : {{}};
+
+        const aBest = _truthy(pa.is_best);
+        const bBest = _truthy(pb.is_best);
+
+        const aSel  = _truthy(pa.is_selected);
+        const bSel  = _truthy(pb.is_selected);
+
+        // Weight: selected=3, best=2, else=0
+        const wa = (aSel ? 3 : 0) + (aBest ? 2 : 0);
+        const wb = (bSel ? 3 : 0) + (bBest ? 2 : 0);
+
+        return wa - wb;
+      }});
+
+      features.forEach((f) => {{
         const coords = f.geometry && f.geometry.coordinates;
         if (!coords || coords.length !== 2) return;
 
@@ -592,23 +624,39 @@ def create_mapbox_gl_html(
         const isBest = (props.is_best === true || props.is_best === "true");
         const isSelected = (props.is_selected === true || props.is_selected === "true");
 
-        // Color logic
-        let fill = "#FFA500";   // default orange
+        // Color logic (three categories + selection override)
+        const cat = (props.marker_category || "").toLowerCase();
+
+        let fill = "#FFA500";   // default = better (orange)
         let stroke = "#000000"; // default black
 
-        if (isBest) {{
+        if (cat === "other") {{
+          fill = "#D32F2F";     // other = red
+        }}
+        if (cat === "best" || isBest) {{
           fill = "#00C800";     // best = green
           stroke = "#FFFFFF";
         }}
+
+        // Selection override (blue)
         if (isSelected) {{
-          fill = "#1E90FF";     // selected = blue
+          fill = "#1E90FF";
           stroke = "#FFFFFF";
         }}
 
         const el = document.createElement("div");
-        el.style.width = "28px";
-        el.style.height = "28px";
-        el.style.transform = isSelected ? "scale(1.15)" : (isBest ? "scale(1.05)" : "scale(1.0)");
+        el.style.width = "35px";
+        el.style.height = "35px";
+
+        // ---- Marker sizing ----
+        // Orange/Red: slightly smaller
+        // Green (best): slightly larger
+        // Selected: largest
+        let scale = 0.72;
+        if (isBest) scale = 1.42;
+        if (isSelected) scale = 2;
+
+        el.style.transform = `scale(${{scale}})`;
         el.style.transformOrigin = "bottom center";
         el.innerHTML = pinSVG(fill, stroke);
 
@@ -626,9 +674,14 @@ def create_mapbox_gl_html(
           popup.remove();
         }});
 
-        new mapboxgl.Marker({{ element: el, anchor: "bottom" }})
+        // ---- Create marker and force z-order ----
+        const marker = new mapboxgl.Marker({{ element: el, anchor: "bottom" }})
           .setLngLat(coords)
           .addTo(map);
+
+        // z-index: selected highest, best next, others lowest
+        const z = isSelected ? 30 : (isBest ? 20 : 10);
+        marker.getElement().style.zIndex = String(z);
       }});
 
     }});

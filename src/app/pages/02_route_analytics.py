@@ -629,6 +629,10 @@ def main() -> None:
     best_station: Optional[Dict[str, Any]] = cached.get("best_station")
     route_info: Dict[str, Any] = cached.get("route_info") or {}
 
+    # If Page 01 already computed the "value view" set, keep it available here as well.
+    value_view_stations = cached.get("value_view_stations") or []
+    value_view_meta = cached.get("value_view_meta") or {}
+
     # Constraints (from Page 1 run_summary; fall back to None when missing)
     constraints = run_summary.get("constraints") or {}
     cap_km = constraints.get("max_detour_km")

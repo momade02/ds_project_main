@@ -590,3 +590,43 @@ div[data-testid="stCaptionContainer"] {
   margin-bottom: -0.8rem !important;
   padding-bottom: 0 !important;
 }
+
+
+/* ======================================================================
+   MAP LEGEND (Page 01)
+   ====================================================================== */
+
+.map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.85rem 1.25rem;
+  margin-top: 0.45rem;
+  align-items: center;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.95rem;
+  opacity: 0.92;
+}
+
+.legend-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  display: inline-block;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+}
+
+.legend-dot.best   { background: #00C800; }
+.legend-dot.better { background: #FFA500; }
+.legend-dot.other  { background: #D32F2F; }
+
+.legend-note {
+  margin-top: 0.25rem;
+  font-size: 0.90rem;
+  opacity: 0.75;
+  line-height: 1.25;
+}

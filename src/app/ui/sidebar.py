@@ -235,8 +235,13 @@ def _render_trip_planner_action() -> SidebarState:
         ),
     )
 
-
-    st.sidebar.markdown("### Advanced Settings")
+    st.sidebar.markdown(
+        "### Advanced Settings",
+        help=(
+            "Make sure that only stations are considered that are open at ETA. "
+            "If you have a fuel card of a common brand, filter by brand to only see relevant stations."
+        ),
+    )
 
     filter_closed_at_eta = st.sidebar.checkbox(
         "Stations open at ETA",
@@ -252,12 +257,13 @@ def _render_trip_planner_action() -> SidebarState:
     brand_options = ["ARAL", "AVIA", "AGIP ENI", "Shell", "Total", "ESSO", "JET", "ORLEN", "HEM", "OMV"]
 
     brand_filter_selected = st.sidebar.multiselect(
-        "Filter by brand (optional)",
+        "Filter by brand",
         options=brand_options,
         default=list(_ss("brand_filter_selected", [])),
         key="brand_filter_selected",
         help=(
-            "If you select one or more brands, only stations of these brands are considered. "
+            "10 most common brands in Germany. "
+            "Only stations of selected brands are considered. "
             "When active, stations with unknown/missing brand are excluded."
         ),
     )
