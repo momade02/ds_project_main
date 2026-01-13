@@ -446,6 +446,12 @@ def integrate_route_with_prices(
                 "detour_duration_min": s.get("detour_duration_min"),
                 "distance_along_m": s.get("distance_along_m", 0),
                 "fraction_of_route": s.get("fraction_of_route"),
+                # Opening hours context (from Places API)
+                "open_now": s.get("open_now"),
+                "opening_hours": s.get("opening_hours"),
+                "opening_periods": s.get("opening_periods"),
+                "utc_offset_minutes": s.get("utc_offset_minutes"),
+                "is_open_at_eta": s.get("is_open_at_eta"),
                 # Match Context
                 **match,  # Unpacks uuid, tk_name, brand, etc.
             }
@@ -554,6 +560,7 @@ def get_fuel_prices_for_route(
     start_address: str = "",
     end_address: str = "",
     use_realtime: bool = False,
+    filter_closed_at_eta: bool = True,
 ) -> Tuple[List[StationFeatureDict], Dict[str, Any]]:
     """
     End-to-end pipeline callable by the UI.
@@ -593,6 +600,20 @@ def get_fuel_prices_for_route(
     except Exception as e:
         raise ExternalServiceError("Places search failed.", details=str(e))
 
+    closed_at_eta_filtered_n = 0
+
+    if filter_closed_at_eta:
+        before_n = len(raw_stations)
+        # Only drop stations that are explicitly marked as closed at ETA.
+        raw_stations = [s for s in raw_stations if s.get("is_open_at_eta") is not False]
+        closed_at_eta_filtered_n = before_n - len(raw_stations)
+
+        if closed_at_eta_filtered_n > 0:
+            print(
+                f"Filtered out {closed_at_eta_filtered_n} station(s) closed at ETA "
+                "(Google opening hours)."
+            )
+
     if not raw_stations:
         raise DataQualityError("No stations found along route.")
 
@@ -613,6 +634,9 @@ def get_fuel_prices_for_route(
         "departure_time": dept_time,
         "start_label": s_lbl,
         "end_label": e_lbl,
+        # Advanced Settings diagnostics (for Page 2 funnel/explanations)
+        "filter_closed_at_eta": bool(filter_closed_at_eta),
+        "closed_at_eta_filtered_n": int(closed_at_eta_filtered_n),
     }
 
     return enriched_data, route_meta

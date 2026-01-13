@@ -6,6 +6,9 @@ import inspect
 import math
 from typing import Any, Dict, List, Optional, Tuple
 
+import json
+import os
+
 import pydeck as pdk
 
 try:
@@ -388,10 +391,6 @@ _create_map_visualization = create_map_visualization
 
 
 # --- Mapbox GL JS (cooperative gestures) -------------------------------
-import os
-import json
-from html import escape
-
 def create_mapbox_gl_html(
     *,
     route_coords: list[list[float]],
@@ -403,25 +402,24 @@ def create_mapbox_gl_html(
     height_px: int = 560,
 ) -> str:
     """
-    Render a Mapbox GL JS map as an HTML string, with cooperative gestures enabled:
+    Mapbox GL JS map (iframe HTML) with cooperative gestures:
       - Desktop: Ctrl/⌘ + scroll to zoom
       - Mobile: two-finger touch to pan
+    Includes: main route (blue), alt/via route (purple dashed), station pins (SVG markers).
     """
 
-    # IMPORTANT: this is a client-side map; token will be visible in the browser.
-    # Use a public token (pk.*) with appropriate restrictions in Mapbox.
+    # Token (client-side; will be visible in browser)
     token = (
         os.environ.get("MAPBOX_ACCESS_TOKEN")
         or os.environ.get("MAPBOX_TOKEN")
         or (st.secrets.get("MAPBOX_ACCESS_TOKEN") if st is not None else None)  # type: ignore[attr-defined]
     )
     if not token:
-        # Return a simple HTML message (keeps app running gracefully)
         return (
-            f"<div style='padding:12px;border:1px solid #ddd;border-radius:8px;'>"
-            f"<b>Mapbox token missing.</b><br/>"
-            f"Set <code>MAPBOX_ACCESS_TOKEN</code> (preferred) or <code>MAPBOX_TOKEN</code> in your environment."
-            f"</div>"
+            "<div style='padding:12px;border:1px solid #ddd;border-radius:8px;'>"
+            "<b>Mapbox token missing.</b><br/>"
+            "Set <code>MAPBOX_ACCESS_TOKEN</code> (preferred) or <code>MAPBOX_TOKEN</code> in your environment."
+            "</div>"
         )
 
     style_url = (
@@ -430,8 +428,8 @@ def create_mapbox_gl_html(
         else "mapbox://styles/mapbox/streets-v12"
     )
 
-    # Build station features
-    features = []
+    # ---- Build station features for JS ----
+    features: list[dict[str, Any]] = []
     for s in stations or []:
         try:
             lat = float(s.get("lat"))
@@ -462,7 +460,7 @@ def create_mapbox_gl_html(
 
     stations_geojson = {"type": "FeatureCollection", "features": features}
 
-    # Route line GeoJSON
+    # ---- Route GeoJSON (lng/lat) ----
     route_geojson = None
     if route_coords:
         route_geojson = {
@@ -479,16 +477,16 @@ def create_mapbox_gl_html(
             "properties": {},
         }
 
-    # Compute bounds from route coords, fallback to stations
-    bounds_points = []
+    # ---- Bounds: route first, then stations fallback ----
+    bounds_points: list[list[float]] = []
     if route_coords:
         bounds_points = route_coords
     elif features:
         bounds_points = [f["geometry"]["coordinates"] for f in features]
 
-    # Fallback bounds if everything missing
     if not bounds_points:
-        bounds_points = [[10.4515, 51.1657], [10.4515, 51.1657]]  # Germany-ish
+        # Fallback (Germany-ish)
+        bounds_points = [[10.4515, 51.1657], [10.4515, 51.1657]]
 
     lons = [p[0] for p in bounds_points]
     lats = [p[1] for p in bounds_points]
@@ -496,11 +494,11 @@ def create_mapbox_gl_html(
     min_lat, max_lat = min(lats), max(lats)
 
     # JSON payloads for JS
-    js_stations = json.dumps(stations_geojson)
     js_route = json.dumps(route_geojson) if route_geojson else "null"
     js_via = json.dumps(via_geojson) if via_geojson else "null"
+    js_stations = json.dumps(stations_geojson)
 
-    # Use a unique div id to avoid collisions on reruns
+    # Unique container
     div_id = f"map_{abs(hash((min_lon, min_lat, max_lon, max_lat, len(features))))}"
 
     html = f"""
@@ -526,16 +524,31 @@ def create_mapbox_gl_html(
     const viaGeo = {js_via};
     const stationsGeo = {js_stations};
 
+    const initialBounds = [[{min_lon}, {min_lat}], [{max_lon}, {max_lat}]];
+
     const map = new mapboxgl.Map({{
       container: "{div_id}",
       style: {json.dumps(style_url)},
-      cooperativeGestures: true
+      cooperativeGestures: true,
+      bounds: initialBounds,
+      fitBoundsOptions: {{ padding: 40, duration: 0 }}
     }});
 
     map.addControl(new mapboxgl.NavigationControl(), "top-right");
 
+    function pinSVG(fill, stroke) {{
+      return `
+        <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 64 64">
+          <path d="M32 2C21 2 12 11 12 22c0 17 20 40 20 40s20-23 20-40C52 11 43 2 32 2z"
+                fill="${{fill}}" stroke="${{stroke}}" stroke-width="2"/>
+          <circle cx="32" cy="22" r="7" fill="white"/>
+        </svg>
+      `;
+    }}
+
     map.on("load", () => {{
-      // Route
+
+      // Main route (blue)
       if (routeGeo) {{
         map.addSource("route", {{ type: "geojson", data: routeGeo }});
         map.addLayer({{
@@ -543,11 +556,15 @@ def create_mapbox_gl_html(
           type: "line",
           source: "route",
           layout: {{ "line-join": "round", "line-cap": "round" }},
-          paint: {{ "line-width": 4 }}
+          paint: {{
+            "line-width": 4,
+            "line-color": "rgba(30, 144, 255, 1.0)",
+            "line-opacity": 0.95
+          }}
         }});
       }}
 
-      // Via-route
+      // Alternative/via route (purple dashed)
       if (viaGeo) {{
         map.addSource("via", {{ type: "geojson", data: viaGeo }});
         map.addLayer({{
@@ -555,66 +572,65 @@ def create_mapbox_gl_html(
           type: "line",
           source: "via",
           layout: {{ "line-join": "round", "line-cap": "round" }},
-          paint: {{ "line-width": 4, "line-dasharray": [1.5, 1.5] }}
+          paint: {{
+            "line-width": 4,
+            "line-color": "rgba(148, 0, 211, 1.0)",
+            "line-opacity": 0.95,
+            "line-dasharray": [1.5, 1.5]
+          }}
         }});
       }}
 
-      // Stations
-      map.addSource("stations", {{ type: "geojson", data: stationsGeo }});
-      map.addLayer({{
-        id: "stations-layer",
-        type: "circle",
-        source: "stations",
-        paint: {{
-          "circle-radius": [
-            "case",
-            ["boolean", ["get","is_selected"], false], 9,
-            ["boolean", ["get","is_best"], false], 7,
-            5
-          ],
-          "circle-stroke-width": [
-            "case",
-            ["boolean", ["get","is_selected"], false], 3,
-            ["boolean", ["get","is_best"], false], 2,
-            1
-          ],
-          "circle-stroke-color": [
-            "case",
-            ["boolean", ["get","is_selected"], false], "#ffffff",
-            "#000000"
-          ],
-          "circle-color": [
-            "case",
-            ["boolean", ["get","is_best"], false], "#00C800",
-            "#FFA500"
-          ]
-        }}
-      }});
-
-      // Fit bounds
-      const bounds = new mapboxgl.LngLatBounds([{min_lon}, {min_lat}], [{max_lon}, {max_lat}]);
-      map.fitBounds(bounds, {{ padding: 40, duration: 0 }});
-
-      // Hover popup
+      // Stations as SVG pin markers
       const popup = new mapboxgl.Popup({{ closeButton: false, closeOnClick: false }});
 
-      map.on("mousemove", "stations-layer", (e) => {{
-        map.getCanvas().style.cursor = "pointer";
-        const f = e.features && e.features[0];
-        if (!f) return;
-        const c = f.geometry.coordinates.slice();
-        const title = f.properties.title || "Station";
-        const brand = f.properties.brand || "";
-        popup
-          .setLngLat(c)
-          .setHTML(`<div style="font-size:12px;"><b>${{title}}</b><div style="opacity:.85;">${{brand}}</div></div>`)
+      (stationsGeo.features || []).forEach((f) => {{
+        const coords = f.geometry && f.geometry.coordinates;
+        if (!coords || coords.length !== 2) return;
+
+        const props = f.properties || {{}};
+        const isBest = (props.is_best === true || props.is_best === "true");
+        const isSelected = (props.is_selected === true || props.is_selected === "true");
+
+        // Color logic
+        let fill = "#FFA500";   // default orange
+        let stroke = "#000000"; // default black
+
+        if (isBest) {{
+          fill = "#00C800";     // best = green
+          stroke = "#FFFFFF";
+        }}
+        if (isSelected) {{
+          fill = "#1E90FF";     // selected = blue
+          stroke = "#FFFFFF";
+        }}
+
+        const el = document.createElement("div");
+        el.style.width = "28px";
+        el.style.height = "28px";
+        el.style.transform = isSelected ? "scale(1.15)" : (isBest ? "scale(1.05)" : "scale(1.0)");
+        el.style.transformOrigin = "bottom center";
+        el.innerHTML = pinSVG(fill, stroke);
+
+        const title = props.title || "Station";
+        const brand = props.brand || "";
+
+        el.addEventListener("mouseenter", () => {{
+          popup
+            .setLngLat(coords)
+            .setHTML(`<div style="font-size:12px;"><b>${{title}}</b><div style="opacity:.85;">${{brand}}</div></div>`)
+            .addTo(map);
+        }});
+
+        el.addEventListener("mouseleave", () => {{
+          popup.remove();
+        }});
+
+        new mapboxgl.Marker({{ element: el, anchor: "bottom" }})
+          .setLngLat(coords)
           .addTo(map);
       }});
 
-      map.on("mouseleave", "stations-layer", () => {{
-        map.getCanvas().style.cursor = "";
-        popup.remove();
-      }});
     }});
   </script>
 </body>
