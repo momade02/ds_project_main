@@ -21,6 +21,13 @@ import streamlit as st
 
 import altair as alt 
 
+from datetime import datetime, timezone
+
+try:
+    from zoneinfo import ZoneInfo  # Python 3.9+
+except Exception:
+    ZoneInfo = None
+
 # ---------------------------------------------------------------------
 # Minimum plausible €/L (guards against 0.00 or corrupted values in cached runs)
 MIN_VALID_PRICE_EUR_L: float = 0.50
@@ -99,6 +106,7 @@ def _is_missing_number(x: Any) -> bool:
     except Exception:
         return False
 
+
 def _as_float(x: Any) -> Optional[float]:
     """Best-effort numeric conversion used for robust display computations."""
     if _is_missing_number(x):
@@ -107,6 +115,55 @@ def _as_float(x: Any) -> Optional[float]:
         return float(x)
     except (TypeError, ValueError):
         return None
+
+
+def _format_eta_local_for_display(eta_any: Any, tz_name: str = "Europe/Berlin") -> str:
+    """
+    Convert an ETA value (typically debug_*_eta_utc ISO string or station["eta"]) into
+    Europe/Berlin local time for display. Returns a safe string; never throws.
+
+    - If input is already a local ISO string with offset, this will keep it as local (or re-normalize).
+    - If input is UTC (+00:00), this will convert to +01:00/+02:00 depending on DST.
+    """
+    if eta_any is None:
+        return "—"
+
+    # If it is already a datetime, normalize; otherwise parse from string
+    dt: datetime
+    try:
+        if isinstance(eta_any, datetime):
+            dt = eta_any
+        else:
+            s = str(eta_any).strip()
+            if not s:
+                return "—"
+            # Handle "Z" suffix if present
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            dt = datetime.fromisoformat(s)
+    except Exception:
+        # Fall back to raw value if parsing fails
+        return _safe_text(eta_any)
+
+    # If naive, assume UTC only as a last resort (debug values should be tz-aware)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    # Convert to Europe/Berlin if available
+    if ZoneInfo is not None:
+        try:
+            local_tz = ZoneInfo(tz_name)
+            dt_local = dt.astimezone(local_tz)
+            return dt_local.isoformat()
+        except Exception:
+            pass
+
+    # Fallback: use system local timezone if ZoneInfo is unavailable
+    try:
+        dt_local = dt.astimezone()
+        return dt_local.isoformat()
+    except Exception:
+        return _safe_text(eta_any)
 
 
 def _compute_baseline_price_for_display(
@@ -263,7 +320,12 @@ def _price_basis_row(station: Dict[str, Any], fuel_code: str) -> Dict[str, Any]:
 
     used_current = _coerce_bool(station.get(f"debug_{fuel_code}_used_current_price"))
     horizon_used = station.get(f"debug_{fuel_code}_horizon_used")
-    eta_utc = station.get(f"debug_{fuel_code}_eta_utc") or station.get("eta_utc") or station.get("eta")
+    eta_raw = (
+        station.get("eta")  # if your pipeline keeps the local ETA string, prefer it
+        or station.get(f"debug_{fuel_code}_eta_utc")  # otherwise convert UTC debug ETA
+        or station.get("eta_utc")
+    )
+    eta_local = _format_eta_local_for_display(eta_raw, tz_name="Europe/Berlin")
 
     minutes_to_arrival = (
         station.get(f"debug_{fuel_code}_minutes_to_arrival")
@@ -294,7 +356,7 @@ def _price_basis_row(station: Dict[str, Any], fuel_code: str) -> Dict[str, Any]:
     return {
         "Station": _safe_text(station.get("brand") or station.get("station_name") or station.get("name")),
         "Basis": basis,
-        "ETA (UTC)": _safe_text(eta_utc),
+        "ETA (Europe/Berlin)": _safe_text(eta_local),
         "Minutes to arrival": minutes_to_arrival if minutes_to_arrival is not None else "—",
         "Cells ahead": cells_ahead if cells_ahead is not None else "—",
     }

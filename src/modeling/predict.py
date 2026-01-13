@@ -45,6 +45,11 @@ import pandas as pd
 
 from .model import FUEL_TYPES, load_model_for_horizon
 
+import os
+try:
+    from zoneinfo import ZoneInfo  # Python 3.9+
+except Exception:  # pragma: no cover
+    ZoneInfo = None
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -66,19 +71,32 @@ def _normalise_fuel_type(fuel_type: str) -> str:
 
 def _get_current_time_cell(now: Optional[datetime] = None) -> int:
     """
-    Compute the current 30-minute time cell (0..47), **in UTC**.
+    Compute the current 30-minute time cell (0..47) in the *app's local timezone*.
 
-    If `now` is provided and timezone-aware, it is converted to UTC.
-    If `now` is naive (no tzinfo), we treat it as already being in UTC.
+    This must match the convention used by station["time_cell"] (derived from ETA
+    after stripping timezone offset -> local wall-clock time).
     """
-    if now is None:
-        now = datetime.now(timezone.utc)
-    else:
-        if now.tzinfo is not None:
-            now = now.astimezone(timezone.utc)
-        # else: assume `now` is already in UTC
+    tz_name = os.getenv("APP_TIMEZONE", "Europe/Berlin")
 
-    return now.hour * 2 + (1 if now.minute >= 30 else 0)
+    # Resolve timezone robustly
+    if ZoneInfo is not None:
+        try:
+            app_tz = ZoneInfo(tz_name)
+        except Exception:
+            app_tz = datetime.now().astimezone().tzinfo or timezone.utc
+    else:
+        app_tz = datetime.now().astimezone().tzinfo or timezone.utc
+
+    if now is None:
+        now_local = datetime.now(app_tz)
+    else:
+        if now.tzinfo is None:
+            # If caller passed a naive datetime, treat it as already local
+            now_local = now.replace(tzinfo=app_tz)
+        else:
+            now_local = now.astimezone(app_tz)
+
+    return now_local.hour * 2 + (1 if now_local.minute >= 30 else 0)
 
 
 def _clip_horizon(cells_ahead: int) -> int:
@@ -384,6 +402,9 @@ def predict_all_fuels(
         pred_price_e10
         pred_price_diesel
     """
+    if now is None:
+        now = datetime.now(timezone.utc)  # ensures minutes-based decision is available
+
     for ft in FUEL_TYPES:
         _predict_single_fuel(
             model_input_list=model_input_list,
