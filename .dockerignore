@@ -1,0 +1,16 @@
+# Exclude Git history (crucial for smaller images)
+.git
+.gitignore
+
+# Exclude local Python environment
+venv/
+__pycache__/
+*.pyc
+
+# Exclude local OS junk
+.DS_Store
+Thumbs.db
+
+# Exclude your Docker files (the container doesn't need its own recipe)
+Dockerfile
+.dockerignore
