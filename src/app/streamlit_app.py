@@ -800,7 +800,11 @@ def main() -> None:
     max_detour_min = sidebar.max_detour_min
     min_net_saving_eur = sidebar.min_net_saving_eur
 
-    debug_mode = sidebar.debug_mode
+    # Debug mode is controlled on Route Analytics (Page 2) and stored in session_state.
+    if "debug_mode" not in st.session_state:
+        st.session_state["debug_mode"] = True
+
+    debug_mode = bool(st.session_state.get("debug_mode", False))
 
 
     # -----------------------------

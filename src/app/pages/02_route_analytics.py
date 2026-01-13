@@ -522,6 +522,20 @@ def main() -> None:
         action_placeholder="Placeholder: Action (nothing to configure on Route Analytics yet)."
     )
 
+    # ------------------------------------------------------------------
+    # Sidebar (bottom): Debug mode toggle (controls st.session_state used by other pages)
+    # ------------------------------------------------------------------
+    if "debug_mode" not in st.session_state:
+        st.session_state["debug_mode"] = True
+
+    with st.sidebar:
+        st.markdown("---")
+        st.checkbox(
+            "Debug mode",
+            key="debug_mode",
+            help="When enabled, the UI shows additional raw/debug payloads on all pages.",
+        )
+
     cached = _get_last_run()
     if not cached:
         st.info("No cached run found. Run a route recommendation first on the main page.")
@@ -534,7 +548,11 @@ def main() -> None:
     run_summary: Dict[str, Any] = cached.get("run_summary") or {}
     use_economics: bool = bool(run_summary.get("use_economics") or cached.get("use_economics", False))
     litres_to_refuel = cached.get("litres_to_refuel")
-    debug_mode: bool = bool(cached.get("debug_mode", False))
+    debug_mode: bool = bool(st.session_state.get("debug_mode", False))
+
+    # Keep cache consistent so other pages (and this page on rerun) see the toggle.
+    cached["debug_mode"] = debug_mode
+    st.session_state["last_run"] = cached
 
     stations: List[Dict[str, Any]] = cached.get("stations") or []
     ranked: List[Dict[str, Any]] = cached.get("ranked") or []
