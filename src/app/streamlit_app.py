@@ -247,6 +247,137 @@ def _compute_onroute_worst_and_net_vs_worst(
 
     return onroute_worst, net_vs_worst
 
+def _compute_value_view_stations(
+    *,
+    stations: List[Dict[str, Any]],
+    fuel_code: str,
+    constraints: Optional[Dict[str, Any]] = None,
+    filter_thresholds: Optional[Dict[str, Any]] = None,
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Rebuild the Page-02 "upper table" station set (value view):
+
+    1) Hard-pass set:
+       - within detour caps (km/min) if available
+       - has a predicted price for the selected fuel (pred_price_{fuel_code})
+
+    2) Determine worst on-route price among hard-pass stations using the on-route thresholds.
+
+    3) Value view = all hard-pass stations with predicted price <= worst on-route price.
+       If no on-route stations exist, value view falls back to hard-pass.
+
+    Returns:
+      (value_view_stations, meta)
+    """
+    constraints = constraints or {}
+    filter_thresholds = filter_thresholds or {}
+
+    pred_key = f"pred_price_{fuel_code}"
+
+    # Detour caps (hard constraints); fall back to "no cap" if missing.
+    cap_km = constraints.get("max_detour_km")
+    cap_min = constraints.get("max_detour_min")
+
+    try:
+        cap_km_f = float(cap_km) if cap_km is not None else float("inf")
+    except (TypeError, ValueError):
+        cap_km_f = float("inf")
+
+    try:
+        cap_min_f = float(cap_min) if cap_min is not None else float("inf")
+    except (TypeError, ValueError):
+        cap_min_f = float("inf")
+
+    # On-route thresholds (prefer decision-layer thresholds if present; else reuse constants).
+    onroute_km = filter_thresholds.get("onroute_max_detour_km", None)
+    onroute_min = filter_thresholds.get("onroute_max_detour_min", None)
+
+    try:
+        onroute_km_th = float(onroute_km) if onroute_km is not None else (
+            float(ONROUTE_MAX_DETOUR_KM) if (ONROUTE_MAX_DETOUR_KM and float(ONROUTE_MAX_DETOUR_KM) > 0) else 0.5
+        )
+    except (TypeError, ValueError):
+        onroute_km_th = 0.5
+
+    try:
+        onroute_min_th = float(onroute_min) if onroute_min is not None else (
+            float(ONROUTE_MAX_DETOUR_MIN) if (ONROUTE_MAX_DETOUR_MIN and float(ONROUTE_MAX_DETOUR_MIN) > 0) else 3.0
+        )
+    except (TypeError, ValueError):
+        onroute_min_th = 3.0
+
+    hard_pass: List[Dict[str, Any]] = []
+    for s in stations or []:
+        # must have a predicted price
+        p = (s or {}).get(pred_key)
+        if p is None:
+            continue
+        try:
+            _ = float(p)
+        except (TypeError, ValueError):
+            continue
+
+        # must be within caps
+        try:
+            km = float((s or {}).get("detour_distance_km") or 0.0)
+        except (TypeError, ValueError):
+            km = 0.0
+        try:
+            mins = float((s or {}).get("detour_duration_min") or 0.0)
+        except (TypeError, ValueError):
+            mins = 0.0
+
+        km = max(km, 0.0)
+        mins = max(mins, 0.0)
+
+        if km <= cap_km_f and mins <= cap_min_f:
+            hard_pass.append(s)
+
+    # Worst on-route price among hard-pass
+    onroute_prices: List[float] = []
+    for s in hard_pass:
+        try:
+            km = float((s or {}).get("detour_distance_km") or 0.0)
+        except (TypeError, ValueError):
+            km = 0.0
+        try:
+            mins = float((s or {}).get("detour_duration_min") or 0.0)
+        except (TypeError, ValueError):
+            mins = 0.0
+        km = max(km, 0.0)
+        mins = max(mins, 0.0)
+
+        if km <= onroute_km_th and mins <= onroute_min_th:
+            try:
+                onroute_prices.append(float((s or {}).get(pred_key)))
+            except (TypeError, ValueError):
+                continue
+
+    onroute_worst_price = max(onroute_prices) if onroute_prices else None
+
+    if onroute_worst_price is None:
+        value_view = list(hard_pass)
+    else:
+        value_view = []
+        for s in hard_pass:
+            try:
+                if float((s or {}).get(pred_key)) <= float(onroute_worst_price):
+                    value_view.append(s)
+            except (TypeError, ValueError):
+                continue
+
+    meta = {
+        "pred_key": pred_key,
+        "cap_km": cap_km_f,
+        "cap_min": cap_min_f,
+        "onroute_km_th": float(onroute_km_th),
+        "onroute_min_th": float(onroute_min_th),
+        "hard_pass_n": int(len(hard_pass)),
+        "onroute_worst_price": onroute_worst_price,
+        "value_view_n": int(len(value_view)),
+    }
+    return value_view, meta
+
 def _render_metric_grid(items: list[tuple[str, str]]) -> None:
     # Build HTML WITHOUT leading indentation/newline, otherwise Markdown treats it as code.
     cards = []
@@ -727,6 +858,48 @@ def _display_station_details_panel(
             st.info("Enable 'Debug mode' in the sidebar to see the full raw station payload.")
 
 
+BRAND_FILTER_ALIASES: dict[str, list[str]] = {
+    "ARAL": ["ARAL"],
+    "AVIA": ["AVIA", "AVIA XPress", "AVIA Xpress"],
+    "AGIP ENI": ["Agip", "AGIP ENI"],
+    "Shell": ["Shell"],
+    "Total": ["Total", "TotalEnergies"],
+    "ESSO": ["ESSO"],
+    "JET": ["JET"],
+    "ORLEN": ["ORLEN"],
+    "HEM": ["HEM"],
+    "OMV": ["OMV"],
+}
+
+
+def _normalize_brand(value: object) -> str:
+    if value is None:
+        return ""
+    s = str(value).strip()
+    if not s:
+        return ""
+    # Case-insensitive + whitespace normalization
+    return " ".join(s.upper().split())
+
+
+def _brand_filter_allowed_set(selected: list[str]) -> tuple[set[str], dict[str, list[str]]]:
+    """
+    Returns:
+      - allowed_norm: normalized allowed brand strings
+      - aliases_used: canonical -> alias list used (for auditability on Page 02)
+    """
+    aliases_used: dict[str, list[str]] = {}
+    allowed_norm: set[str] = set()
+
+    for canon in selected:
+        canon = str(canon)
+        alias_list = BRAND_FILTER_ALIASES.get(canon, [canon])
+        aliases_used[canon] = list(alias_list)
+        for a in alias_list:
+            allowed_norm.add(_normalize_brand(a))
+
+    return allowed_norm, aliases_used
+
 # ---------------------------------------------------------------------------
 # Main Streamlit app
 # ---------------------------------------------------------------------------
@@ -803,6 +976,7 @@ def main() -> None:
     max_detour_min = sidebar.max_detour_min
     min_net_saving_eur = sidebar.min_net_saving_eur
     filter_closed_at_eta = sidebar.filter_closed_at_eta
+    brand_filter_selected = list(getattr(sidebar, "brand_filter_selected", []) or [])
 
     # Debug mode is controlled on Route Analytics (Page 2) and stored in session_state.
     if "debug_mode" not in st.session_state:
@@ -899,6 +1073,57 @@ def main() -> None:
                 recommendation_kwargs=recommendation_kwargs,
             )
 
+            # ------------------------------------------------------------
+            # Advanced Settings: Brand whitelist filter (upstream, before caching)
+            # ------------------------------------------------------------
+            brand_filtered_out_n = 0
+            brand_filter_aliases_used: dict[str, list[str]] = {}
+
+            if brand_filter_selected:
+                allowed_norm, brand_filter_aliases_used = _brand_filter_allowed_set(brand_filter_selected)
+
+                # Filter candidate stations
+                stations_before = list(last_run.get("stations") or [])
+
+                # Keep a stable "map universe" even when brand filtering is active
+                # (so brand-excluded stations can still be shown as red markers).
+                last_run["stations_for_map_all"] = list(stations_before)
+
+                kept_stations = [
+                    s for s in stations_before
+                    if _normalize_brand((s or {}).get("brand")) in allowed_norm
+                ]
+
+                brand_filtered_out_n = len(stations_before) - len(kept_stations)
+
+                # Keep ranked/best consistent with filtered candidates
+                ranked_before = list(last_run.get("ranked") or [])
+                kept_ranked = [
+                    s for s in ranked_before
+                    if _normalize_brand((s or {}).get("brand")) in allowed_norm
+                ]
+
+                last_run["stations"] = kept_stations
+                last_run["ranked"] = kept_ranked
+
+                # Also keep the pre-brand ranked list for completeness (optional, but useful for debugging).
+                last_run["ranked_for_map_all"] = list(ranked_before)
+
+                # Recompute best_station / best_uuid if needed
+                best_station = last_run.get("best_station")
+                if best_station is not None and _normalize_brand(best_station.get("brand")) not in allowed_norm:
+                    best_station = None
+
+                if best_station is None and kept_ranked:
+                    best_station = kept_ranked[0]
+
+                last_run["best_station"] = best_station
+                last_run["best_uuid"] = _station_uuid(best_station) if best_station else None
+
+            # If no brand filter is active, the map universe is just the stations list.
+            last_run.setdefault("stations_for_map_all", list(last_run.get("stations") or []))
+            last_run.setdefault("ranked_for_map_all", list(last_run.get("ranked") or []))
+
         except AppError as exc:
             st.error(exc.user_message)
             if exc.remediation:
@@ -935,6 +1160,9 @@ def main() -> None:
         last_run["advanced_settings"] = {
             "filter_closed_at_eta": bool(filter_closed_at_eta),
             "closed_at_eta_filtered_n": closed_at_eta_filtered_n,
+            "brand_filter_selected": list(brand_filter_selected),
+            "brand_filter_aliases": dict(brand_filter_aliases_used),
+            "brand_filtered_out_n": int(brand_filtered_out_n),
         }
 
         if not stations:
@@ -966,6 +1194,9 @@ def main() -> None:
                 "litres_to_refuel": float(litres_to_refuel),
                 "consumption_l_per_100km": float(consumption_l_per_100km),
                 "value_of_time_eur_per_hour": float(value_of_time_eur_per_hour),
+            "brand_filter_selected": list(brand_filter_selected),
+            "brand_filter_aliases": dict(brand_filter_aliases_used),
+            "brand_filtered_out_n": int(brand_filtered_out_n),
             },
         }
 
@@ -995,11 +1226,32 @@ def main() -> None:
     route_info = cached.get("route_info")
     route_coords = cached.get("route_coords")
 
+    # ------------------------------------------------------------
+    # Page 01 metrics should use the Page-02 "upper table" logic:
+    # stations priced <= worst on-route station (value view).
+    # ------------------------------------------------------------
+    run_summary = cached.get("run_summary") or {}
+    constraints = (run_summary.get("constraints") or {}) if isinstance(run_summary, dict) else {}
+    filter_log = cached.get("filter_log") or {}
+    filter_thresholds = (filter_log.get("thresholds") or {}) if isinstance(filter_log, dict) else {}
+
+    value_view_stations, value_view_meta = _compute_value_view_stations(
+        stations=list(cached.get("stations") or []),
+        fuel_code=fuel_code,
+        constraints=constraints,
+        filter_thresholds=filter_thresholds,
+    )
+
+    # Persist for Page 02 / other pages (and avoid re-computation drift)
+    cached["value_view_stations"] = value_view_stations
+    cached["value_view_meta"] = value_view_meta
+    st.session_state["last_run"] = cached
+
     _display_best_station(
         best_station,
         fuel_code,
         litres_to_refuel=litres_to_refuel,
-        ranked_stations=ranked,
+        ranked_stations=value_view_stations,  # <-- key change
         debug_mode=debug_mode,
         compact=True,
     )
@@ -1021,7 +1273,7 @@ def main() -> None:
                 st.subheader(
                     "Route and stations map",
                     help=(
-                        "Placeholder."
+                        "See legend below map."
                     ),
                     anchor=False,
                 )
@@ -1093,18 +1345,57 @@ def main() -> None:
 
             # -----------------------------
             # Map rendering (Mapbox GL JS with cooperative gestures)
+            # Show ALL stations (stable universe) and color-code them.
             # -----------------------------
+            stations_for_map_all = list(cached.get("stations_for_map_all") or cached.get("stations") or [])
+            best_uuid = cached.get("best_uuid")
+
+            value_view_uuids = set()
+            for s in (cached.get("value_view_stations") or []):
+                u = _station_uuid(s)
+                if u:
+                    value_view_uuids.add(u)
+
+            marker_category_by_uuid: Dict[str, str] = {}
+            for s in stations_for_map_all:
+                u = _station_uuid(s)
+                if not u:
+                    continue
+                if best_uuid and u == best_uuid:
+                    marker_category_by_uuid[u] = "best"
+                elif u in value_view_uuids:
+                    marker_category_by_uuid[u] = "better"
+                else:
+                    marker_category_by_uuid[u] = "other"
+
             map_html = create_mapbox_gl_html(
                 route_coords=route_coords,
-                stations=ranked,
+                stations=stations_for_map_all,  # <-- key change (was ranked)
                 best_station_uuid=best_uuid,
                 via_full_coords=via_overview,
                 use_satellite=use_satellite,
                 selected_station_uuid=st.session_state.get("selected_station_uuid"),
+                marker_category_by_uuid=marker_category_by_uuid,  # <-- new
                 height_px=560,
             )
 
             components.html(map_html, height=560, scrolling=False)
+
+            # Legend + short explanation
+            st.markdown(
+                """
+                <div class="map-legend">
+                <div class="legend-item"><span class="legend-dot best"></span><span>Best station</span></div>
+                <div class="legend-item"><span class="legend-dot better"></span><span>Better than / equal to worst on-route station</span></div>
+                <div class="legend-item"><span class="legend-dot other"></span><span>All other stations (filtered out or worse than baseline)</span></div>
+                </div>
+                <div class="legend-note">
+                Green/orange/red categories are based on the worst on-route baseline and hard constraints.  
+                Stations removed upstream (e.g., “open at ETA”) can only be shown if they still exist in the cached station universe.
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
         except Exception as e:
             st.warning(f"Could not display map: {e}")

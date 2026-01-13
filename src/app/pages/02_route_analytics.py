@@ -594,6 +594,29 @@ def main() -> None:
     fuel_code: str = str(cached.get("fuel_code") or "e5").lower()
     run_summary: Dict[str, Any] = cached.get("run_summary") or {}
     use_economics: bool = bool(run_summary.get("use_economics") or cached.get("use_economics", False))
+
+    # Advanced Settings (persisted by Page 01)
+    filter_closed_at_eta_enabled: bool = bool(run_summary.get("filter_closed_at_eta", False))
+    closed_at_eta_filtered_n = run_summary.get("closed_at_eta_filtered_n", 0)
+
+    brand_filter_selected = run_summary.get("brand_filter_selected") or []
+    if isinstance(brand_filter_selected, str):
+        brand_filter_selected = [brand_filter_selected]
+    brand_filter_selected = [str(x) for x in brand_filter_selected]
+
+    brand_filtered_out_n = run_summary.get("brand_filtered_out_n", 0)
+    brand_filter_aliases = run_summary.get("brand_filter_aliases") or {}
+
+    try:
+        closed_at_eta_filtered_n = int(closed_at_eta_filtered_n or 0)
+    except (TypeError, ValueError):
+        closed_at_eta_filtered_n = 0
+
+    try:
+        brand_filtered_out_n = int(brand_filtered_out_n or 0)
+    except (TypeError, ValueError):
+        brand_filtered_out_n = 0
+
     litres_to_refuel = cached.get("litres_to_refuel")
     debug_mode: bool = bool(st.session_state.get("debug_mode", False))
 
@@ -605,6 +628,10 @@ def main() -> None:
     ranked: List[Dict[str, Any]] = cached.get("ranked") or []
     best_station: Optional[Dict[str, Any]] = cached.get("best_station")
     route_info: Dict[str, Any] = cached.get("route_info") or {}
+
+    # If Page 01 already computed the "value view" set, keep it available here as well.
+    value_view_stations = cached.get("value_view_stations") or []
+    value_view_meta = cached.get("value_view_meta") or {}
 
     # Constraints (from Page 1 run_summary; fall back to None when missing)
     constraints = run_summary.get("constraints") or {}
@@ -845,11 +872,27 @@ def main() -> None:
 
         reason_counts = pd.Series(reasons).value_counts()
 
+        # Integrate upstream filters (stations removed before caching)
+        if filter_closed_at_eta_enabled and closed_at_eta_filtered_n > 0:
+            reason_counts.loc["Filtered upstream: Closed at ETA (Google)"] = int(closed_at_eta_filtered_n)
+
+        if brand_filter_selected and brand_filtered_out_n > 0:
+            reason_counts.loc["Filtered upstream: Brand filter"] = int(brand_filtered_out_n)
+
         left, right = st.columns([1, 2])
         with left:
             st.markdown("**Exclusion breakdown**")
             for reason, cnt in reason_counts.items():
                 st.write(f"- {reason}: **{int(cnt)}**")
+            if brand_filter_selected:
+                st.caption(f"Brand whitelist: {', '.join(brand_filter_selected)}")
+                # Optional transparency: show aliases used
+                if isinstance(brand_filter_aliases, dict) and brand_filter_aliases:
+                    st.caption(
+                        "Alias matching: "
+                        + "; ".join(f"{k}: {', '.join(v)}" for k, v in brand_filter_aliases.items() if isinstance(v, list))
+                    )
+                st.caption("Note: stations with unknown/missing brand are excluded when the brand filter is active.")
         with right:
             chart_df = reason_counts.reset_index()
             chart_df.columns = ["Reason", "Count"]
