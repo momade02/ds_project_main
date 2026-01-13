@@ -237,6 +237,22 @@ def _coerce_bool(x: Any) -> Optional[bool]:
     return None
 
 
+
+def _open_at_eta_flag(station: Dict[str, Any]) -> Optional[bool]:
+    """Return whether the station is open at the Google ETA, if the pipeline provided the flag."""
+    for k in ("is_open_at_eta", "open_at_eta", "google_open_at_eta", "is_open_google_eta"):
+        v = _coerce_bool(station.get(k))
+        if v is not None:
+            return v
+    return None
+
+
+def _is_closed_at_eta(station: Dict[str, Any]) -> bool:
+    """True if we have an explicit open-at-ETA flag and it is False."""
+    v = _open_at_eta_flag(station)
+    return v is False
+
+
 def _price_basis_row(station: Dict[str, Any], fuel_code: str) -> Dict[str, Any]:
     """
     Best-effort extraction of 'price basis' debug fields. We do not assume every run
@@ -300,10 +316,18 @@ def _compute_funnel_counts(
     cap_detour_km: Optional[float],
     cap_detour_min: Optional[float],
     min_net_saving_eur: Optional[float],
+    *,
+    filter_closed_at_eta_enabled: bool,
+    closed_at_eta_filtered_n: Optional[int] = None,
 ) -> Dict[str, int]:
     """
     High-level funnel counts computed from the station objects *you already cache*.
-    This avoids relying on filter_log internals and remains stable if filter_log changes.
+
+    Notes:
+    - "Closed at ETA" can appear either:
+      (a) as part of the cached station list (if you keep stations and mark them), or
+      (b) only as an upstream count (if you remove them before caching).
+    This function supports both patterns.
     """
     pred_key = f"pred_price_{fuel_code}"
     econ_key = f"econ_net_saving_eur_{fuel_code}"
@@ -312,17 +336,24 @@ def _compute_funnel_counts(
     ranked_n = len(ranked)
 
     missing_pred = 0
+    closed_at_eta = 0
     cap_failed = 0
     econ_failed = 0
     other = 0
 
+    # Count only among excluded stations we can still observe.
     for s in excluded:
         # 1) missing prediction
         if _is_missing_number(s.get(pred_key)):
             missing_pred += 1
             continue
 
-        # 2) detour caps
+        # 2) closed at ETA (if the pipeline provides the flag)
+        if filter_closed_at_eta_enabled and _is_closed_at_eta(s):
+            closed_at_eta += 1
+            continue
+
+        # 3) detour caps
         km, mins = _detour_metrics(s)
         cap_fail = False
         if cap_detour_km is not None and km is not None and km > float(cap_detour_km):
@@ -333,7 +364,7 @@ def _compute_funnel_counts(
             cap_failed += 1
             continue
 
-        # 3) economics threshold
+        # 4) economics threshold
         if use_economics and min_net_saving_eur is not None:
             net = s.get(econ_key)
             if (not _is_missing_number(net)) and (float(net) < float(min_net_saving_eur)):
@@ -342,11 +373,23 @@ def _compute_funnel_counts(
 
         other += 1
 
+    upstream_closed = 0
+    try:
+        upstream_closed = int(closed_at_eta_filtered_n) if closed_at_eta_filtered_n is not None else 0
+    except Exception:
+        upstream_closed = 0
+
+    # If upstream filtering removed stations before caching, add that to the observable excluded count.
+    closed_at_eta_total = closed_at_eta + max(0, upstream_closed)
+
     return {
         "candidates_total": total,
         "ranked": ranked_n,
         "excluded": len(excluded),
         "missing_prediction": missing_pred,
+        "closed_at_eta": closed_at_eta_total,
+        "closed_at_eta_in_cache": closed_at_eta,
+        "closed_at_eta_upstream": max(0, upstream_closed),
         "failed_detour_caps": cap_failed,
         "failed_economics": econ_failed,
         "excluded_other": other,
@@ -441,6 +484,7 @@ def _exclusion_reason(
     cap_km: Optional[float],
     cap_min: Optional[float],
     min_net_saving: Optional[float],
+    filter_closed_at_eta_enabled: bool,
 ) -> str:
     """Best-effort reason label for excluded stations."""
     pred_key = f"pred_price_{fuel_code}"
@@ -448,6 +492,9 @@ def _exclusion_reason(
 
     if s.get(pred_key) is None:
         return "Missing predicted price"
+
+    if filter_closed_at_eta_enabled and _is_closed_at_eta(s):
+        return "Closed at ETA (Google)"
 
     km, mins = _detour_metrics(s)
 
@@ -564,6 +611,20 @@ def main() -> None:
     cap_km = constraints.get("max_detour_km")
     cap_min = constraints.get("max_detour_min")
     min_net_saving = constraints.get("min_net_saving_eur") if use_economics else None
+
+    # Advanced filter: "open at ETA" (may be absent in older cached runs)
+    filter_closed_at_eta_enabled: bool = bool(
+        run_summary.get("filter_closed_at_eta")
+        or cached.get("filter_closed_at_eta")
+        or (run_summary.get("advanced_settings") or {}).get("filter_closed_at_eta")
+        or (cached.get("advanced_settings") or {}).get("filter_closed_at_eta")
+    )
+    closed_at_eta_filtered_n = (
+        run_summary.get("closed_at_eta_filtered_n")
+        or cached.get("closed_at_eta_filtered_n")
+        or (run_summary.get("advanced_settings") or {}).get("closed_at_eta_filtered_n")
+        or (cached.get("advanced_settings") or {}).get("closed_at_eta_filtered_n")
+    )
 
     # ------------------------------------------------------------------
     # Optional exact filter diagnostics (emitted by decision layer)
@@ -734,16 +795,18 @@ def main() -> None:
         cap_detour_km=cap_km,
         cap_detour_min=cap_min,
         min_net_saving_eur=min_net_saving,
+        filter_closed_at_eta_enabled=filter_closed_at_eta_enabled,
+        closed_at_eta_filtered_n=closed_at_eta_filtered_n,
     )
 
     st.markdown("#### Filtering funnel (high-level)")
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Candidates", str(funnel["candidates_total"]))
     c2.metric("Missing prediction", str(funnel["missing_prediction"]))
-    c3.metric("Failed detour caps", str(funnel["failed_detour_caps"]))
-    c4.metric("Failed economics", str(funnel["failed_economics"]) if use_economics else "—")
-    c5.metric("Ranked", str(funnel["ranked"]))
-
+    c3.metric("Closed at ETA", str(funnel["closed_at_eta"]) if filter_closed_at_eta_enabled else "—")
+    c4.metric("Failed detour caps", str(funnel["failed_detour_caps"]))
+    c5.metric("Failed economics", str(funnel["failed_economics"]) if use_economics else "—")
+    c6.metric("Ranked", str(funnel["ranked"]))
     with st.expander("Funnel details (counts)", expanded=False):
         funnel_df = pd.DataFrame([funnel])
         st.dataframe(funnel_df, hide_index=True, use_container_width=True)
@@ -775,6 +838,7 @@ def main() -> None:
                     cap_km=float(cap_km) if cap_km is not None else None,
                     cap_min=float(cap_min) if cap_min is not None else None,
                     min_net_saving=float(min_net_saving) if min_net_saving is not None else None,
+                    filter_closed_at_eta_enabled=filter_closed_at_eta_enabled,
                 )
                 for s in excluded
             ]
@@ -929,6 +993,7 @@ def main() -> None:
                     cap_km=float(cap_km) if cap_km is not None else None,
                     cap_min=float(cap_min) if cap_min is not None else None,
                     min_net_saving=float(min_net_saving) if min_net_saving is not None else None,
+                    filter_closed_at_eta_enabled=filter_closed_at_eta_enabled,
                 )
             rows.append(
                 {
@@ -940,6 +1005,7 @@ def main() -> None:
                     f"Predicted {fuel_code.upper()} price": s.get(pred_key),
                     f"Current {fuel_code.upper()} price": s.get(curr_key),
                     "Net saving (if available)": s.get(econ_net_key) if use_economics else None,
+                    "Open at ETA": _open_at_eta_flag(s),
                     "Reason": reason,
                     "UUID": uid,
                 }

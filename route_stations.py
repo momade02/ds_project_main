@@ -20,7 +20,7 @@ Usage:
 import os
 import time
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, TypeAlias, Final
 from zoneinfo import ZoneInfo
 
@@ -52,6 +52,88 @@ LOCAL_TIMEZONE: Final[ZoneInfo] = ZoneInfo("Europe/Berlin")
 
 # API configuration
 GOOGLE_PLACES_SEARCH_URL: Final[str] = "https://places.googleapis.com/v1/places:searchText"
+
+
+def _is_open_at_eta(
+    *,
+    eta_dt: datetime,
+    regular_opening_hours: dict[str, Any],
+    utc_offset_minutes: int | None,
+) -> bool | None:
+    """
+    Determine whether a place is open at a specific ETA.
+
+    Notes:
+      - We use `regularOpeningHours.periods` (weekly schedule) and (optionally) `utcOffsetMinutes`
+        to evaluate openness at the station-local time.
+      - If opening hours information is missing or cannot be parsed reliably, returns None.
+    """
+    periods = regular_opening_hours.get("periods")
+    if not isinstance(periods, list) or not periods:
+        return None
+
+    # Convert ETA into place-local time if utcOffsetMinutes is available.
+    try:
+        eta_utc = eta_dt.astimezone(timezone.utc)
+        if isinstance(utc_offset_minutes, int):
+            eta_local = eta_utc + timedelta(minutes=utc_offset_minutes)
+        else:
+            eta_local = eta_dt  # fallback: assume ETA already in local timezone
+    except Exception:
+        return None
+
+    # Google uses 0=Sunday, 1=Monday, ..., 6=Saturday in OpeningHours Points.
+    py_weekday = eta_local.weekday()  # 0=Mon..6=Sun
+    google_day = (py_weekday + 1) % 7
+    eta_min_of_week = google_day * 24 * 60 + eta_local.hour * 60 + eta_local.minute
+
+    def _point_to_min_of_week(point: dict[str, Any]) -> int | None:
+        try:
+            day = int(point.get("day"))
+            hour = int(point.get("hour", 0))
+            minute = int(point.get("minute", 0))
+            return day * 24 * 60 + hour * 60 + minute
+        except Exception:
+            return None
+
+    for period in periods:
+        if not isinstance(period, dict):
+            continue
+        open_p = period.get("open")
+        close_p = period.get("close")
+
+        if not isinstance(open_p, dict):
+            continue
+
+        open_min = _point_to_min_of_week(open_p)
+        if open_min is None:
+            continue
+
+        # 24/7 is represented as an open point at day=0,hour=0,minute=0 with no close field.
+        if close_p is None:
+            if open_min == 0:
+                return True
+            # Otherwise, treat as unknown rather than assuming always open.
+            continue
+
+        if not isinstance(close_p, dict):
+            continue
+
+        close_min = _point_to_min_of_week(close_p)
+        if close_min is None:
+            continue
+
+        # Handle overnight/week-wrapping periods (close may be earlier than open).
+        if close_min <= open_min:
+            is_open = (eta_min_of_week >= open_min) or (eta_min_of_week < close_min)
+        else:
+            is_open = (open_min <= eta_min_of_week < close_min)
+
+        if is_open:
+            return True
+
+    # If we could parse periods but ETA did not fall into any open interval, treat as closed.
+    return False
 
 
 # ==========================================
@@ -346,7 +428,7 @@ def google_places_fuel_along_route(
         # We ask for display name, location, hours, routing summaries (critical for detour calc), and next page token.
         "X-Goog-FieldMask": (
             "places.displayName,places.location,"
-            "places.regularOpeningHours,"
+            "places.regularOpeningHours,places.utcOffsetMinutes,"
             "routingSummaries.legs.distanceMeters,"
             "routingSummaries.legs.duration,"
             "nextPageToken"
@@ -453,6 +535,12 @@ def google_places_fuel_along_route(
 
             # Extract opening hours data
             opening_hours_data = place.get("regularOpeningHours", {})
+            utc_offset_minutes = place.get("utcOffsetMinutes")
+            is_open_at_eta = _is_open_at_eta(
+                eta_dt=eta_at_station,
+                regular_opening_hours=opening_hours_data,
+                utc_offset_minutes=utc_offset_minutes if isinstance(utc_offset_minutes, int) else None,
+            )
 
             # Build final station dictionary
             station_dict: StationDataDict = {
@@ -467,6 +555,9 @@ def google_places_fuel_along_route(
                 "eta": eta_at_station.isoformat(),
                 "open_now": opening_hours_data.get("openNow"),
                 "opening_hours": opening_hours_data.get("weekdayDescriptions", []),
+                "opening_periods": opening_hours_data.get("periods", []),
+                "utc_offset_minutes": utc_offset_minutes,
+                "is_open_at_eta": is_open_at_eta,
             }
             stations_found.append(station_dict)
 

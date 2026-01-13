@@ -40,6 +40,10 @@ class SidebarState:
     debug_mode: bool
 
 
+    # Advanced Settings
+    filter_closed_at_eta: bool
+
+
 def _ss(key: str, default: Any) -> Any:
     """Read session_state with a default; used to keep behavior stable across tabs."""
     return st.session_state.get(key, default)
@@ -87,6 +91,7 @@ def _read_cached_values_for_non_action() -> SidebarState:
         max_detour_min=float(_ss("max_detour_min", 10.0)),
         min_net_saving_eur=float(_ss("min_net_saving_eur", 0.0)),
         debug_mode=bool(_ss("debug_mode", True)),
+        filter_closed_at_eta=bool(_ss("filter_closed_at_eta", True)),
     )
 
 
@@ -226,6 +231,20 @@ def _render_trip_planner_action() -> SidebarState:
         ),
     )
 
+
+
+    st.sidebar.markdown("### Advanced Settings")
+
+    filter_closed_at_eta = st.sidebar.checkbox(
+        "Stations open at ETA",
+        value=bool(_ss("filter_closed_at_eta", True)),
+        key="filter_closed_at_eta",
+        help=(
+            "If enabled, stations are filtered out when Google indicates they are closed at the "
+            "estimated time of arrival (ETA) at the station. If opening hours are unavailable, the station "
+            "is kept."
+        ),
+    )
     return SidebarState(
         view="Action",
         run_clicked=bool(run_clicked),
@@ -243,6 +262,7 @@ def _render_trip_planner_action() -> SidebarState:
         max_detour_min=float(max_detour_min),
         min_net_saving_eur=float(min_net_saving_eur),
         debug_mode=bool(_ss("debug_mode", True)),
+        filter_closed_at_eta=bool(filter_closed_at_eta),
     )
 
 

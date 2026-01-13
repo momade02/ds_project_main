@@ -802,6 +802,7 @@ def main() -> None:
     max_detour_km = sidebar.max_detour_km
     max_detour_min = sidebar.max_detour_min
     min_net_saving_eur = sidebar.min_net_saving_eur
+    filter_closed_at_eta = sidebar.filter_closed_at_eta
 
     # Debug mode is controlled on Route Analytics (Page 2) and stored in session_state.
     if "debug_mode" not in st.session_state:
@@ -827,6 +828,7 @@ def main() -> None:
         "max_detour_km": max_detour_km,
         "max_detour_min": max_detour_min,
         "min_net_saving_eur": min_net_saving_eur,
+        "filter_closed_at_eta": bool(filter_closed_at_eta),
     }
     params_hash = hashlib.sha256(
         json.dumps(params, sort_keys=True, default=str).encode("utf-8")
@@ -873,6 +875,7 @@ def main() -> None:
                 "start_address": start_address,
                 "end_address": end_address,
                 "use_realtime": True,
+                "filter_closed_at_eta": bool(filter_closed_at_eta),
             }
 
             if use_economics:
@@ -912,6 +915,28 @@ def main() -> None:
         best_station = last_run.get("best_station")
         route_info = last_run.get("route_info")
 
+        # ------------------------------------------------------------
+        # Advanced Settings: persist open-at-ETA filter metadata for Page 2
+        # ------------------------------------------------------------
+        # Prefer an explicit top-level field, but fall back to route_info (route_meta) if present.
+        closed_at_eta_filtered_n = last_run.get("closed_at_eta_filtered_n")
+
+        if closed_at_eta_filtered_n is None and isinstance(route_info, dict):
+            closed_at_eta_filtered_n = route_info.get("closed_at_eta_filtered_n")
+
+        # Defensive normalization (some pipelines may return None / float / str)
+        try:
+            if closed_at_eta_filtered_n is not None:
+                closed_at_eta_filtered_n = int(closed_at_eta_filtered_n)
+        except (TypeError, ValueError):
+            closed_at_eta_filtered_n = None
+
+        # Store a dedicated block so Page 2 can read it consistently
+        last_run["advanced_settings"] = {
+            "filter_closed_at_eta": bool(filter_closed_at_eta),
+            "closed_at_eta_filtered_n": closed_at_eta_filtered_n,
+        }
+
         if not stations:
             st.warning("No stations returned by the integration pipeline.")
             return
@@ -932,6 +957,8 @@ def main() -> None:
             "stations_ranked": len(ranked),
             "stations_filtered_out": filtered_count if use_economics else 0,
             "use_economics": bool(use_economics),
+            "filter_closed_at_eta": bool(filter_closed_at_eta),
+            "closed_at_eta_filtered_n": closed_at_eta_filtered_n,
             "constraints": {
                 "max_detour_km": float(max_detour_km),
                 "max_detour_min": float(max_detour_min),
