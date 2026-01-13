@@ -244,6 +244,11 @@ section[data-testid="stSidebar"] div.st-key-sidebar_view{
   margin-bottom: 14px !important;
 }
 
+/* Space below the top nav buttons (robust: works even if the wrapper is display: contents) */
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"]{
+  margin-bottom: 8px !important;  /* adjust as desired */
+}
+
 /* Hide the actual label text for buttons 2–4 */
 section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(2) button span,
 section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(3) button span,

@@ -43,6 +43,9 @@ class SidebarState:
     # Advanced Settings
     filter_closed_at_eta: bool
 
+    # Brand whitelist (canonical brand labels)
+    brand_filter_selected: list[str]
+
 
 def _ss(key: str, default: Any) -> Any:
     """Read session_state with a default; used to keep behavior stable across tabs."""
@@ -92,6 +95,7 @@ def _read_cached_values_for_non_action() -> SidebarState:
         min_net_saving_eur=float(_ss("min_net_saving_eur", 0.0)),
         debug_mode=bool(_ss("debug_mode", True)),
         filter_closed_at_eta=bool(_ss("filter_closed_at_eta", True)),
+        brand_filter_selected=list(_ss("brand_filter_selected", [])),
     )
 
 
@@ -232,7 +236,6 @@ def _render_trip_planner_action() -> SidebarState:
     )
 
 
-
     st.sidebar.markdown("### Advanced Settings")
 
     filter_closed_at_eta = st.sidebar.checkbox(
@@ -245,6 +248,20 @@ def _render_trip_planner_action() -> SidebarState:
             "is kept."
         ),
     )
+
+    brand_options = ["ARAL", "AVIA", "AGIP ENI", "Shell", "Total", "ESSO", "JET", "ORLEN", "HEM", "OMV"]
+
+    brand_filter_selected = st.sidebar.multiselect(
+        "Filter by brand (optional)",
+        options=brand_options,
+        default=list(_ss("brand_filter_selected", [])),
+        key="brand_filter_selected",
+        help=(
+            "If you select one or more brands, only stations of these brands are considered. "
+            "When active, stations with unknown/missing brand are excluded."
+        ),
+    )
+
     return SidebarState(
         view="Action",
         run_clicked=bool(run_clicked),
@@ -263,6 +280,7 @@ def _render_trip_planner_action() -> SidebarState:
         min_net_saving_eur=float(min_net_saving_eur),
         debug_mode=bool(_ss("debug_mode", True)),
         filter_closed_at_eta=bool(filter_closed_at_eta),
+        brand_filter_selected=list(brand_filter_selected),
     )
 
 

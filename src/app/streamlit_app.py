@@ -727,6 +727,48 @@ def _display_station_details_panel(
             st.info("Enable 'Debug mode' in the sidebar to see the full raw station payload.")
 
 
+BRAND_FILTER_ALIASES: dict[str, list[str]] = {
+    "ARAL": ["ARAL"],
+    "AVIA": ["AVIA", "AVIA XPress", "AVIA Xpress"],
+    "AGIP ENI": ["Agip", "AGIP ENI"],
+    "Shell": ["Shell"],
+    "Total": ["Total", "TotalEnergies"],
+    "ESSO": ["ESSO"],
+    "JET": ["JET"],
+    "ORLEN": ["ORLEN"],
+    "HEM": ["HEM"],
+    "OMV": ["OMV"],
+}
+
+
+def _normalize_brand(value: object) -> str:
+    if value is None:
+        return ""
+    s = str(value).strip()
+    if not s:
+        return ""
+    # Case-insensitive + whitespace normalization
+    return " ".join(s.upper().split())
+
+
+def _brand_filter_allowed_set(selected: list[str]) -> tuple[set[str], dict[str, list[str]]]:
+    """
+    Returns:
+      - allowed_norm: normalized allowed brand strings
+      - aliases_used: canonical -> alias list used (for auditability on Page 02)
+    """
+    aliases_used: dict[str, list[str]] = {}
+    allowed_norm: set[str] = set()
+
+    for canon in selected:
+        canon = str(canon)
+        alias_list = BRAND_FILTER_ALIASES.get(canon, [canon])
+        aliases_used[canon] = list(alias_list)
+        for a in alias_list:
+            allowed_norm.add(_normalize_brand(a))
+
+    return allowed_norm, aliases_used
+
 # ---------------------------------------------------------------------------
 # Main Streamlit app
 # ---------------------------------------------------------------------------
@@ -803,6 +845,7 @@ def main() -> None:
     max_detour_min = sidebar.max_detour_min
     min_net_saving_eur = sidebar.min_net_saving_eur
     filter_closed_at_eta = sidebar.filter_closed_at_eta
+    brand_filter_selected = list(getattr(sidebar, "brand_filter_selected", []) or [])
 
     # Debug mode is controlled on Route Analytics (Page 2) and stored in session_state.
     if "debug_mode" not in st.session_state:
@@ -899,6 +942,44 @@ def main() -> None:
                 recommendation_kwargs=recommendation_kwargs,
             )
 
+            # ------------------------------------------------------------
+            # Advanced Settings: Brand whitelist filter (upstream, before caching)
+            # ------------------------------------------------------------
+            brand_filtered_out_n = 0
+            brand_filter_aliases_used: dict[str, list[str]] = {}
+
+            if brand_filter_selected:
+                allowed_norm, brand_filter_aliases_used = _brand_filter_allowed_set(brand_filter_selected)
+
+                # Filter candidate stations
+                stations_before = list(last_run.get("stations") or [])
+                kept_stations = [
+                    s for s in stations_before
+                    if _normalize_brand((s or {}).get("brand")) in allowed_norm
+                ]
+                brand_filtered_out_n = len(stations_before) - len(kept_stations)
+
+                # Keep ranked/best consistent with filtered candidates
+                ranked_before = list(last_run.get("ranked") or [])
+                kept_ranked = [
+                    s for s in ranked_before
+                    if _normalize_brand((s or {}).get("brand")) in allowed_norm
+                ]
+
+                last_run["stations"] = kept_stations
+                last_run["ranked"] = kept_ranked
+
+                # Recompute best_station / best_uuid if needed
+                best_station = last_run.get("best_station")
+                if best_station is not None and _normalize_brand(best_station.get("brand")) not in allowed_norm:
+                    best_station = None
+
+                if best_station is None and kept_ranked:
+                    best_station = kept_ranked[0]
+
+                last_run["best_station"] = best_station
+                last_run["best_uuid"] = _station_uuid(best_station) if best_station else None
+
         except AppError as exc:
             st.error(exc.user_message)
             if exc.remediation:
@@ -935,6 +1016,9 @@ def main() -> None:
         last_run["advanced_settings"] = {
             "filter_closed_at_eta": bool(filter_closed_at_eta),
             "closed_at_eta_filtered_n": closed_at_eta_filtered_n,
+            "brand_filter_selected": list(brand_filter_selected),
+            "brand_filter_aliases": dict(brand_filter_aliases_used),
+            "brand_filtered_out_n": int(brand_filtered_out_n),
         }
 
         if not stations:
@@ -966,6 +1050,9 @@ def main() -> None:
                 "litres_to_refuel": float(litres_to_refuel),
                 "consumption_l_per_100km": float(consumption_l_per_100km),
                 "value_of_time_eur_per_hour": float(value_of_time_eur_per_hour),
+            "brand_filter_selected": list(brand_filter_selected),
+            "brand_filter_aliases": dict(brand_filter_aliases_used),
+            "brand_filtered_out_n": int(brand_filtered_out_n),
             },
         }
 
