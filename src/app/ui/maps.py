@@ -350,20 +350,7 @@ def create_map_visualization(
         longitude=center_lon,
         zoom=zoom,
         pitch=0,
-        controller={
-            # Prevent the map from capturing page scroll / trackpad scroll
-            "scrollZoom": False,
-
-            # Keep panning with mouse/touch drag
-            "dragPan": True,
-
-            # Keep pinch-to-zoom on touch devices
-            "touchZoom": True,
-
-            # Optional: reduce accidental rotations
-            "touchRotate": False,
-            "dragRotate": False,
-        },
+        controller=False,
     )
 
     tooltip = {
@@ -394,8 +381,243 @@ def create_map_visualization(
         map_style=map_style,
     )
 
-
 # --- Backwards-compatible names (minimize edits in pages) -------------------
 _calculate_zoom_for_bounds = calculate_zoom_for_bounds
 _supports_pydeck_selections = supports_pydeck_selections
 _create_map_visualization = create_map_visualization
+
+
+# --- Mapbox GL JS (cooperative gestures) -------------------------------
+import os
+import json
+from html import escape
+
+def create_mapbox_gl_html(
+    *,
+    route_coords: list[list[float]],
+    stations: list[dict[str, Any]],
+    best_station_uuid: str | None,
+    via_full_coords: list[list[float]] | None,
+    use_satellite: bool,
+    selected_station_uuid: str | None,
+    height_px: int = 560,
+) -> str:
+    """
+    Render a Mapbox GL JS map as an HTML string, with cooperative gestures enabled:
+      - Desktop: Ctrl/⌘ + scroll to zoom
+      - Mobile: two-finger touch to pan
+    """
+
+    # IMPORTANT: this is a client-side map; token will be visible in the browser.
+    # Use a public token (pk.*) with appropriate restrictions in Mapbox.
+    token = (
+        os.environ.get("MAPBOX_ACCESS_TOKEN")
+        or os.environ.get("MAPBOX_TOKEN")
+        or (st.secrets.get("MAPBOX_ACCESS_TOKEN") if st is not None else None)  # type: ignore[attr-defined]
+    )
+    if not token:
+        # Return a simple HTML message (keeps app running gracefully)
+        return (
+            f"<div style='padding:12px;border:1px solid #ddd;border-radius:8px;'>"
+            f"<b>Mapbox token missing.</b><br/>"
+            f"Set <code>MAPBOX_ACCESS_TOKEN</code> (preferred) or <code>MAPBOX_TOKEN</code> in your environment."
+            f"</div>"
+        )
+
+    style_url = (
+        "mapbox://styles/mapbox/satellite-streets-v12"
+        if use_satellite
+        else "mapbox://styles/mapbox/streets-v12"
+    )
+
+    # Build station features
+    features = []
+    for s in stations or []:
+        try:
+            lat = float(s.get("lat"))
+            lon = float(s.get("lon"))
+        except (TypeError, ValueError):
+            continue
+
+        suuid = _station_uuid(s) or ""
+        is_best = bool(best_station_uuid and suuid == best_station_uuid)
+        is_selected = bool(selected_station_uuid and suuid == selected_station_uuid)
+
+        name = s.get("tk_name") or s.get("osm_name") or s.get("name") or "Station"
+        brand = s.get("brand") or ""
+
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                "properties": {
+                    "station_uuid": suuid,
+                    "title": str(name),
+                    "brand": str(brand),
+                    "is_best": is_best,
+                    "is_selected": is_selected,
+                },
+            }
+        )
+
+    stations_geojson = {"type": "FeatureCollection", "features": features}
+
+    # Route line GeoJSON
+    route_geojson = None
+    if route_coords:
+        route_geojson = {
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": route_coords},
+            "properties": {},
+        }
+
+    via_geojson = None
+    if via_full_coords:
+        via_geojson = {
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": via_full_coords},
+            "properties": {},
+        }
+
+    # Compute bounds from route coords, fallback to stations
+    bounds_points = []
+    if route_coords:
+        bounds_points = route_coords
+    elif features:
+        bounds_points = [f["geometry"]["coordinates"] for f in features]
+
+    # Fallback bounds if everything missing
+    if not bounds_points:
+        bounds_points = [[10.4515, 51.1657], [10.4515, 51.1657]]  # Germany-ish
+
+    lons = [p[0] for p in bounds_points]
+    lats = [p[1] for p in bounds_points]
+    min_lon, max_lon = min(lons), max(lons)
+    min_lat, max_lat = min(lats), max(lats)
+
+    # JSON payloads for JS
+    js_stations = json.dumps(stations_geojson)
+    js_route = json.dumps(route_geojson) if route_geojson else "null"
+    js_via = json.dumps(via_geojson) if via_geojson else "null"
+
+    # Use a unique div id to avoid collisions on reruns
+    div_id = f"map_{abs(hash((min_lon, min_lat, max_lon, max_lat, len(features))))}"
+
+    html = f"""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no"/>
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.17.0/mapbox-gl.css" rel="stylesheet"/>
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.17.0/mapbox-gl.js"></script>
+  <style>
+    html, body {{ margin:0; padding:0; }}
+    #{div_id} {{ width:100%; height:{height_px}px; border-radius:12px; overflow:hidden; }}
+  </style>
+</head>
+<body>
+  <div id="{div_id}"></div>
+
+  <script>
+    mapboxgl.accessToken = {json.dumps(token)};
+
+    const routeGeo = {js_route};
+    const viaGeo = {js_via};
+    const stationsGeo = {js_stations};
+
+    const map = new mapboxgl.Map({{
+      container: "{div_id}",
+      style: {json.dumps(style_url)},
+      cooperativeGestures: true
+    }});
+
+    map.addControl(new mapboxgl.NavigationControl(), "top-right");
+
+    map.on("load", () => {{
+      // Route
+      if (routeGeo) {{
+        map.addSource("route", {{ type: "geojson", data: routeGeo }});
+        map.addLayer({{
+          id: "route-line",
+          type: "line",
+          source: "route",
+          layout: {{ "line-join": "round", "line-cap": "round" }},
+          paint: {{ "line-width": 4 }}
+        }});
+      }}
+
+      // Via-route
+      if (viaGeo) {{
+        map.addSource("via", {{ type: "geojson", data: viaGeo }});
+        map.addLayer({{
+          id: "via-line",
+          type: "line",
+          source: "via",
+          layout: {{ "line-join": "round", "line-cap": "round" }},
+          paint: {{ "line-width": 4, "line-dasharray": [1.5, 1.5] }}
+        }});
+      }}
+
+      // Stations
+      map.addSource("stations", {{ type: "geojson", data: stationsGeo }});
+      map.addLayer({{
+        id: "stations-layer",
+        type: "circle",
+        source: "stations",
+        paint: {{
+          "circle-radius": [
+            "case",
+            ["boolean", ["get","is_selected"], false], 9,
+            ["boolean", ["get","is_best"], false], 7,
+            5
+          ],
+          "circle-stroke-width": [
+            "case",
+            ["boolean", ["get","is_selected"], false], 3,
+            ["boolean", ["get","is_best"], false], 2,
+            1
+          ],
+          "circle-stroke-color": [
+            "case",
+            ["boolean", ["get","is_selected"], false], "#ffffff",
+            "#000000"
+          ],
+          "circle-color": [
+            "case",
+            ["boolean", ["get","is_best"], false], "#00C800",
+            "#FFA500"
+          ]
+        }}
+      }});
+
+      // Fit bounds
+      const bounds = new mapboxgl.LngLatBounds([{min_lon}, {min_lat}], [{max_lon}, {max_lat}]);
+      map.fitBounds(bounds, {{ padding: 40, duration: 0 }});
+
+      // Hover popup
+      const popup = new mapboxgl.Popup({{ closeButton: false, closeOnClick: false }});
+
+      map.on("mousemove", "stations-layer", (e) => {{
+        map.getCanvas().style.cursor = "pointer";
+        const f = e.features && e.features[0];
+        if (!f) return;
+        const c = f.geometry.coordinates.slice();
+        const title = f.properties.title || "Station";
+        const brand = f.properties.brand || "";
+        popup
+          .setLngLat(c)
+          .setHTML(`<div style="font-size:12px;"><b>${{title}}</b><div style="opacity:.85;">${{brand}}</div></div>`)
+          .addTo(map);
+      }});
+
+      map.on("mouseleave", "stations-layer", () => {{
+        map.getCanvas().style.cursor = "";
+        popup.remove();
+      }});
+    }});
+  </script>
+</body>
+</html>
+"""
+    return html

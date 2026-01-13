@@ -62,6 +62,7 @@ from ui.maps import (
     _calculate_zoom_for_bounds,
     _supports_pydeck_selections,
     _create_map_visualization,
+    create_mapbox_gl_html,
 )
 
 from ui.formatting import (
@@ -85,6 +86,8 @@ from services.route_recommender import RouteRunInputs, run_route_recommendation
 from ui.styles import apply_app_css
 
 from ui.sidebar import render_sidebar
+
+import streamlit.components.v1 as components
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -1062,60 +1065,19 @@ def main() -> None:
                     zoom_for_markers = 7.5
 
             # -----------------------------
-            # Map rendering
+            # Map rendering (Mapbox GL JS with cooperative gestures)
             # -----------------------------
-            map_provider = "mapbox"
-            map_style_url = (
-                "mapbox://styles/mapbox/satellite-streets-v12"
-                if use_satellite
-                else "mapbox://styles/mapbox/streets-v12"
-            )
-
-            deck = _create_map_visualization(
+            map_html = create_mapbox_gl_html(
                 route_coords=route_coords,
                 stations=ranked,
                 best_station_uuid=best_uuid,
                 via_full_coords=via_overview,
-                zoom_level=zoom_for_markers,
-                fuel_code=fuel_code,
+                use_satellite=use_satellite,
                 selected_station_uuid=st.session_state.get("selected_station_uuid"),
-                map_provider=map_provider,
-                map_style=map_style_url,
+                height_px=560,
             )
 
-            selected_uuid_from_event: Optional[str] = None
-
-            if _supports_pydeck_selections():
-                event = st.pydeck_chart(
-                    deck,
-                    on_select="rerun",
-                    selection_mode="single-object",
-                    key="route_map",
-                    use_container_width=True,
-                    height=560,
-                )
-
-                try:
-                    selection = event.selection
-                    objects = getattr(selection, "objects", None)
-                    if objects is None and isinstance(selection, dict):
-                        objects = selection.get("objects")
-
-                    if objects and "stations" in objects and objects["stations"]:
-                        selected_obj = objects["stations"][0]
-                        selected_uuid_from_event = selected_obj.get("station_uuid") or None
-                except Exception:
-                    selected_uuid_from_event = None
-            else:
-                st.pydeck_chart(deck, use_container_width=True, height=560)
-                st.caption(
-                    "Note: Your Streamlit version does not expose pydeck click selections. "
-                    "Upgrade Streamlit to enable click-to-details interaction."
-                )
-
-            # Persist selection regardless of which branch ran
-            if selected_uuid_from_event:
-                st.session_state["selected_station_uuid"] = selected_uuid_from_event
+            components.html(map_html, height=560, scrolling=False)
 
         except Exception as e:
             st.warning(f"Could not display map: {e}")
