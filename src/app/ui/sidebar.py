@@ -226,12 +226,6 @@ def _render_trip_planner_action() -> SidebarState:
         ),
     )
 
-    debug_mode = st.sidebar.checkbox(
-        "Debug mode",
-        value=bool(_ss("debug_mode", True)),
-        key="debug_mode",
-    )
-
     return SidebarState(
         view="Action",
         run_clicked=bool(run_clicked),
@@ -248,7 +242,7 @@ def _render_trip_planner_action() -> SidebarState:
         max_detour_km=float(max_detour_km),
         max_detour_min=float(max_detour_min),
         min_net_saving_eur=float(min_net_saving_eur),
-        debug_mode=bool(debug_mode),
+        debug_mode=bool(_ss("debug_mode", True)),
     )
 
 

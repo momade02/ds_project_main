@@ -350,7 +350,20 @@ def create_map_visualization(
         longitude=center_lon,
         zoom=zoom,
         pitch=0,
-        controller=True,
+        controller={
+            # Prevent the map from capturing page scroll / trackpad scroll
+            "scrollZoom": False,
+
+            # Keep panning with mouse/touch drag
+            "dragPan": True,
+
+            # Keep pinch-to-zoom on touch devices
+            "touchZoom": True,
+
+            # Optional: reduce accidental rotations
+            "touchRotate": False,
+            "dragRotate": False,
+        },
     )
 
     tooltip = {
