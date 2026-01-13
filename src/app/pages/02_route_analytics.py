@@ -22,6 +22,11 @@ import streamlit as st
 import altair as alt 
 
 # ---------------------------------------------------------------------
+# Minimum plausible €/L (guards against 0.00 or corrupted values in cached runs)
+MIN_VALID_PRICE_EUR_L: float = 0.50
+# ---------------------------------------------------------------------
+
+# ---------------------------------------------------------------------
 # Path setup (compatible with running from /src/app/pages via Streamlit)
 # ---------------------------------------------------------------------
 APP_ROOT = Path(__file__).resolve().parents[1]        # .../src/app
@@ -790,7 +795,7 @@ def main() -> None:
             p_f = float(p) if p is not None else None
         except (TypeError, ValueError):
             p_f = None
-        if p_f is None:
+        if p_f is None or p_f < MIN_VALID_PRICE_EUR_L:
             continue
 
         # Require passing detour caps (hard constraints).

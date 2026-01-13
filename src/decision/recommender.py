@@ -49,6 +49,8 @@ ONROUTE_MAX_DETOUR_MIN: Final[float] = 5.0
 DEFAULT_MAX_DETOUR_KM: Final[float] = 10.0
 DEFAULT_MAX_DETOUR_MIN: Final[float] = 10.0
 
+# Minimum plausible €/L (guards against 0.00 or corrupted values)
+MIN_VALID_PRICE_EUR_L: Final[float] = 0.50
 
 # ==========================================
 # Helper: Key Generation & Validation
@@ -219,6 +221,18 @@ def _calculate_economics(
         "breakeven_liters": breakeven_liters,
     }
 
+def _is_valid_price(value: Any, *, min_price: float = float(MIN_VALID_PRICE_EUR_L)) -> bool:
+    """Return True iff value is a finite float >= min_price."""
+    if value is None:
+        return False
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return False
+    # NaN check without numpy
+    if v != v:  # noqa: PLR0124 (NaN is not equal to itself)
+        return False
+    return v >= float(min_price)
 
 # ==========================================
 # Core Logic: Ranking
@@ -321,6 +335,7 @@ def rank_stations_by_predicted_price(
         priority = [
             "Detour distance above cap",
             "Detour time above cap",
+            f"Invalid predicted price (< {MIN_VALID_PRICE_EUR_L:.2f} €/L)",
             "Missing predicted price",
             "Below minimum net saving",
             "Missing economics metrics",
@@ -348,22 +363,31 @@ def rank_stations_by_predicted_price(
 
     # 2. Prediction & Validation
     _ensure_predictions(model_input, ft, now=now)
-    
+
     # Filter valid stations and deduplicate by UUID (keep lowest price variant)
+    # - Exclude nonsense predictions (e.g., 0.00) by treating them as missing.
+    invalid_reason = f"Invalid predicted price (< {MIN_VALID_PRICE_EUR_L:.2f} €/L)"
+
     valid_map: Dict[str, StationDict] = {}
     for s in model_input:
-        if s.get(pred_key) is None:
+        p = s.get(pred_key)
+
+        # Filter out implausible predictions (incl. 0.00)
+        if not _is_valid_price(p):
+            if p is not None:
+                _add_reason(s, invalid_reason)
+            # Normalize to "missing" so downstream logic never treats it as numeric
+            s[pred_key] = None
             continue
-            
+
         uuid = s.get("station_uuid")
-        # If UUID missing (rare), track by object ID
         key = uuid if uuid else str(id(s))
-        
+
         existing = valid_map.get(key)
         # Keep if new, or if new price is lower than existing entry
-        if not existing or s[pred_key] < existing[pred_key]:
+        if not existing or float(s[pred_key]) < float(existing[pred_key]):
             valid_map[key] = s
-            
+
     unique_stations = list(valid_map.values())
     if not unique_stations:
         return []
