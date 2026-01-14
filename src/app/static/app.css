@@ -3,7 +3,7 @@
    ========================================================================== */
 
 /* Reduce the default top padding above the first element */
-div.block-container { padding-top: 1rem; }
+div.block-container { padding-top: 0rem; }
 
 /* --- Sidebar: pull content to the very top --- */
 
