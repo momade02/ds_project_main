@@ -1301,13 +1301,31 @@ def main() -> None:
             # -----------------------------
             route_coords = route_info.get("route_coords") or []
 
-            # Compute via-station route (origin → best station → destination), if possible
-            via_overview = None
-            if best_station and route_coords:
-                try:
-                    start_lon, start_lat = route_coords[0][0], route_coords[0][1]
-                    end_lon, end_lat = route_coords[-1][0], route_coords[-1][1]
+            # Via-route caching (persisted in last_run)
+            # -----------------------------
+            best_uuid = cached.get("best_uuid") or _station_uuid(best_station) if best_station else None
+            departure_time = (route_info or {}).get("departure_time", "now")
 
+            # A stable cache key for the via-route (changes only when route endpoints / best station / departure_time change)
+            try:
+                start_lon, start_lat = route_coords[0][0], route_coords[0][1]
+                end_lon, end_lat = route_coords[-1][0], route_coords[-1][1]
+                via_cache_key_desired = f"{best_uuid}|{start_lat:.6f},{start_lon:.6f}|{end_lat:.6f},{end_lon:.6f}|{departure_time}"
+            except Exception:
+                via_cache_key_desired = None
+
+            # Reuse previously computed via route if available
+            via_overview = cached.get("via_full_coords")
+            via_cache_key_existing = cached.get("via_cache_key")
+
+            should_recompute_via = (
+                via_cache_key_desired is not None
+                and via_cache_key_existing != via_cache_key_desired
+            )
+
+            # Only recompute when needed; never overwrite a previously valid route with None on transient failures
+            if should_recompute_via and best_station and route_coords:
+                try:
                     st_lat = float(best_station.get("lat")) if best_station.get("lat") is not None else None
                     st_lon = float(best_station.get("lon")) if best_station.get("lon") is not None else None
 
@@ -1321,11 +1339,20 @@ def main() -> None:
                             end_lat=end_lat,
                             end_lon=end_lon,
                             api_key=api_key,
-                            departure_time=route_info.get("departure_time", "now"),
+                            departure_time=departure_time,
                         )
-                        via_overview = via.get("via_full_coords")
+
+                        new_via = via.get("via_full_coords")
+
+                        # Accept only a non-trivial coordinate list; otherwise keep the old one
+                        if isinstance(new_via, list) and len(new_via) >= 2:
+                            via_overview = new_via
+                            cached["via_full_coords"] = via_overview
+                            cached["via_cache_key"] = via_cache_key_desired
+                            st.session_state["last_run"] = cached  # persist in-session immediately
                 except Exception:
-                    via_overview = None  # non-fatal
+                    # Keep previous via_overview if present (do not overwrite with None)
+                    pass
 
             # Calculate zoom level based on route extent (robust fallback)
             zoom_for_markers = 7.5
