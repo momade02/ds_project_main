@@ -33,6 +33,10 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 
+# Plotly config (mobile-friendly: hide modebar/buttons)
+PLOTLY_CONFIG = {"displayModeBar": False, "displaylogo": False, "responsive": True}
+
+
 try:
     from zoneinfo import ZoneInfo  # py3.9+
 except Exception:  # pragma: no cover
@@ -104,7 +108,7 @@ def create_price_trend_chart(df: pd.DataFrame, fuel_type: str, station_name: str
     max_price = float(df["price"].max())
 
     fig.update_layout(
-        title=f"📈 {fuel_type.upper()} Price History (Last 14 Days)",
+        title=f"{fuel_type.upper()} Price History (Last 14 Days)",
         xaxis_title="Date",
         yaxis_title="Price (€/L)",
         hovermode="x unified",
@@ -134,7 +138,7 @@ def create_hourly_pattern_chart(hourly_df: pd.DataFrame, fuel_type: str, station
             x=0.5, y=0.5, showarrow=False,
             font=dict(size=16, color="gray"),
         )
-        fig.update_layout(title=f"🕐 Best Time to Refuel - {station_name}", height=380)
+        fig.update_layout(title=f"Best Time to Refuel - {station_name}", height=380)
         return fig
 
     optimal = get_cheapest_and_most_expensive_hours(hourly_df)
@@ -169,7 +173,7 @@ def create_hourly_pattern_chart(hourly_df: pd.DataFrame, fuel_type: str, station
     ))
 
     fig.update_layout(
-        title=f"🕐 Hourly Pattern ({fuel_type.upper()}) - {station_name}",
+        title=f"Hourly Pattern ({fuel_type.upper()}) - {station_name}",
         xaxis_title="Hour of Day",
         yaxis_title="Average Price (€/L)",
         height=430,
@@ -227,7 +231,7 @@ def create_comparison_chart(
         ))
 
     fig.update_layout(
-        title="📊 Historical Comparison (Last 14 Days)",
+        title="Historical Comparison (Last 14 Days)",
         xaxis_title="Date",
         yaxis_title="Price (€/L)",
         hovermode="x unified",
@@ -412,7 +416,11 @@ def _safe_float(value: Any) -> Optional[float]:
 # =============================================================================
 
 def main() -> None:
-    st.set_page_config(page_title="Station Details", layout="wide")
+    st.set_page_config(
+        page_title="Station Details",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
     apply_app_css()
 
     st.title("Station Details & Analysis")
@@ -477,18 +485,19 @@ def main() -> None:
 
         # B) Context / run metadata (read-only)
         st.sidebar.markdown("### Context")
-        st.sidebar.write(
-            {
-                "Fuel": fuel_code.upper(),
-                "Economics enabled": bool(use_economics),
-                "Refuel litres (assumed)": float(litres_to_refuel),
-                "Route stations available": len(ranked) if ranked else 0,
-                "Explorer stations available": len(explorer_results) if explorer_results else 0,
-                "Selected source": selection.source,
-            }
-        )
+        ctx_rows = [
+            ("Fuel", fuel_code.upper()),
+            ("Economics enabled", "Yes" if use_economics else "No"),
+            ("Refuel litres (assumed)", f"{float(litres_to_refuel):.0f} L"),
+            ("Route stations available", str(len(ranked) if ranked else 0)),
+            ("Explorer stations available", str(len(explorer_results) if explorer_results else 0)),
+            ("Selected source", str(selection.source)),
+        ]
+        for k, v in ctx_rows:
+            st.sidebar.markdown(f"- **{k}:** {v}")
 
-        # C) Comparison set (configure once; view in Comparison tab)
+
+        # C) Comparison set (configure once; view in Comparison section)
         st.sidebar.markdown("### Comparison set")
         if ranked:
             # Candidate comparison options come from the ranked list (stable and meaningful).
@@ -519,7 +528,7 @@ def main() -> None:
                 max_selections=2,
                 format_func=lambda u: uuid_labels.get(u, u),
                 key="comparison_station_uuids_widget",
-                help="Configured here; rendered in the Comparison tab only.",
+                help="Configured here; rendered in the Comparison section (expander).",
             )
             st.session_state["comparison_station_uuids"] = list(chosen)
         else:
@@ -669,11 +678,10 @@ def main() -> None:
         st.metric("Net saving", net_saving_text)
 
     # -----------------------------
-    # Tabs (tight scope)
+    # Sections (single scroll)
     # -----------------------------
-    tab_overview, tab_history, tab_economics, tab_comparison = st.tabs(
-        ["Overview", "History & Patterns", "Economics", "Comparison"]
-    )
+    st.caption("All station analytics are shown on one page. Use the sidebar to change station and comparison set.")
+
 
     # Collect exceptions for diagnostics
     diagnostics_errors: List[str] = []
@@ -681,215 +689,221 @@ def main() -> None:
     # =========================
     # Overview
     # =========================
-    with tab_overview:
-        density = str(st.session_state.get("station_details_density", "Detailed"))
-        compact = density == "Compact"
+    st.markdown("### Overview")
 
-        st.markdown("### Decision rationale")
-        rationale_rows: List[Dict[str, Any]] = []
+    density = str(st.session_state.get("station_details_density", "Detailed"))
+    compact = density == "Compact"
 
-        # Basis summary
-        rationale_rows.append({"Field": "Chosen basis", "Value": basis.label})
-        if basis.used_current_price is True:
-            rationale_rows.append({"Field": "Reason", "Value": "Forecast not used (forced fallback or unavailable)."})
-        elif basis.used_current_price is False:
-            rationale_rows.append({"Field": "Reason", "Value": "Forecast used (ETA-aligned)."})
-        else:
-            rationale_rows.append({"Field": "Reason", "Value": "Inferred from available fields."})
+    st.markdown("### Decision rationale")
+    rationale_rows: List[Dict[str, Any]] = []
 
-        if basis.horizon_used is not None:
-            rationale_rows.append({"Field": "Forecast horizon", "Value": str(basis.horizon_used)})
-        if basis.minutes_to_arrival is not None:
-            rationale_rows.append({"Field": "Minutes to arrival", "Value": f"{basis.minutes_to_arrival:.0f} min"})
-        if basis.eta_local is not None:
+    # Basis summary
+    rationale_rows.append({"Field": "Chosen basis", "Value": basis.label})
+    if basis.used_current_price is True:
+        rationale_rows.append({"Field": "Reason", "Value": "Forecast not used (forced fallback or unavailable)."})
+    elif basis.used_current_price is False:
+        rationale_rows.append({"Field": "Reason", "Value": "Forecast used (ETA-aligned)."})
+    else:
+        rationale_rows.append({"Field": "Reason", "Value": "Inferred from available fields."})
+
+    if basis.horizon_used is not None:
+        rationale_rows.append({"Field": "Forecast horizon", "Value": str(basis.horizon_used)})
+    if basis.minutes_to_arrival is not None:
+        rationale_rows.append({"Field": "Minutes to arrival", "Value": f"{basis.minutes_to_arrival:.0f} min"})
+    if basis.eta_local is not None:
+        try:
+            rationale_rows.append({"Field": "ETA (Europe/Berlin)", "Value": basis.eta_local.strftime("%Y-%m-%d %H:%M (%Z)")})
+        except Exception:
+            rationale_rows.append({"Field": "ETA (Europe/Berlin)", "Value": str(basis.eta_local)})
+
+    # Route context (only if source == route)
+    if source == "route":
+        ranked_uuids = {_station_uuid(s) for s in ranked if _station_uuid(s)}
+        tag = "Ranked" if station_uuid in ranked_uuids else "Excluded"
+        rationale_rows.append({"Field": "Route context", "Value": f"{tag} candidate in latest route run"})
+    else:
+        # Explorer-specific: show distance if present
+        dist = station.get("distance_km")
+        if dist is not None:
             try:
-                rationale_rows.append({"Field": "ETA (Europe/Berlin)", "Value": basis.eta_local.strftime("%Y-%m-%d %H:%M (%Z)")})
+                rationale_rows.append({"Field": "Explorer distance", "Value": f"{float(dist):.1f} km"})
             except Exception:
-                rationale_rows.append({"Field": "ETA (Europe/Berlin)", "Value": str(basis.eta_local)})
+                rationale_rows.append({"Field": "Explorer distance", "Value": str(dist)})
 
-        # Route context (only if source == route)
-        if source == "route":
-            ranked_uuids = {_station_uuid(s) for s in ranked if _station_uuid(s)}
-            tag = "Ranked" if station_uuid in ranked_uuids else "Excluded"
-            rationale_rows.append({"Field": "Route context", "Value": f"{tag} candidate in latest route run"})
+    st.dataframe(pd.DataFrame(rationale_rows), hide_index=True, use_container_width=True)
+
+    st.markdown("### Economics summary")
+    if not use_economics:
+        st.info("Economics are disabled for the latest route run. Enable economics in Trip Planner and run again.")
+    else:
+        if econ_net_key not in station:
+            st.warning("Economic metrics are not available for this station.")
         else:
-            # Explorer-specific: show distance if present
-            dist = station.get("distance_km")
-            if dist is not None:
-                try:
-                    rationale_rows.append({"Field": "Explorer distance", "Value": f"{float(dist):.1f} km"})
-                except Exception:
-                    rationale_rows.append({"Field": "Explorer distance", "Value": str(dist)})
+            net = _safe_float(station.get(econ_net_key))
+            gross = _safe_float(station.get(f"econ_gross_saving_eur_{fuel_code}"))
+            detour_fuel_cost = _safe_float(station.get(f"econ_detour_fuel_cost_eur_{fuel_code}"))
+            time_cost = _safe_float(station.get(f"econ_time_cost_eur_{fuel_code}"))
+            breakeven = _safe_float(station.get(f"econ_breakeven_liters_{fuel_code}"))
 
-        st.dataframe(pd.DataFrame(rationale_rows), hide_index=True, use_container_width=True)
-
-        st.markdown("### Economics summary")
-        if not use_economics:
-            st.info("Economics are disabled for the latest route run. Enable economics in Trip Planner and run again.")
-        else:
-            if econ_net_key not in station:
-                st.warning("Economic metrics are not available for this station.")
-            else:
-                net = _safe_float(station.get(econ_net_key))
-                gross = _safe_float(station.get(f"econ_gross_saving_eur_{fuel_code}"))
-                detour_fuel_cost = _safe_float(station.get(f"econ_detour_fuel_cost_eur_{fuel_code}"))
-                time_cost = _safe_float(station.get(f"econ_time_cost_eur_{fuel_code}"))
-                breakeven = _safe_float(station.get(f"econ_breakeven_liters_{fuel_code}"))
-
-                if net is not None:
-                    if net > 0:
-                        st.success("This detour is economically worthwhile for the assumed refuel amount.")
-                    else:
-                        st.warning("This detour is not economically worthwhile for the assumed refuel amount.")
-
-                econ_cols = st.columns(3)
-                with econ_cols[0]:
-                    st.metric("Gross saving", _fmt_eur(gross))
-                with econ_cols[1]:
-                    detour_cost_total = (detour_fuel_cost or 0.0) + (time_cost or 0.0)
-                    st.metric("Detour cost", _fmt_eur(detour_cost_total))
-                with econ_cols[2]:
-                    st.metric("Net saving", _fmt_eur(net))
-
-                if breakeven is not None and breakeven > 0:
-                    st.caption(f"Break-even: refuel at least {breakeven:.1f} L for a positive net saving.")
-
-                if not compact:
-                    with st.expander("Formula (how net saving is computed)", expanded=False):
-                        st.markdown(
-                            f"""
-                            Net saving is computed on the assumed refuel amount (**{litres_to_refuel:.1f} L**) as:
-
-                            **Net saving** = **Gross saving** − **Detour fuel cost** − **Time cost**
-
-                            - Gross saving captures the station's price advantage relative to the baseline (cheapest on-route).
-                            - Detour fuel cost captures extra fuel consumed by the detour.
-                            - Time cost captures the value of extra time (if configured).
-                            """
-                        )
-
-    # =========================
-    # History & Patterns
-    # =========================
-    with tab_history:
-        st.markdown("### Price history & patterns")
-        if not station_uuid:
-            st.warning("Station UUID is missing; cannot load historical data.")
-        else:
-            with st.spinner("Loading historical price data..."):
-                try:
-                    df_history = get_station_price_history(
-                        station_uuid=station_uuid,
-                        fuel_type=fuel_code,
-                        days=14,
-                    )
-                except Exception as e:
-                    df_history = None
-                    diagnostics_errors.append(f"Price history error: {e!r}")
-
-            if df_history is None or df_history.empty:
-                st.info("No historical price data available for this station/fuel type.")
-            else:
-                st.plotly_chart(create_price_trend_chart(df_history, fuel_code, name), use_container_width=True)
-
-                st.markdown("---")
-                st.markdown("### Best time to refuel (hourly pattern)")
-
-                try:
-                    hourly_stats = calculate_hourly_price_stats(df_history)
-                except Exception as e:
-                    hourly_stats = None
-                    diagnostics_errors.append(f"Hourly stats error: {e!r}")
-
-                if hourly_stats is None or hourly_stats.empty or hourly_stats["avg_price"].dropna().empty:
-                    st.info("Not enough data to calculate hourly patterns.")
+            if net is not None:
+                if net > 0:
+                    st.success("This detour is economically worthwhile for the assumed refuel amount.")
                 else:
-                    st.plotly_chart(create_hourly_pattern_chart(hourly_stats, fuel_code, name), use_container_width=True)
+                    st.warning("This detour is not economically worthwhile for the assumed refuel amount.")
 
-                    optimal = get_cheapest_and_most_expensive_hours(hourly_stats) or {}
-                    cheapest_hour = optimal.get("cheapest_hour")
-                    most_expensive_hour = optimal.get("most_expensive_hour")
-                    cheapest_price = optimal.get("cheapest_price")
-                    most_expensive_price = optimal.get("most_expensive_price")
+            econ_cols = st.columns(3)
+            with econ_cols[0]:
+                st.metric("Gross saving", _fmt_eur(gross))
+            with econ_cols[1]:
+                detour_cost_total = (detour_fuel_cost or 0.0) + (time_cost or 0.0)
+                st.metric("Detour cost", _fmt_eur(detour_cost_total))
+            with econ_cols[2]:
+                st.metric("Net saving", _fmt_eur(net))
 
-                    if cheapest_hour is not None and most_expensive_hour is not None and cheapest_price is not None and most_expensive_price is not None:
-                        col_a, col_b, col_c = st.columns(3)
-                        with col_a:
-                            st.metric("Cheapest hour", f"{int(cheapest_hour):02d}:00", f"€{float(cheapest_price):.3f}/L")
-                        with col_b:
-                            st.metric("Most expensive hour", f"{int(most_expensive_hour):02d}:00", f"€{float(most_expensive_price):.3f}/L", delta_color="inverse")
-                        with col_c:
-                            diff = float(most_expensive_price) - float(cheapest_price)
-                            if litres_to_refuel:
-                                st.metric("Potential savings", f"€{diff * litres_to_refuel:.2f}", f"€{diff:.3f}/L")
-                            else:
-                                st.metric("Price difference", f"€{diff:.3f}/L", "Best vs worst hour")
+            if breakeven is not None and breakeven > 0:
+                st.caption(f"Break-even: refuel at least {breakeven:.1f} L for a positive net saving.")
 
-    # =========================
-    # Economics (detailed)
-    # =========================
-    with tab_economics:
-        st.markdown("### Economic breakdown")
-        st.caption("Detailed decomposition of savings vs detour costs.")
-
-        if not use_economics:
-            st.info("Economics are disabled for the latest route run. Enable economics in Trip Planner and run again.")
-        else:
-            econ_net_key = f"econ_net_saving_eur_{fuel_code}"
-            if econ_net_key not in station:
-                st.warning("Economic metrics are not available for this station.")
-            else:
-                econ_rows = [
-                    {"Metric": "Baseline on-route price", "Value": _fmt_price(station.get(f"econ_baseline_price_{fuel_code}")), "Note": "Cheapest station without detouring"},
-                    {"Metric": "Gross saving", "Value": _fmt_eur(station.get(f"econ_gross_saving_eur_{fuel_code}")), "Note": "Price advantage before costs"},
-                    {"Metric": "Detour fuel (litres)", "Value": (f"{_safe_float(station.get(f'econ_detour_fuel_l_{fuel_code}')):.2f} L" if _safe_float(station.get(f"econ_detour_fuel_l_{fuel_code}")) is not None else "—"), "Note": "Extra fuel consumed due to detour"},
-                    {"Metric": "Detour fuel cost", "Value": _fmt_eur(station.get(f"econ_detour_fuel_cost_eur_{fuel_code}")), "Note": "Cost of extra fuel"},
-                    {"Metric": "Time cost", "Value": _fmt_eur(station.get(f"econ_time_cost_eur_{fuel_code}")), "Note": "Value of additional time (if configured)"},
-                    {"Metric": "Net saving", "Value": _fmt_eur(station.get(econ_net_key)), "Note": "Gross saving minus all costs"},
-                    {"Metric": "Break-even litres", "Value": (f"{_safe_float(station.get(f'econ_breakeven_liters_{fuel_code}')):.1f} L" if _safe_float(station.get(f"econ_breakeven_liters_{fuel_code}")) is not None else "—"), "Note": "Minimum litres for positive net saving"},
-                ]
-                st.dataframe(pd.DataFrame(econ_rows), hide_index=True, use_container_width=True)
-
-                # What-if slider (display-only): do not mutate last_run / station
-                with st.expander("What-if: different refuel amount (display-only)", expanded=False):
-                    what_if_l = st.slider("Refuel litres", min_value=1.0, max_value=120.0, value=float(min(max(litres_to_refuel, 1.0), 120.0)), step=1.0)
-                    st.caption("This section does not re-run the model. It provides an intuitive scaling of the gross saving component.")
-                    baseline_price = _safe_float(station.get(f"econ_baseline_price_{fuel_code}"))
-                    current_basis_price = _safe_float(station.get(f"price_current_{fuel_code}"))
-                    # Use chosen basis for intuitive display: if forecast basis, use predicted, else current.
-                    basis_price = _safe_float(station.get(f"pred_price_{fuel_code}")) if "Forecast" in basis.label else current_basis_price
-                    if baseline_price is None or basis_price is None:
-                        st.info("Not enough data to compute a what-if estimate.")
-                    else:
-                        gross_per_l = max(0.0, baseline_price - basis_price)
-                        gross_est = gross_per_l * float(what_if_l)
-                        detour_fuel_cost = _safe_float(station.get(f"econ_detour_fuel_cost_eur_{fuel_code}")) or 0.0
-                        time_cost = _safe_float(station.get(f"econ_time_cost_eur_{fuel_code}")) or 0.0
-                        net_est = gross_est - detour_fuel_cost - time_cost
-                        c_a, c_b, c_c = st.columns(3)
-                        with c_a:
-                            st.metric("Estimated gross saving", _fmt_eur(gross_est))
-                        with c_b:
-                            st.metric("Detour cost (fixed)", _fmt_eur(detour_fuel_cost + time_cost))
-                        with c_c:
-                            st.metric("Estimated net saving", _fmt_eur(net_est))
-
-                with st.expander("How to read these numbers", expanded=False):
+            if not compact:
+                with st.expander("Formula (how net saving is computed)", expanded=False):
                     st.markdown(
-                        """
-                        - **Baseline on-route price**: the cheapest station without leaving the baseline route.
-                        - **Gross saving**: price advantage for the assumed refuel amount (litres).
-                        - **Detour fuel cost**: extra fuel consumed because of the detour, valued at the baseline price.
-                        - **Time cost**: optional valuation of extra detour time.
-                        - **Net saving**: gross saving minus detour fuel cost minus time cost.
-                        - **Break-even litres**: litres required for net saving to become positive (if applicable).
+                        f"""
+                        Net saving is computed on the assumed refuel amount (**{litres_to_refuel:.1f} L**) as:
+
+                        **Net saving** = **Gross saving** − **Detour fuel cost** − **Time cost**
+
+                        - Gross saving captures the station's price advantage relative to the baseline (cheapest on-route).
+                        - Detour fuel cost captures extra fuel consumed by the detour.
+                        - Time cost captures the value of extra time (if configured).
                         """
                     )
 
-    # =========================
-    # Comparison (only multi-station view)
-    # =========================
-    with tab_comparison:
+# =========================
+# History & Patterns
+# =========================
+
+    st.markdown("---")
+    st.markdown("### Price history & patterns")
+    if not station_uuid:
+        st.warning("Station UUID is missing; cannot load historical data.")
+    else:
+        with st.spinner("Loading historical price data..."):
+            try:
+                df_history = get_station_price_history(
+                    station_uuid=station_uuid,
+                    fuel_type=fuel_code,
+                    days=14,
+                )
+            except Exception as e:
+                df_history = None
+                diagnostics_errors.append(f"Price history error: {e!r}")
+
+        if df_history is None or df_history.empty:
+            st.info("No historical price data available for this station/fuel type.")
+        else:
+            st.plotly_chart(create_price_trend_chart(df_history, fuel_code, name), use_container_width=True, config=PLOTLY_CONFIG)
+
+            st.markdown("---")
+            st.markdown("### Best time to refuel (hourly pattern)")
+
+            try:
+                hourly_stats = calculate_hourly_price_stats(df_history)
+            except Exception as e:
+                hourly_stats = None
+                diagnostics_errors.append(f"Hourly stats error: {e!r}")
+
+            if hourly_stats is None or hourly_stats.empty or hourly_stats["avg_price"].dropna().empty:
+                st.info("Not enough data to calculate hourly patterns.")
+            else:
+                st.plotly_chart(create_hourly_pattern_chart(hourly_stats, fuel_code, name), use_container_width=True, config=PLOTLY_CONFIG)
+
+                optimal = get_cheapest_and_most_expensive_hours(hourly_stats) or {}
+                cheapest_hour = optimal.get("cheapest_hour")
+                most_expensive_hour = optimal.get("most_expensive_hour")
+                cheapest_price = optimal.get("cheapest_price")
+                most_expensive_price = optimal.get("most_expensive_price")
+
+                if cheapest_hour is not None and most_expensive_hour is not None and cheapest_price is not None and most_expensive_price is not None:
+                    col_a, col_b, col_c = st.columns(3)
+                    with col_a:
+                        st.metric("Cheapest hour", f"{int(cheapest_hour):02d}:00", f"€{float(cheapest_price):.3f}/L")
+                    with col_b:
+                        st.metric("Most expensive hour", f"{int(most_expensive_hour):02d}:00", f"€{float(most_expensive_price):.3f}/L", delta_color="inverse")
+                    with col_c:
+                        diff = float(most_expensive_price) - float(cheapest_price)
+                        if litres_to_refuel:
+                            st.metric("Potential savings", f"€{diff * litres_to_refuel:.2f}", f"€{diff:.3f}/L")
+                        else:
+                            st.metric("Price difference", f"€{diff:.3f}/L", "Best vs worst hour")
+
+# =========================
+# Economics (detailed)
+# =========================
+
+    st.markdown("---")
+    st.markdown("### Economic breakdown")
+    st.caption("Detailed decomposition of savings vs detour costs.")
+
+    if not use_economics:
+        st.info("Economics are disabled for the latest route run. Enable economics in Trip Planner and run again.")
+    else:
+        econ_net_key = f"econ_net_saving_eur_{fuel_code}"
+        if econ_net_key not in station:
+            st.warning("Economic metrics are not available for this station.")
+        else:
+            econ_rows = [
+                {"Metric": "Baseline on-route price", "Value": _fmt_price(station.get(f"econ_baseline_price_{fuel_code}")), "Note": "Cheapest station without detouring"},
+                {"Metric": "Gross saving", "Value": _fmt_eur(station.get(f"econ_gross_saving_eur_{fuel_code}")), "Note": "Price advantage before costs"},
+                {"Metric": "Detour fuel (litres)", "Value": (f"{_safe_float(station.get(f'econ_detour_fuel_l_{fuel_code}')):.2f} L" if _safe_float(station.get(f"econ_detour_fuel_l_{fuel_code}")) is not None else "—"), "Note": "Extra fuel consumed due to detour"},
+                {"Metric": "Detour fuel cost", "Value": _fmt_eur(station.get(f"econ_detour_fuel_cost_eur_{fuel_code}")), "Note": "Cost of extra fuel"},
+                {"Metric": "Time cost", "Value": _fmt_eur(station.get(f"econ_time_cost_eur_{fuel_code}")), "Note": "Value of additional time (if configured)"},
+                {"Metric": "Net saving", "Value": _fmt_eur(station.get(econ_net_key)), "Note": "Gross saving minus all costs"},
+                {"Metric": "Break-even litres", "Value": (f"{_safe_float(station.get(f'econ_breakeven_liters_{fuel_code}')):.1f} L" if _safe_float(station.get(f"econ_breakeven_liters_{fuel_code}")) is not None else "—"), "Note": "Minimum litres for positive net saving"},
+            ]
+            st.dataframe(pd.DataFrame(econ_rows), hide_index=True, use_container_width=True)
+
+            # What-if slider (display-only): do not mutate last_run / station
+            with st.expander("What-if: different refuel amount (display-only)", expanded=False):
+                what_if_l = st.slider("Refuel litres", min_value=1.0, max_value=120.0, value=float(min(max(litres_to_refuel, 1.0), 120.0)), step=1.0)
+                st.caption("This section does not re-run the model. It provides an intuitive scaling of the gross saving component.")
+                baseline_price = _safe_float(station.get(f"econ_baseline_price_{fuel_code}"))
+                current_basis_price = _safe_float(station.get(f"price_current_{fuel_code}"))
+                # Use chosen basis for intuitive display: if forecast basis, use predicted, else current.
+                basis_price = _safe_float(station.get(f"pred_price_{fuel_code}")) if "Forecast" in basis.label else current_basis_price
+                if baseline_price is None or basis_price is None:
+                    st.info("Not enough data to compute a what-if estimate.")
+                else:
+                    gross_per_l = max(0.0, baseline_price - basis_price)
+                    gross_est = gross_per_l * float(what_if_l)
+                    detour_fuel_cost = _safe_float(station.get(f"econ_detour_fuel_cost_eur_{fuel_code}")) or 0.0
+                    time_cost = _safe_float(station.get(f"econ_time_cost_eur_{fuel_code}")) or 0.0
+                    net_est = gross_est - detour_fuel_cost - time_cost
+                    c_a, c_b, c_c = st.columns(3)
+                    with c_a:
+                        st.metric("Estimated gross saving", _fmt_eur(gross_est))
+                    with c_b:
+                        st.metric("Detour cost (fixed)", _fmt_eur(detour_fuel_cost + time_cost))
+                    with c_c:
+                        st.metric("Estimated net saving", _fmt_eur(net_est))
+
+            with st.expander("How to read these numbers", expanded=False):
+                st.markdown(
+                    """
+                    - **Baseline on-route price**: the cheapest station without leaving the baseline route.
+                    - **Gross saving**: price advantage for the assumed refuel amount (litres).
+                    - **Detour fuel cost**: extra fuel consumed because of the detour, valued at the baseline price.
+                    - **Time cost**: optional valuation of extra detour time.
+                    - **Net saving**: gross saving minus detour fuel cost minus time cost.
+                    - **Break-even litres**: litres required for net saving to become positive (if applicable).
+                    """
+                )
+
+# =========================
+# Comparison (only multi-station view)
+# =========================
+
+    st.markdown("---")
+
+    with st.expander("Comparison (optional)", expanded=False):
         st.markdown("### Comparison")
         st.caption("Compare the selected station against the sidebar-configured comparison set.")
 
@@ -933,7 +947,7 @@ def main() -> None:
             if len(stations_data) < 2:
                 st.info("Not enough historical data to compare these stations.")
             else:
-                st.plotly_chart(create_comparison_chart(stations_data, fuel_code, current_station_name=name), use_container_width=True)
+                st.plotly_chart(create_comparison_chart(stations_data, fuel_code, current_station_name=name), use_container_width=True, config=PLOTLY_CONFIG)
 
                 # Quick insight
                 try:

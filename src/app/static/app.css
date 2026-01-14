@@ -20,28 +20,13 @@ section[data-testid="stSidebar"] div[data-testid="stSidebarUserContent"] {
 
 /* Ensure the first element doesn't add its own top spacing */
 section[data-testid="stSidebar"] div[data-testid="stSidebarUserContent"] > div:first-child {
-  margin-top: -1rem !important;
+  margin-top: 0rem !important;  /* avoid overlap on mobile */
   padding-top: 0 !important;
 }
 
 
-/* ==========================================================================
-   DEBUG OUTLINES (currently always enabled in your app)
-   ========================================================================== */
 
-/* Outline the main structural containers so you see the usable layout */
-section[data-testid="stSidebar"] { outline: 2px dashed rgba(0,0,0,0.25); outline-offset: -2px; }
-section[data-testid="stMain"] { outline: 2px dashed rgba(0,0,0,0.25); outline-offset: -2px; }
-div.block-container { outline: 2px dashed rgba(255,0,0,0.25); outline-offset: -2px; }
 
-/* Outline each vertical block (helpful to see spacing between blocks) */
-div[data-testid="stVerticalBlock"] { outline: 1px dashed rgba(0,0,255,0.20); outline-offset: -1px; }
-
-/* Outline columns */
-div[data-testid="column"] { outline: 1px dashed rgba(0,128,0,0.20); outline-offset: -1px; }
-
-/* Tighten spacing above Streamlit caption blocks */
-div[data-testid="stCaptionContainer"] { margin-top: -1.3rem !important; }
 
 
 /* ==========================================================================
@@ -135,7 +120,7 @@ section[data-testid="stSidebar"] div[data-testid="stSegmentedControl"] [data-bas
   margin-top: 0.25rem;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 768px) {
   .metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -326,11 +311,53 @@ section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-g
    SIDEBAR WIDTH + ROUTE INPUT ICONS
    ========================================================================== */
 
-/* Force sidebar width (unsupported CSS override) */
-section[data-testid="stSidebar"] {
-  width: 340px !important;      /* pick your default */
-  min-width: 300px !important;
+/* Force sidebar width (desktop only).
+   IMPORTANT: On mobile Streamlit uses a drawer sidebar; forcing width there causes “peek/overlap”.
+
+   ⚠️ Do NOT set width/min-width on the *sidebar container* itself, otherwise Streamlit can't truly collapse it.
+   Instead, size the *content wrapper* so expanded sidebar stays consistent, while collapsed sidebar can go to 0px.
+*/
+@media (min-width: 769px) {
+  /* Let Streamlit control the sidebar container width (needed for proper collapse) */
+  section[data-testid="stSidebar"] {
+    width: auto !important;
+    min-width: 0 !important;
+    overflow: hidden !important; /* prevents thin leftover strip on some browsers */
+  }
+
+  /* Size the inner content (expanded sidebar) */
+  section[data-testid="stSidebar"] > div:first-child,
+  section[data-testid="stSidebar"] div[data-testid="stSidebarContent"] {
+    width: 340px !important;
+    min-width: 300px !important;
+  }
 }
+
+/* Desktop collapse/expand fix (mainly for Chrome):
+   When the sidebar is collapsed, Streamlit still keeps the inner wrapper in the DOM.
+   We force it to 0px so no “leftover” sidebar strip remains. */
+@supports selector(section[data-testid="stSidebar"]:has(button)) {
+  @media (min-width: 769px) {
+    /* Collapsed state: Streamlit shows an "Open sidebar" button */
+    section[data-testid="stSidebar"]:has(button[aria-label="Open sidebar"]),
+    section[data-testid="stSidebar"]:has(button[aria-label="Open navigation"]) {
+      width: 0 !important;
+      min-width: 0 !important;
+    }
+
+    section[data-testid="stSidebar"]:has(button[aria-label="Open sidebar"]) > div:first-child,
+    section[data-testid="stSidebar"]:has(button[aria-label="Open navigation"]) > div:first-child,
+    section[data-testid="stSidebar"]:has(button[aria-label="Open sidebar"]) div[data-testid="stSidebarContent"],
+    section[data-testid="stSidebar"]:has(button[aria-label="Open navigation"]) div[data-testid="stSidebarContent"] {
+      width: 0 !important;
+      min-width: 0 !important;
+      padding: 0 !important;
+      margin: 0 !important;
+      overflow: hidden !important;
+    }
+  }
+}
+
 
 /* --- Route input: stable icon column (no SVG) --- */
 
@@ -468,19 +495,20 @@ section[data-testid="stSidebar"] .route-dots-right span {
 }
 
 /* Reduce vertical gap between the two inputs (sidebar only). */
-section[data-testid="stSidebar"] div.st-key-start_locality { margin-bottom: -1.4rem !important; }
+section[data-testid="stSidebar"] div.st-key-start_locality { margin-bottom: 0.15rem !important; }
 
 /* Reduce space above/below sidebar headings (Route, Fuel type, Detour economics, etc.) */
 section[data-testid="stSidebar"] h1,
 section[data-testid="stSidebar"] h2,
 section[data-testid="stSidebar"] h3 {
-  margin-top: -0.2rem !important;
-  margin-bottom: 0rem !important;
+  margin-top: 0.35rem !important;
+  margin-bottom: 0.20rem !important;
+  line-height: 1.20 !important;
 }
 
 /* Slightly reduce vertical spacing between consecutive widgets in the sidebar */
 section[data-testid="stSidebar"] div[data-testid="stElementContainer"] {
-  margin-bottom: -0.7rem !important;
+  margin-bottom: 0.35rem !important; /* avoid stacking/overlap */
 }
 
 section[data-testid="stMain"] div.st-key-map_style_mode {
@@ -630,3 +658,29 @@ div[data-testid="stCaptionContainer"] {
   opacity: 0.75;
   line-height: 1.25;
 }
+
+
+
+/* ==========================================================================
+   SIDEBAR: SAFETY NET FOR TYPOGRAPHY (prevents overlap)
+   ========================================================================== */
+
+section[data-testid="stSidebar"] small,
+section[data-testid="stSidebar"] p,
+section[data-testid="stSidebar"] li {
+  position: static !important;
+  line-height: 1.35 !important;
+}
+
+section[data-testid="stSidebar"] small {
+  display: block !important;
+  margin-top: 0.10rem !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+}
+
+
+
