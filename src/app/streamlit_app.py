@@ -908,6 +908,7 @@ def main() -> None:
     st.set_page_config(
         page_title="Fuel Station Recommender",
         layout="wide",
+        initial_sidebar_state="expanded",
     )
 
     # Apply custom CSS styles
