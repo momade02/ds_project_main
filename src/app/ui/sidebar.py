@@ -568,7 +568,6 @@ def render_station_selector(
     elif len(available_sources) == 1:
         source = available_sources[0][0]
         # Keep the UI compact; still show where selection comes from.
-        st.sidebar.caption(f"Station source: {available_sources[0][1]}")
     else:
         # No data at all: return an empty selection object (do not mutate state)
         st.sidebar.info("No stations available yet. Run a route or use Station Explorer first.")
