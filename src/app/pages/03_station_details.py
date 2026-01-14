@@ -543,11 +543,9 @@ def main() -> None:
             key="station_details_density",
             help="Compact hides some explanatory text while preserving all numbers.",
         )
-        st.sidebar.caption("Timezone: Europe/Berlin (fixed)")
 
         # E) Diagnostics note (no toggle)
         st.sidebar.markdown("### Diagnostics")
-        st.sidebar.caption("Diagnostics are available at the bottom of the page.")
 
     render_sidebar_shell(action_renderer=_action_tab)
 
