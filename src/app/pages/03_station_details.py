@@ -75,6 +75,9 @@ from ui.formatting import (
 
 from ui.styles import apply_app_css
 
+from config.settings import ensure_persisted_state_defaults
+from services.session_store import init_session_context, restore_persisted_state, maybe_persist_state
+
 
 # =============================================================================
 # Plotly charts (kept close to your current implementation, with minor UX tweaks)
@@ -421,6 +424,11 @@ def main() -> None:
         layout="wide",
         initial_sidebar_state="expanded",
     )
+
+    init_session_context()
+    ensure_persisted_state_defaults(st.session_state)
+    restore_persisted_state(overwrite_existing=True)
+
     apply_app_css()
 
     st.title("Station Details & Analysis")
@@ -992,6 +1000,8 @@ def main() -> None:
         st.json(station, expanded=False)
 
     st.caption("Tip: Use Route Analytics or Station Explorer to change the selection, and Trip Planner to run a new route.")
+
+    maybe_persist_state()
 
 
 if __name__ == "__main__":
