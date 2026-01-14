@@ -599,9 +599,23 @@ def _station_label(s: Dict[str, Any], idx: Optional[int] = None, tag: str = "") 
 def main() -> None:
     st.set_page_config(page_title="Route Analytics", layout="wide")
 
+    # Redis-backed persistence (best-effort)
+    # IMPORTANT: preserve widget-managed keys so Redis restore does not clobber user clicks
+    _preserve_top_nav = st.session_state.get("top_nav")
+    _preserve_sidebar_view = st.session_state.get("sidebar_view")
+
     init_session_context()
     ensure_persisted_state_defaults(st.session_state)
-    restore_persisted_state(overwrite_existing=False)
+
+    # Keep refresh persistence working:
+    # - overwrite_existing=True restores persisted values on a cold start / hard refresh
+    # - then we re-apply widget keys if the user interaction already set them for this rerun
+    restore_persisted_state(overwrite_existing=True)
+
+    if _preserve_top_nav is not None:
+        st.session_state["top_nav"] = _preserve_top_nav
+    if _preserve_sidebar_view is not None:
+        st.session_state["sidebar_view"] = _preserve_sidebar_view
 
     apply_app_css()
 
