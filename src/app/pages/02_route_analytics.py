@@ -21,6 +21,13 @@ import streamlit as st
 
 import altair as alt 
 
+from datetime import datetime, timezone
+
+try:
+    from zoneinfo import ZoneInfo  # Python 3.9+
+except Exception:
+    ZoneInfo = None
+
 # ---------------------------------------------------------------------
 # Minimum plausible €/L (guards against 0.00 or corrupted values in cached runs)
 MIN_VALID_PRICE_EUR_L: float = 0.50
@@ -99,6 +106,7 @@ def _is_missing_number(x: Any) -> bool:
     except Exception:
         return False
 
+
 def _as_float(x: Any) -> Optional[float]:
     """Best-effort numeric conversion used for robust display computations."""
     if _is_missing_number(x):
@@ -107,6 +115,55 @@ def _as_float(x: Any) -> Optional[float]:
         return float(x)
     except (TypeError, ValueError):
         return None
+
+
+def _format_eta_local_for_display(eta_any: Any, tz_name: str = "Europe/Berlin") -> str:
+    """
+    Convert an ETA value (typically debug_*_eta_utc ISO string or station["eta"]) into
+    Europe/Berlin local time for display. Returns a safe string; never throws.
+
+    - If input is already a local ISO string with offset, this will keep it as local (or re-normalize).
+    - If input is UTC (+00:00), this will convert to +01:00/+02:00 depending on DST.
+    """
+    if eta_any is None:
+        return "—"
+
+    # If it is already a datetime, normalize; otherwise parse from string
+    dt: datetime
+    try:
+        if isinstance(eta_any, datetime):
+            dt = eta_any
+        else:
+            s = str(eta_any).strip()
+            if not s:
+                return "—"
+            # Handle "Z" suffix if present
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            dt = datetime.fromisoformat(s)
+    except Exception:
+        # Fall back to raw value if parsing fails
+        return _safe_text(eta_any)
+
+    # If naive, assume UTC only as a last resort (debug values should be tz-aware)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    # Convert to Europe/Berlin if available
+    if ZoneInfo is not None:
+        try:
+            local_tz = ZoneInfo(tz_name)
+            dt_local = dt.astimezone(local_tz)
+            return dt_local.isoformat()
+        except Exception:
+            pass
+
+    # Fallback: use system local timezone if ZoneInfo is unavailable
+    try:
+        dt_local = dt.astimezone()
+        return dt_local.isoformat()
+    except Exception:
+        return _safe_text(eta_any)
 
 
 def _compute_baseline_price_for_display(
@@ -263,7 +320,12 @@ def _price_basis_row(station: Dict[str, Any], fuel_code: str) -> Dict[str, Any]:
 
     used_current = _coerce_bool(station.get(f"debug_{fuel_code}_used_current_price"))
     horizon_used = station.get(f"debug_{fuel_code}_horizon_used")
-    eta_utc = station.get(f"debug_{fuel_code}_eta_utc") or station.get("eta_utc") or station.get("eta")
+    eta_raw = (
+        station.get("eta")  # if your pipeline keeps the local ETA string, prefer it
+        or station.get(f"debug_{fuel_code}_eta_utc")  # otherwise convert UTC debug ETA
+        or station.get("eta_utc")
+    )
+    eta_local = _format_eta_local_for_display(eta_raw, tz_name="Europe/Berlin")
 
     minutes_to_arrival = (
         station.get(f"debug_{fuel_code}_minutes_to_arrival")
@@ -294,7 +356,7 @@ def _price_basis_row(station: Dict[str, Any], fuel_code: str) -> Dict[str, Any]:
     return {
         "Station": _safe_text(station.get("brand") or station.get("station_name") or station.get("name")),
         "Basis": basis,
-        "ETA (UTC)": _safe_text(eta_utc),
+        "ETA (Europe/Berlin)": _safe_text(eta_local),
         "Minutes to arrival": minutes_to_arrival if minutes_to_arrival is not None else "—",
         "Cells ahead": cells_ahead if cells_ahead is not None else "—",
     }
@@ -1058,74 +1120,7 @@ def main() -> None:
         st.dataframe(excluded_df, use_container_width=True, hide_index=True)
     else:
         st.caption("No excluded stations to display.")
-
-    st.markdown("---")
-
-    # ------------------------------------------------------------------
-    # Drill-down selection & navigation
-    # ------------------------------------------------------------------
-    st.subheader("Drill-down: select a station")
-
-    options: List[Tuple[str, str, Dict[str, Any]]] = []
-
-    for i, s in enumerate(ranked[:20], start=1):
-        uid = _station_uuid(s)
-        if uid:
-            options.append((uid, _station_label(s, idx=i, tag="ranked"), s))
-
-    for s in excluded[:50]:
-        uid = _station_uuid(s)
-        if uid:
-            options.append((uid, _station_label(s, idx=None, tag="excluded"), s))
-
-    selected_uuid_default = st.session_state.get("selected_station_uuid")
-    option_labels = [lbl for _, lbl, _ in options]
-    option_uuids = [uid for uid, _, _ in options]
-
-    if options:
-        default_index = option_uuids.index(selected_uuid_default) if selected_uuid_default in option_uuids else 0
-
-        chosen_label = st.selectbox(
-            "Select a station to inspect (ranked and excluded)",
-            options=option_labels,
-            index=default_index,
-        )
-        chosen_uuid = option_uuids[option_labels.index(chosen_label)]
-        chosen_station = next((s for uid, _, s in options if uid == chosen_uuid), None)
-
-        if chosen_station:
-            st.session_state["selected_station_uuid"] = chosen_uuid
-            st.session_state["selected_station_data"] = chosen_station
-
-            pred_key = f"pred_price_{fuel_code}"
-            curr_key = f"price_current_{fuel_code}"
-            econ_key = f"econ_net_saving_eur_{fuel_code}"
-
-            km, mins = _detour_metrics(chosen_station)
-
-            s1, s2, s3, s4 = st.columns(4)
-            s1.metric("Current", _fmt_price(chosen_station.get(curr_key)))
-            s2.metric("Predicted", _fmt_price(chosen_station.get(pred_key)))
-            s3.metric("Detour", f"{_fmt_km(km)} / {_fmt_min(mins)}")
-            s4.metric("Net saving", _fmt_eur(chosen_station.get(econ_key)) if use_economics else "—")
-
-            with st.expander("Price basis for this station (current vs forecast)", expanded=False):
-                st.dataframe(_price_basis_table([chosen_station], fuel_code=fuel_code, limit=1), hide_index=True, use_container_width=True)
-
-            if debug_mode:
-                st.caption("Debug keys present on this station (for mapping):")
-                debug_keys = sorted([k for k in best_station.keys() if str(k).startswith("debug_")])
-                st.write(debug_keys if debug_keys else "No debug_* keys present on best_station.")
-
-            if st.button("Open Station Details for this station", use_container_width=True):
-                st.switch_page("pages/03_station_details.py")
-
-            with st.expander("Show raw station data (debug)"):
-                st.json(chosen_station, expanded=False)
-
-    else:
-        st.info("No stations available for drill-down.")
-
+        
 
 if __name__ == "__main__":
     main()

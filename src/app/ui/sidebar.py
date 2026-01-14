@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import streamlit as st
 
-from ui.formatting import _fuel_label_to_code
+from ui.formatting import _fuel_label_to_code, _station_uuid, _safe_text
 
+
+# =============================================================================
+# Existing state model (Trip Planner sidebar)
+# =============================================================================
 
 @dataclass(frozen=True)
 class SidebarState:
@@ -38,7 +42,6 @@ class SidebarState:
 
     # Diagnostics
     debug_mode: bool
-
 
     # Advanced Settings
     filter_closed_at_eta: bool
@@ -159,7 +162,7 @@ def _render_trip_planner_action() -> SidebarState:
     fuel_code = _fuel_label_to_code(fuel_label)
 
     st.sidebar.markdown(
-        "### Detour economics",
+        "### Detour Economics",
         help=(
             "Decide how detours are evaluated. The recommender combines your detour limits "
             "(extra distance/time) with detour costs (extra fuel and optional value of time) "
@@ -339,7 +342,10 @@ def render_sidebar(
     return SidebarState(**{**state.__dict__, "view": "Profile"})
 
 
-# Helper: simplified sidebar renderer for Pages 2–4
+# =============================================================================
+# Shared sidebar shell (Pages 2–4)
+# =============================================================================
+
 def render_sidebar_shell(
     *,
     action_renderer: Optional[Callable[[], None]] = None,
@@ -388,3 +394,273 @@ def render_sidebar_shell(
 
     st.sidebar.info(profile_placeholder)
     return "Profile"
+
+
+# =============================================================================
+# NEW: Station Details sidebar helpers (Page 03 control plane)
+# =============================================================================
+
+@dataclass(frozen=True)
+class StationSelection:
+    """
+    Result object returned by render_station_selector.
+
+    This is intentionally minimal and backwards compatible with your current
+    session_state-based navigation (selected_station_uuid / selected_station_data).
+    """
+    station_uuid: str
+    station: Optional[Dict[str, Any]]
+    source: str  # "route" | "explorer"
+    label: str
+
+
+def _station_display_name(station: Dict[str, Any]) -> str:
+    name = station.get("tk_name") or station.get("osm_name") or station.get("name") or "Unknown"
+    return _safe_text(str(name))
+
+
+def _station_display_city(station: Dict[str, Any]) -> str:
+    city = (station.get("city") or "").strip()
+    return _safe_text(str(city))
+
+
+def _station_display_brand(station: Dict[str, Any]) -> str:
+    brand = (station.get("brand") or "").strip()
+    return _safe_text(str(brand))
+
+
+def _build_station_label(
+    station: Dict[str, Any],
+    *,
+    tag: str,
+    rank_index: Optional[int] = None,
+    include_city: bool = True,
+    include_brand: bool = True,
+) -> str:
+    """
+    Human-friendly label used in the station selector. Keep this stable; it becomes muscle memory.
+    """
+    name = _station_display_name(station)
+    brand = _station_display_brand(station)
+    city = _station_display_city(station)
+
+    prefix = f"#{rank_index} " if rank_index is not None else ""
+    parts: List[str] = [f"{prefix}{name}"]
+
+    if include_brand and brand:
+        parts.append(f"({brand})")
+
+    if include_city and city:
+        parts.append(f"· {city.upper()}")
+
+    parts.append(f"[{tag}]")
+    return " ".join(parts).strip()
+
+
+def _resolve_uuid_to_station_map(
+    ranked: List[Dict[str, Any]],
+    stations: List[Dict[str, Any]],
+    explorer_results: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Build a uuid -> station dict mapping across all sources, with a preference order:
+      ranked > stations > explorer_results
+    so that the selector returns the richest station context where possible.
+    """
+    m: Dict[str, Dict[str, Any]] = {}
+
+    for s in explorer_results or []:
+        u = _station_uuid(s)
+        if u:
+            m[u] = s
+
+    for s in stations or []:
+        u = _station_uuid(s)
+        if u:
+            m[u] = s
+
+    for s in ranked or []:
+        u = _station_uuid(s)
+        if u:
+            m[u] = s
+
+    return m
+
+
+def render_station_selector(
+    *,
+    last_run: Optional[Dict[str, Any]] = None,
+    explorer_results: Optional[List[Dict[str, Any]]] = None,
+    # session-state keys (kept as defaults to preserve your cross-page wiring)
+    selected_uuid_key: str = "selected_station_uuid",
+    selected_data_key: str = "selected_station_data",
+    selected_source_key: str = "selected_station_source",
+    # widget keys (namespaced to avoid collisions)
+    widget_key_prefix: str = "station_details",
+    # sizing (conservative defaults)
+    max_ranked: int = 20,
+    max_excluded: int = 50,
+    max_explorer: int = 200,
+) -> StationSelection:
+    """
+    Sidebar station selection control for Page 03 ("Station Details & Analysis").
+
+    What it does:
+      - Lets the user choose a station source: latest route run vs station explorer
+      - Presents a single selector (selectbox) for stations from the chosen source
+      - Writes the selection into session_state:
+          selected_station_uuid
+          selected_station_data (when resolvable)
+          selected_station_source (route|explorer)
+
+    This is additive and safe:
+      - If last_run/explorer_results are missing, it degrades gracefully.
+      - It never assumes fields beyond what your pages already use (_station_uuid + tk_name/osm_name/city/brand).
+
+    Returns:
+      StationSelection (uuid, station dict, source, label)
+    """
+    last_run = last_run or {}
+    ranked: List[Dict[str, Any]] = list(last_run.get("ranked") or [])
+    stations: List[Dict[str, Any]] = list(last_run.get("stations") or [])
+    explorer_results = list(explorer_results or [])
+
+    # Determine which sources are actually available
+    has_route = bool(ranked or stations)
+    has_explorer = bool(explorer_results)
+
+    available_sources: List[Tuple[str, str]] = []
+    if has_route:
+        available_sources.append(("route", "From latest route run"))
+    if has_explorer:
+        available_sources.append(("explorer", "From station explorer"))
+
+    # Current selection (from session_state)
+    current_uuid = str(st.session_state.get(selected_uuid_key) or "")
+    current_station = st.session_state.get(selected_data_key)
+    current_source = str(st.session_state.get(selected_source_key) or "")
+
+    # If no explicit source, infer a default once (non-brittle; does not rely on detour keys)
+    if current_source not in {"route", "explorer"}:
+        inferred = None
+        if current_uuid and has_explorer:
+            ex_uuids = {_station_uuid(s) for s in explorer_results if _station_uuid(s)}
+            if current_uuid in ex_uuids:
+                inferred = "explorer"
+        if inferred is None and has_route:
+            inferred = "route"
+        if inferred is None and has_explorer:
+            inferred = "explorer"
+        current_source = inferred or "route"
+
+    # Render source selector (only if both exist)
+    if len(available_sources) >= 2:
+        # index based on inferred / stored source
+        src_ids = [sid for sid, _ in available_sources]
+        default_idx = src_ids.index(current_source) if current_source in src_ids else 0
+        chosen_source_label = st.sidebar.radio(
+            "Station source",
+            options=[lbl for _, lbl in available_sources],
+            index=default_idx,
+            key=f"{widget_key_prefix}_source_radio",
+        )
+        source = next((sid for sid, lbl in available_sources if lbl == chosen_source_label), src_ids[0])
+    elif len(available_sources) == 1:
+        source = available_sources[0][0]
+        # Keep the UI compact; still show where selection comes from.
+        st.sidebar.caption(f"Station source: {available_sources[0][1]}")
+    else:
+        # No data at all: return an empty selection object (do not mutate state)
+        st.sidebar.info("No stations available yet. Run a route or use Station Explorer first.")
+        return StationSelection(station_uuid="", station=None, source="route", label="")
+
+    # Build option lists by source
+    uuid_to_station = _resolve_uuid_to_station_map(ranked, stations, explorer_results)
+
+    options: List[Tuple[str, str]] = []  # (uuid, label)
+
+    if source == "route":
+        ranked_uuids = {_station_uuid(s) for s in ranked if _station_uuid(s)}
+        excluded = [s for s in stations if (_station_uuid(s) and _station_uuid(s) not in ranked_uuids)]
+
+        for i, s in enumerate(ranked[:max_ranked], start=1):
+            uid = _station_uuid(s)
+            if uid:
+                options.append((uid, _build_station_label(s, tag="ranked", rank_index=i)))
+
+        for s in excluded[:max_excluded]:
+            uid = _station_uuid(s)
+            if uid:
+                options.append((uid, _build_station_label(s, tag="excluded", rank_index=None)))
+
+    else:  # explorer
+        for s in explorer_results[:max_explorer]:
+            uid = _station_uuid(s)
+            if uid:
+                # include distance in label if present
+                base = _build_station_label(s, tag="explorer", rank_index=None)
+                dist = s.get("distance_km")
+                try:
+                    if dist is not None:
+                        base = f"{base} · {float(dist):.1f} km"
+                except (TypeError, ValueError):
+                    pass
+                options.append((uid, base))
+
+    # Ensure the currently selected UUID is present (even if not in top-N lists)
+    if current_uuid and current_uuid not in {u for u, _ in options}:
+        st_obj = None
+        if isinstance(current_station, dict):
+            st_obj = current_station
+        elif current_uuid in uuid_to_station:
+            st_obj = uuid_to_station.get(current_uuid)
+
+        if isinstance(st_obj, dict):
+            options.insert(0, (current_uuid, _build_station_label(st_obj, tag="current", rank_index=None)))
+        else:
+            options.insert(0, (current_uuid, f"{current_uuid} [current]"))
+
+    if not options:
+        st.sidebar.info("No stations available in this source. Try the other source or run a search/route.")
+        return StationSelection(station_uuid="", station=None, source=source, label="")
+
+    # Create label mapping for format_func
+    uuid_to_label: Dict[str, str] = {u: lbl for u, lbl in options}
+    option_uuids: List[str] = [u for u, _ in options]
+
+    # Default selection:
+    # - Use current_uuid if it exists in options
+    # - Else: first option (rank-1 station for route, first explorer station for explorer)
+    default_uuid = current_uuid if current_uuid in uuid_to_label else option_uuids[0]
+    try:
+        default_idx = option_uuids.index(default_uuid)
+    except ValueError:
+        default_idx = 0
+
+    chosen_uuid = st.sidebar.selectbox(
+        "Select station",
+        options=option_uuids,
+        index=default_idx,
+        format_func=lambda u: uuid_to_label.get(u, u),
+        key=f"{widget_key_prefix}_station_select",
+    )
+
+    chosen_station = uuid_to_station.get(chosen_uuid)
+    chosen_label = uuid_to_label.get(chosen_uuid, chosen_uuid)
+
+    # Persist selection for cross-page navigation
+    st.session_state[selected_uuid_key] = chosen_uuid
+    st.session_state[selected_source_key] = source
+    if isinstance(chosen_station, dict):
+        st.session_state[selected_data_key] = chosen_station
+    else:
+        # Do not overwrite selected_station_data with None if we can't resolve.
+        # Keep whatever is already there (safer for downstream pages).
+        pass
+
+    return StationSelection(
+        station_uuid=chosen_uuid,
+        station=chosen_station if isinstance(chosen_station, dict) else None,
+        source=source,
+        label=chosen_label,
+    )
