@@ -601,7 +601,7 @@ def main() -> None:
 
     init_session_context()
     ensure_persisted_state_defaults(st.session_state)
-    restore_persisted_state(overwrite_existing=True)
+    restore_persisted_state(overwrite_existing=False)
 
     apply_app_css()
 

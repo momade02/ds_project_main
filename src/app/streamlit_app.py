@@ -915,7 +915,7 @@ def main() -> None:
     # Redis-backed persistence (best-effort)
     init_session_context()
     ensure_persisted_state_defaults(st.session_state)
-    restore_persisted_state(overwrite_existing=True)
+    restore_persisted_state(overwrite_existing=False)
 
     # Apply custom CSS styles
     apply_app_css()

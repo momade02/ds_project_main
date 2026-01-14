@@ -78,7 +78,7 @@ def main() -> None:
 
     init_session_context()
     ensure_persisted_state_defaults(st.session_state)
-    restore_persisted_state(overwrite_existing=True)
+    restore_persisted_state(overwrite_existing=False)
 
     apply_app_css()
     st.title("Station Explorer")
@@ -361,7 +361,7 @@ def main() -> None:
         st.json({"center": center, "stations_returned": len(stations), "best_uuid": best_uuid})
 
     maybe_persist_state()
-    
+
 
 if __name__ == "__main__":
     main()
