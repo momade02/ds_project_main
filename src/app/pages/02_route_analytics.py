@@ -603,6 +603,7 @@ def main() -> None:
     # IMPORTANT: preserve widget-managed keys so Redis restore does not clobber user clicks
     _preserve_top_nav = st.session_state.get("top_nav")
     _preserve_sidebar_view = st.session_state.get("sidebar_view")
+    _preserve_map_style_mode = st.session_state.get("map_style_mode")  # <-- ADD THIS
 
     init_session_context()
     ensure_persisted_state_defaults(st.session_state)
@@ -616,6 +617,8 @@ def main() -> None:
         st.session_state["top_nav"] = _preserve_top_nav
     if _preserve_sidebar_view is not None:
         st.session_state["sidebar_view"] = _preserve_sidebar_view
+    if _preserve_map_style_mode is not None:
+        st.session_state["map_style_mode"] = _preserve_map_style_mode  # <-- ADD THIS
 
     apply_app_css()
 
