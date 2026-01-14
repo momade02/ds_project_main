@@ -16,6 +16,9 @@ from config.settings import load_env_once
 
 load_env_once()
 
+from config.settings import ensure_persisted_state_defaults
+from services.session_store import init_session_context, restore_persisted_state, maybe_persist_state
+
 # ---------------------------------------------------------------------
 # Import bootstrap (same pattern as your other pages)
 # ---------------------------------------------------------------------
@@ -72,6 +75,11 @@ def _build_results_table(stations: List[Dict[str, Any]], fuel_code: str) -> pd.D
 
 def main() -> None:
     st.set_page_config(page_title="Station Explorer", layout="wide")
+
+    init_session_context()
+    ensure_persisted_state_defaults(st.session_state)
+    restore_persisted_state(overwrite_existing=True)
+
     apply_app_css()
     st.title("Station Explorer")
     st.caption("##### Browse fuel stations near a location.")
@@ -352,6 +360,8 @@ def main() -> None:
         st.markdown("DEBUG: explorer_center / counts")
         st.json({"center": center, "stations_returned": len(stations), "best_uuid": best_uuid})
 
+    maybe_persist_state()
+    
 
 if __name__ == "__main__":
     main()

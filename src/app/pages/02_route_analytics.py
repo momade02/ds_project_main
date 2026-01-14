@@ -27,6 +27,7 @@ try:
     from zoneinfo import ZoneInfo  # Python 3.9+
 except Exception:
     ZoneInfo = None
+    
 
 # ---------------------------------------------------------------------
 # Minimum plausible €/L (guards against 0.00 or corrupted values in cached runs)
@@ -61,6 +62,10 @@ from services.presenters import build_ranking_dataframe
 from ui.styles import apply_app_css
 
 from ui.sidebar import render_sidebar_shell
+
+from config.settings import ensure_persisted_state_defaults
+from services.session_store import init_session_context, restore_persisted_state, maybe_persist_state
+
 
 # -----------------------------
 # Helpers
@@ -594,6 +599,10 @@ def _station_label(s: Dict[str, Any], idx: Optional[int] = None, tag: str = "") 
 def main() -> None:
     st.set_page_config(page_title="Route Analytics", layout="wide")
 
+    init_session_context()
+    ensure_persisted_state_defaults(st.session_state)
+    restore_persisted_state(overwrite_existing=True)
+
     apply_app_css()
 
     # Header (consistent across pages)
@@ -1120,6 +1129,8 @@ def main() -> None:
         st.dataframe(excluded_df, use_container_width=True, hide_index=True)
     else:
         st.caption("No excluded stations to display.")
+
+    maybe_persist_state()
         
 
 if __name__ == "__main__":

@@ -44,7 +44,7 @@ import pydeck as pdk
 
 from datetime import datetime
 
-from config.settings import load_env_once
+from config.settings import load_env_once, ensure_persisted_state_defaults
 
 load_env_once()
 
@@ -82,6 +82,8 @@ from ui.formatting import (
 )
 
 from services.route_recommender import RouteRunInputs, run_route_recommendation
+
+from services.session_store import init_session_context, restore_persisted_state, maybe_persist_state
 
 from ui.styles import apply_app_css
 
@@ -910,6 +912,11 @@ def main() -> None:
         layout="wide",
     )
 
+    # Redis-backed persistence (best-effort)
+    init_session_context()
+    ensure_persisted_state_defaults(st.session_state)
+    restore_persisted_state(overwrite_existing=True)
+
     # Apply custom CSS styles
     apply_app_css()
 
@@ -923,10 +930,6 @@ def main() -> None:
         "Station": "pages/03_station_details.py",
         "Explorer": "pages/04_station_explorer.py",
     }
-
-    # Initialize only once (no default parameter needed afterwards)
-    if "top_nav" not in st.session_state:
-        st.session_state["top_nav"] = "Home"
 
     selected = st.segmented_control(
         label="Page navigation",
@@ -943,14 +946,6 @@ def main() -> None:
     if target != "streamlit_app.py":
         st.switch_page(target)
 
-    # Persist last clicked station (map selection)
-    if "selected_station_uuid" not in st.session_state:
-        st.session_state["selected_station_uuid"] = None
-    # Persist last computed results so UI does not reset on reruns (sidebar changes / map clicks)
-    if "last_run" not in st.session_state:
-        st.session_state["last_run"] = None  # will store dict of computed outputs
-    if "last_params_hash" not in st.session_state:
-        st.session_state["last_params_hash"] = None
 
     # ----------------------------------------------------------------------
     # Sidebar (standardized)
@@ -978,9 +973,6 @@ def main() -> None:
     filter_closed_at_eta = sidebar.filter_closed_at_eta
     brand_filter_selected = list(getattr(sidebar, "brand_filter_selected", []) or [])
 
-    # Debug mode is controlled on Route Analytics (Page 2) and stored in session_state.
-    if "debug_mode" not in st.session_state:
-        st.session_state["debug_mode"] = True
 
     debug_mode = bool(st.session_state.get("debug_mode", False))
 
@@ -1422,6 +1414,9 @@ def main() -> None:
     if station_for_details is None:
         station_for_details = best_station
         selected_uuid = _station_uuid(best_station) if best_station else None
+
+    # Persist the current UX state snapshot (best-effort, writes only if changed)
+    maybe_persist_state()
 
 
 if __name__ == "__main__":
