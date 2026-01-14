@@ -180,6 +180,43 @@ def parse_duration(duration_str: str) -> float:
         raise ValueError(f"Unexpected duration format: {duration_str}")
     return float(duration_str[:-1])
 
+def decode_route_steps_lonlat(route: dict[str, Any]) -> RoutePathLonLat:
+    """
+    Decodes all step polylines from a route and constructs the complete path geometry.
+
+    Args:
+        route: Dictionary containing the route response from Google Directions API,
+               with 'legs' containing 'steps' with encoded polylines.
+
+    Returns:
+        RoutePathLonLat: List of [lon, lat] coordinate pairs forming the complete route.
+
+    Raises:
+        ValueError: If the route contains no decodable step polylines.
+    """
+    coords: RoutePathLonLat = []
+
+    legs = route.get("legs", [])
+    for leg in legs:
+        steps = leg.get("steps", [])
+        for step in steps:
+            enc = step.get("polyline", {}).get("points")
+            if not enc:
+                continue
+
+            decoded = googlemaps.convert.decode_polyline(enc)
+            step_coords: RoutePathLonLat = [[p["lng"], p["lat"]] for p in decoded]
+
+            # Dedup Übergangspunkt zwischen Steps
+            if coords and step_coords and coords[-1] == step_coords[0]:
+                step_coords = step_coords[1:]
+
+            coords.extend(step_coords)
+
+    if not coords:
+        raise ValueError("No step polylines found in route response (steps-based geometry is empty).")
+
+    return coords
 
 # ==========================================
 # Google Maps API Core Integration
@@ -294,13 +331,7 @@ def google_route_driving_car(
         leg.get("duration", {}).get("value", 0) for leg in route.get("legs", [])
     )
 
-    # Extract geometry. prefer "overview_polyline" for a smoothed full path.
-    encoded_polyline = route.get("overview_polyline", {}).get("points")
-    decoded_points: list[dict[str, float]] = googlemaps.convert.decode_polyline(
-        encoded_polyline
-    )
-    # Convert list of dicts {'lat': x, 'lng': y} to list of lists [lon, lat]
-    coords_lonlat: RoutePathLonLat = [[p["lng"], p["lat"]] for p in decoded_points]
+    coords_lonlat: RoutePathLonLat = decode_route_steps_lonlat(route)
 
     # Convert metrics to standard units (km and minutes)
     distance_km = distance_meters / 1000.0
@@ -372,14 +403,7 @@ def google_route_via_waypoint(
         leg.get("duration", {}).get("value", 0) for leg in route.get("legs", [])
     )
 
-    # Decode geometry
-    encoded_polyline = route.get("overview_polyline", {}).get("points")
-    if not encoded_polyline:
-        raise ValueError("Directions API response missing overview polyline.")
-    decoded_points = googlemaps.convert.decode_polyline(encoded_polyline)
-    full_coords_lonlat: RoutePathLonLat = [
-        [p["lng"], p["lat"]] for p in decoded_points
-    ]
+    full_coords_lonlat: RoutePathLonLat = decode_route_steps_lonlat(route)
 
     return {
         "via_full_coords": full_coords_lonlat,
@@ -598,7 +622,7 @@ if __name__ == "__main__":
         END_ADDR = {"street": "Charlottenstraße 45", "city": "Reutlingen", "country": "Germany"}
     elif TEST_SCENARIO == "long":
         START_ADDR = {"street": "Wilhelmstraße 7", "city": "Tübingen", "country": "Germany"}
-        END_ADDR = {"street": "Borsigallee 26", "city": "Frankfurt am Main", "country": "Germany"}
+        END_ADDR = {"street": "", "city": "Berlin", "country": "Germany"}
     elif TEST_SCENARIO == "switzerland":
         START_ADDR = {"street": "Zinngärten 9", "city": "Stühlingen", "country": "Germany"}
         END_ADDR = {"street": "Lendenbergstrasse 32", "city": "Schleitheim", "country": "Switzerland"}
