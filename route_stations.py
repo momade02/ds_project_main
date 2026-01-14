@@ -218,6 +218,45 @@ def decode_route_steps_lonlat(route: dict[str, Any]) -> RoutePathLonLat:
 
     return coords
 
+def downsample_route_coords(
+    coords_lonlat: RoutePathLonLat,
+    max_points: int = 2500,
+) -> RoutePathLonLat:
+    """
+    Downsample a route geometry to a fixed maximum number of points.
+
+    Args:
+        coords_lonlat: RoutePathLonLat list in [lon, lat] format.
+        max_points: Maximum number of points to return.
+
+    Returns:
+        RoutePathLonLat: Downsampled list of [lon, lat] coordinate pairs.
+    """
+    n_points = len(coords_lonlat)
+
+    # If the route is already small enough, return it as-is.
+    if n_points <= max_points:
+        return coords_lonlat
+
+    # Generate uniformly spaced indices from 0 .. (n_points - 1).
+    # The rounding ensures we get a fixed count close to max_points.
+    # Example: if n_points=10000 and max_points=5000, we keep roughly every 2nd point.
+    idxs = [
+        round(i * (n_points - 1) / (max_points - 1))
+        for i in range(max_points)
+    ]
+
+    # Build the output list while removing any duplicate indices caused by rounding.
+    downsampled: RoutePathLonLat = []
+    last_idx: int | None = None
+    for idx in idxs:
+        if idx == last_idx:
+            continue
+        downsampled.append(coords_lonlat[idx])
+        last_idx = idx
+
+    return downsampled
+
 # ==========================================
 # Google Maps API Core Integration
 # ==========================================
@@ -442,6 +481,10 @@ def google_places_fuel_along_route(
         list[StationDataDict]: A list of dictionaries, each representing a station
         with location, detour metrics, ETA, and opening hours data.
     """
+
+    # Downsample route geometry if too large for API limits
+    segment_coords_lonlat = downsample_route_coords(segment_coords_lonlat, max_points=5000)
+
     # 1. Prepare Geometry: Convert [lon, lat] list to [(lat, lon)] tuple list for encoding
     latlon_tuples: list[LatLatTuple] = [
         (lat, lon) for lon, lat in segment_coords_lonlat
@@ -614,7 +657,7 @@ if __name__ == "__main__":
 
     # --- Test Configuration ---
     # Select scenario: "short", "long", or "switzerland"
-    TEST_SCENARIO = "short"
+    TEST_SCENARIO = "long"
 
     # Hardcoded test addresses based on scenario selection
     if TEST_SCENARIO == "short":
