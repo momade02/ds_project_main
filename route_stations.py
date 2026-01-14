@@ -233,6 +233,7 @@ def google_route_driving_car(
     end_lon: float,
     api_key: str,
     departure_time: str | datetime = "now",
+    region: str = "de",
 ) -> tuple[RoutePathLonLat, float, float, datetime]:
     """
     Calculates a driving route between origin and destination using Google Directions API.
@@ -246,6 +247,7 @@ def google_route_driving_car(
         end_lon: Destination longitude.
         api_key: Valid Google Maps API key.
         departure_time: "now" or a specific datetime object. Defaults to "now".
+        region: Two-letter country code (ccTLD) to bias results. Defaults to "de" (Germany).
 
     Returns:
         tuple containing:
@@ -275,6 +277,7 @@ def google_route_driving_car(
         alternatives=False,
         departure_time=departure_time_dt,
         traffic_model="best_guess",
+        region=region,
     )
 
     if not directions_result:
@@ -315,6 +318,7 @@ def google_route_via_waypoint(
     end_lon: float,
     api_key: str,
     departure_time: str | datetime = "now",
+    region: str = "de",
 ) -> ViaRouteResultDict:
     """
     Calculates a driving route going specifically from Origin -> Waypoint -> Destination.
@@ -327,6 +331,7 @@ def google_route_via_waypoint(
         end_lat, end_lon: Final destination coordinates.
         api_key: Valid Google Maps API key.
         departure_time: "now" or datetime.
+        region: Two-letter country code (ccTLD) to bias results. Defaults to "de" (Germany).
 
     Returns:
         ViaRouteResultDict: A dictionary with keys:
@@ -351,6 +356,7 @@ def google_route_via_waypoint(
         alternatives=False,
         departure_time=departure_time_dt,
         traffic_model="best_guess",
+        region=region,
     )
 
     if not directions_result:
