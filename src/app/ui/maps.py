@@ -544,7 +544,7 @@ def create_mapbox_gl_html(
 
     function pinSVG(fill, stroke) {{
       return `
-        <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 64 64">
+        <svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" viewBox="0 0 64 64">
           <path d="M32 2C21 2 12 11 12 22c0 17 20 40 20 40s20-23 20-40C52 11 43 2 32 2z"
                 fill="${{fill}}" stroke="${{stroke}}" stroke-width="2"/>
           <circle cx="32" cy="22" r="7" fill="white"/>
@@ -644,19 +644,21 @@ def create_mapbox_gl_html(
         }}
 
         const el = document.createElement("div");
-        el.style.width = "35px";
-        el.style.height = "35px";
 
-        // ---- Marker sizing ----
-        // Orange/Red: slightly smaller
-        // Green (best): slightly larger
-        // Selected: largest
-        let scale = 0.72;
-        if (isBest) scale = 1.42;
-        if (isSelected) scale = 2;
+        // ---- Marker sizing (use width/height; do NOT use transform) ----
+        const baseSize = 28;
 
-        el.style.transform = `scale(${{scale}})`;
-        el.style.transformOrigin = "bottom center";
+        let scale = 0.9;
+        if (isBest) scale = 1.2;
+        if (isSelected) scale = 1.4;
+
+        const sizePx = Math.round(baseSize * scale);
+
+        // Use double braces ${{...}} so Python outputs ${...} for JS
+        el.style.width = `${{sizePx}}px`;
+        el.style.height = `${{sizePx}}px`;
+
+        // Keep the SVG responsive inside the container
         el.innerHTML = pinSVG(fill, stroke);
 
         const title = props.title || "Station";
@@ -667,11 +669,85 @@ def create_mapbox_gl_html(
             .setLngLat(coords)
             .setHTML(`<div style="font-size:12px;"><b>${{title}}</b><div style="opacity:.85;">${{brand}}</div></div>`)
             .addTo(map);
+
+          // Ensure popup is always above markers (your markers go up to z=30)
+          const pe = popup.getElement();
+          if (pe) pe.style.zIndex = "9999";
         }});
 
         el.addEventListener("mouseleave", () => {{
           popup.remove();
         }});
+
+        // Click: navigate to Station Details (Page 03) in the parent Streamlit app.
+            // We do this by updating the TOP window URL query params; Streamlit will rerun and switch pages.
+            el.addEventListener("click", (ev) => {{
+                // Stop propagation safely
+                try {{ ev.stopPropagation(); }} catch (e) {{}}
+
+                const suuid = (props.station_uuid || "").toString();
+                if (!suuid) return;
+
+                let baseHref = null;
+
+                // Prefer top-level URL (works when Streamlit allows top-navigation-by-user-activation)
+                try {{
+                    if (window.top && window.top.location && window.top.location.href) {{
+                        baseHref = window.top.location.href;
+                    }}
+                }} catch (e) {{
+                    // blocked; ignore
+                }}
+
+                // Fallback: parent URL
+                if (!baseHref) {{
+                    try {{
+                        if (window.parent && window.parent.location && window.parent.location.href) {{
+                            baseHref = window.parent.location.href;
+                        }}
+                    }} catch (e) {{
+                        // blocked; ignore
+                    }}
+                }}
+
+                // Last fallback: current iframe URL (may not help, but avoids throwing)
+                if (!baseHref) {{
+                    try {{
+                        baseHref = window.location.href;
+                    }} catch (e) {{
+                        return;
+                    }}
+                }}
+
+                try {{
+                    const url = new URL(baseHref);
+                    url.searchParams.set("goto", "station");
+                    url.searchParams.set("station_uuid", suuid);
+                    const targetUrl = url.toString();
+
+                    // 1) Try direct top navigation
+                    try {{
+                        if (window.top && window.top.location) {{
+                            window.top.location.href = targetUrl;
+                            return;
+                        }}
+                    }} catch (e) {{}}
+
+                    // 2) Try opening in _top (often permitted when triggered by user click)
+                    try {{
+                        window.open(targetUrl, "_top");
+                        return;
+                    }} catch (e) {{}}
+
+                    // 3) Fallback: navigate inside iframe (not ideal, but better than nothing)
+                    try {{
+                        window.location.href = targetUrl;
+                    }} catch (e) {{}}
+
+                }} catch (e) {{
+                    // no-op
+                }}
+            }});
 
         // ---- Create marker and force z-order ----
         const marker = new mapboxgl.Marker({{ element: el, anchor: "bottom" }})
