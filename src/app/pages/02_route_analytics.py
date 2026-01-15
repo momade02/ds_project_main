@@ -651,6 +651,11 @@ def main() -> None:
 
     target = NAV_TARGETS.get(selected, NAV_TARGETS[CURRENT])
     if target != NAV_TARGETS[CURRENT]:
+        # Persist before navigation so a reconnect / next page sees the most recent state.
+        try:
+            maybe_persist_state(force=True)
+        except Exception:
+            pass
         st.switch_page(target)
 
     render_sidebar_shell(

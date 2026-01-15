@@ -960,6 +960,12 @@ def main() -> None:
 
     # Only switch away from Home when needed
     if target != "streamlit_app.py":
+        # Persist before navigation so the next page (or a reconnect) sees the latest inputs.
+        # st.switch_page stops execution immediately, so code after it will not run.
+        try:
+            maybe_persist_state(force=True)
+        except Exception:
+            pass
         st.switch_page(target)
 
 

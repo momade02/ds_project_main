@@ -478,6 +478,11 @@ def main() -> None:
 
     target = NAV_TARGETS.get(selected_nav, NAV_TARGETS[CURRENT])
     if target != NAV_TARGETS[CURRENT]:
+        # Persist before navigation so a reconnect / next page sees the most recent state.
+        try:
+            maybe_persist_state(force=True)
+        except Exception:
+            pass
         st.switch_page(target)
 
     # -----------------------------
@@ -561,13 +566,19 @@ def main() -> None:
 
         # D) Display options
         st.sidebar.markdown("### Display")
+        # IMPORTANT: This widget lives only in the sidebar "Action" tab. When the user switches
+        # the sidebar segmented-control away from Action, Streamlit may garbage-collect widget
+        # state for keys whose widgets are not rendered. To avoid losing the latest selection,
+        # we decouple the widget key from the canonical persisted key.
+        current_density = str(st.session_state.get("station_details_density", "Detailed"))
         density = st.sidebar.radio(
             "Density",
             options=["Detailed", "Compact"],
-            index=0 if str(st.session_state.get("station_details_density", "Detailed")) == "Detailed" else 1,
-            key="station_details_density",
+            index=0 if current_density == "Detailed" else 1,
+            key="w_station_details_density",
             help="Compact hides some explanatory text while preserving all numbers.",
         )
+        st.session_state["station_details_density"] = str(density)
 
         # E) Diagnostics note (no toggle)
         st.sidebar.markdown("### Diagnostics")

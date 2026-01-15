@@ -124,6 +124,11 @@ def main() -> None:
 
     target = NAV_TARGETS.get(selected, NAV_TARGETS[CURRENT])
     if target != NAV_TARGETS[CURRENT]:
+        # Persist before navigation so a reconnect / next page sees the most recent state.
+        try:
+            maybe_persist_state(force=True)
+        except Exception:
+            pass
         st.switch_page(target)
 
     # Persistent state
@@ -141,56 +146,86 @@ def main() -> None:
     def _action_tab() -> None:
         st.sidebar.header("Explorer Settings")
 
+        # IMPORTANT: These widgets live only in the sidebar "Action" tab. When the user switches
+        # the sidebar segmented-control away from Action, Streamlit may garbage-collect widget state
+        # for keys whose widgets are not rendered. To keep the latest values stable, we decouple:
+        #   - widgets use keys: w_<name>
+        #   - canonical persisted values use keys: <name>
+        def _w(k: str) -> str:
+            return f"w_{k}"
+
+        def _canonical(k: str, default: Any) -> Any:
+            return st.session_state.get(k, default)
+
+        def _sync(k: str) -> None:
+            wk = _w(k)
+            if wk in st.session_state:
+                st.session_state[k] = st.session_state[wk]
+
         st.sidebar.text_input(
             "City / ZIP / Address",
-            value=st.session_state.get("explorer_location_query", st.session_state.get("explorer_last_query", "Tübingen")),
+            value=str(_canonical("explorer_location_query", _canonical("explorer_last_query", "Tübingen"))),
             help="Examples: 'Tübingen', '72074 Tübingen', 'Wilhelmstraße 7, Tübingen'",
-            key="explorer_location_query",
+            key=_w("explorer_location_query"),
         )
 
+        fuel_default = str(_canonical("explorer_fuel_label", "E5"))
         st.sidebar.selectbox(
             "Fuel type",
             options=["E5", "E10", "Diesel"],
-            index=["E5", "E10", "Diesel"].index(st.session_state.get("explorer_fuel_label", "E5"))
-            if st.session_state.get("explorer_fuel_label", "E5") in ["E5", "E10", "Diesel"] else 0,
-            key="explorer_fuel_label",
+            index=["E5", "E10", "Diesel"].index(fuel_default) if fuel_default in ["E5", "E10", "Diesel"] else 0,
+            key=_w("explorer_fuel_label"),
         )
 
         st.sidebar.slider(
             "Search radius (km)",
             min_value=1.0,
             max_value=25.0,
-            value=float(st.session_state.get("explorer_radius_km", 10.0)),
+            value=float(_canonical("explorer_radius_km", 10.0)),
             step=1.0,
-            key="explorer_radius_km",
+            key=_w("explorer_radius_km"),
         )
 
         st.sidebar.checkbox(
             "Only show open stations (requires realtime)",
-            value=bool(st.session_state.get("explorer_only_open", False)),
-            key="explorer_only_open",
+            value=bool(_canonical("explorer_only_open", False)),
+            key=_w("explorer_only_open"),
         )
 
         st.sidebar.checkbox(
             "Use realtime prices (Tankerkönig)",
-            value=bool(st.session_state.get("explorer_use_realtime", True)),
-            key="explorer_use_realtime",
+            value=bool(_canonical("explorer_use_realtime", True)),
+            key=_w("explorer_use_realtime"),
         )
 
         st.sidebar.slider(
             "Max stations to load (performance)",
             min_value=50,
             max_value=400,
-            value=int(st.session_state.get("explorer_limit", 200)),
+            value=int(_canonical("explorer_limit", 200)),
             step=50,
-            key="explorer_limit",
+            key=_w("explorer_limit"),
         )
 
         st.sidebar.checkbox(
             "Debug mode",
-            value=bool(st.session_state.get("debug_mode", False)),
-            key="debug_mode",  # shared key across pages
+            value=bool(_canonical("debug_mode", False)),
+            key="w_debug_mode_explorer",  # decoupled from canonical debug_mode
         )
+
+        # Sync widget values back into canonical persisted keys
+        for k in (
+            "explorer_location_query",
+            "explorer_fuel_label",
+            "explorer_radius_km",
+            "explorer_only_open",
+            "explorer_use_realtime",
+            "explorer_limit",
+        ):
+            _sync(k)
+
+        if "w_debug_mode_explorer" in st.session_state:
+            st.session_state["debug_mode"] = bool(st.session_state["w_debug_mode_explorer"])
 
         run_clicked["value"] = st.sidebar.button(
             "Search stations",

@@ -113,11 +113,42 @@ def _render_trip_planner_action() -> SidebarState:
         key="run_recommender_btn",
     )
 
+    # ------------------------------------------------------------------
+    # IMPORTANT: Stable, cross-tab state
+    # ------------------------------------------------------------------
+    # Streamlit may garbage-collect widget state for keys whose widgets are
+    # not rendered in a given run. This happens here when the user switches
+    # the sidebar segmented-control away from "Action" (we stop rendering the
+    # Action widgets). If the Action widgets use the *same* keys as your
+    # persisted contract keys (e.g., "litres_to_refuel"), those keys can
+    # disappear and later re-initialize from defaults.
+    #
+    # Solution: decouple widget keys from persisted keys.
+    # - Widgets use internal keys:  w_<name>
+    # - Persisted/canonical values live under the original keys: <name>
+    # - After rendering widgets we sync: <name> = w_<name>
+    #
+    # This keeps values stable across:
+    # - switching sidebar tabs (Action/Help/Settings/Profile)
+    # - switching pages via st.switch_page
+    # - Redis restore / persist cycles
+    def _w(key: str) -> str:
+        return f"w_{key}"
+
+    def _canonical(key: str, default: Any) -> Any:
+        return st.session_state.get(key, default)
+
+    def _sync(key: str) -> None:
+        wk = _w(key)
+        if wk in st.session_state:
+            st.session_state[key] = st.session_state[wk]
+
     st.sidebar.markdown("### Route")
 
     start_locality = st.sidebar.text_input(
         "Start",
-        key="start_locality",
+        value=str(_canonical("start_locality", "Tübingen")),
+        key=_w("start_locality"),
         label_visibility="collapsed",
         placeholder="Start: city or full address",
     )
@@ -134,7 +165,8 @@ def _render_trip_planner_action() -> SidebarState:
 
     end_locality = st.sidebar.text_input(
         "Destination",
-        key="end_locality",
+        value=str(_canonical("end_locality", "Sindelfingen")),
+        key=_w("end_locality"),
         label_visibility="collapsed",
         placeholder="Destination: city or full address",
     )
@@ -146,7 +178,7 @@ def _render_trip_planner_action() -> SidebarState:
     st.sidebar.subheader("Fuel type")
 
     fuel_options = ["E5", "E10", "Diesel"]
-    fuel_label_default = str(_ss("fuel_label", "E5"))
+    fuel_label_default = str(_canonical("fuel_label", "E5"))
     if fuel_label_default not in fuel_options:
         fuel_label_default = "E5"
 
@@ -155,7 +187,7 @@ def _render_trip_planner_action() -> SidebarState:
         options=fuel_options,
         index=fuel_options.index(fuel_label_default),
         label_visibility="collapsed",
-        key="fuel_label",
+        key=_w("fuel_label"),
     )
     fuel_code = _fuel_label_to_code(fuel_label)
 
@@ -170,7 +202,8 @@ def _render_trip_planner_action() -> SidebarState:
 
     use_economics = st.sidebar.checkbox(
         "Economics-based decision",
-        key="use_economics",
+        value=bool(_canonical("use_economics", True)),
+        key=_w("use_economics"),
     )
 
     litres_to_refuel = st.sidebar.number_input(
@@ -178,7 +211,8 @@ def _render_trip_planner_action() -> SidebarState:
         min_value=1.0,
         max_value=1000.0,
         step=1.0,
-        key="litres_to_refuel",
+        value=float(_canonical("litres_to_refuel", 40.0)),
+        key=_w("litres_to_refuel"),
     )
 
     consumption_l_per_100km = st.sidebar.number_input(
@@ -186,7 +220,8 @@ def _render_trip_planner_action() -> SidebarState:
         min_value=0.0,
         max_value=30.0,
         step=0.5,
-        key="consumption_l_per_100km",
+        value=float(_canonical("consumption_l_per_100km", 7.0)),
+        key=_w("consumption_l_per_100km"),
     )
 
     value_of_time_eur_per_hour = st.sidebar.number_input(
@@ -194,7 +229,8 @@ def _render_trip_planner_action() -> SidebarState:
         min_value=0.0,
         max_value=200.0,
         step=5.0,
-        key="value_of_time_eur_per_hour",
+        value=float(_canonical("value_of_time_eur_per_hour", 0.0)),
+        key=_w("value_of_time_eur_per_hour"),
     )
 
     max_detour_km = st.sidebar.number_input(
@@ -202,7 +238,8 @@ def _render_trip_planner_action() -> SidebarState:
         min_value=0.5,
         max_value=200.0,
         step=0.5,
-        key="max_detour_km",
+        value=float(_canonical("max_detour_km", 5.0)),
+        key=_w("max_detour_km"),
     )
 
     max_detour_min = st.sidebar.number_input(
@@ -210,7 +247,8 @@ def _render_trip_planner_action() -> SidebarState:
         min_value=1.0,
         max_value=240.0,
         step=1.0,
-        key="max_detour_min",
+        value=float(_canonical("max_detour_min", 10.0)),
+        key=_w("max_detour_min"),
         help=(
             "The maximum additional travel time you are willing to accept for a detour compared to the baseline route. "
             "Stations requiring more extra time are excluded (hard constraint)."
@@ -222,7 +260,8 @@ def _render_trip_planner_action() -> SidebarState:
         min_value=0.0,
         max_value=100.0,
         step=0.5,
-        key="min_net_saving_eur",
+        value=float(_canonical("min_net_saving_eur", 0.0)),
+        key=_w("min_net_saving_eur"),
         help=(
             "Minimum required net benefit for accepting a detour. Net saving = fuel price saving − "
             "detour fuel cost − optional time cost. Set to 0 to allow any positive or zero net saving."
@@ -239,7 +278,8 @@ def _render_trip_planner_action() -> SidebarState:
 
     filter_closed_at_eta = st.sidebar.checkbox(
         "Stations open at ETA",
-        key="filter_closed_at_eta",
+        value=bool(_canonical("filter_closed_at_eta", True)),
+        key=_w("filter_closed_at_eta"),
         help=(
             "If enabled, stations are filtered out when Google indicates they are closed at the "
             "estimated time of arrival (ETA) at the station. If opening hours are unavailable, the station "
@@ -252,13 +292,45 @@ def _render_trip_planner_action() -> SidebarState:
     brand_filter_selected = st.sidebar.multiselect(
         "Filter by brand",
         options=brand_options,
-        key="brand_filter_selected",
+        default=list(_canonical("brand_filter_selected", [])),
+        key=_w("brand_filter_selected"),
         help=(
             "10 most common brands in Germany. "
             "Only stations of selected brands are considered. "
             "When active, stations with unknown/missing brand are excluded."
         ),
     )
+
+    # Sync widget values back into canonical persisted keys
+    for k in (
+        "start_locality",
+        "end_locality",
+        "fuel_label",
+        "use_economics",
+        "litres_to_refuel",
+        "consumption_l_per_100km",
+        "value_of_time_eur_per_hour",
+        "max_detour_km",
+        "max_detour_min",
+        "min_net_saving_eur",
+        "filter_closed_at_eta",
+        "brand_filter_selected",
+    ):
+        _sync(k)
+
+    # Use canonical values from session_state for downstream consistency
+    start_locality = str(_canonical("start_locality", start_locality))
+    end_locality = str(_canonical("end_locality", end_locality))
+    fuel_label = str(_canonical("fuel_label", fuel_label))
+    use_economics = bool(_canonical("use_economics", use_economics))
+    litres_to_refuel = float(_canonical("litres_to_refuel", litres_to_refuel))
+    consumption_l_per_100km = float(_canonical("consumption_l_per_100km", consumption_l_per_100km))
+    value_of_time_eur_per_hour = float(_canonical("value_of_time_eur_per_hour", value_of_time_eur_per_hour))
+    max_detour_km = float(_canonical("max_detour_km", max_detour_km))
+    max_detour_min = float(_canonical("max_detour_min", max_detour_min))
+    min_net_saving_eur = float(_canonical("min_net_saving_eur", min_net_saving_eur))
+    filter_closed_at_eta = bool(_canonical("filter_closed_at_eta", filter_closed_at_eta))
+    brand_filter_selected = list(_canonical("brand_filter_selected", brand_filter_selected))
 
     return SidebarState(
         view="Action",
