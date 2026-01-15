@@ -117,7 +117,6 @@ def _render_trip_planner_action() -> SidebarState:
 
     start_locality = st.sidebar.text_input(
         "Start",
-        value=str(_ss("start_locality", "Tübingen")),
         key="start_locality",
         label_visibility="collapsed",
         placeholder="Start: city or full address",
@@ -135,7 +134,6 @@ def _render_trip_planner_action() -> SidebarState:
 
     end_locality = st.sidebar.text_input(
         "Destination",
-        value=str(_ss("end_locality", "Sindelfingen")),
         key="end_locality",
         label_visibility="collapsed",
         placeholder="Destination: city or full address",
@@ -172,7 +170,6 @@ def _render_trip_planner_action() -> SidebarState:
 
     use_economics = st.sidebar.checkbox(
         "Economics-based decision",
-        value=bool(_ss("use_economics", True)),
         key="use_economics",
     )
 
@@ -180,7 +177,6 @@ def _render_trip_planner_action() -> SidebarState:
         "Litres to refuel",
         min_value=1.0,
         max_value=1000.0,
-        value=float(_ss("litres_to_refuel", 40.0)),
         step=1.0,
         key="litres_to_refuel",
     )
@@ -189,7 +185,6 @@ def _render_trip_planner_action() -> SidebarState:
         "Car consumption (L/100 km)",
         min_value=0.0,
         max_value=30.0,
-        value=float(_ss("consumption_l_per_100km", 7.0)),
         step=0.5,
         key="consumption_l_per_100km",
     )
@@ -198,7 +193,6 @@ def _render_trip_planner_action() -> SidebarState:
         "Value of time (€/hour)",
         min_value=0.0,
         max_value=200.0,
-        value=float(_ss("value_of_time_eur_per_hour", 0.0)),
         step=5.0,
         key="value_of_time_eur_per_hour",
     )
@@ -207,7 +201,6 @@ def _render_trip_planner_action() -> SidebarState:
         "Maximum extra distance (km)",
         min_value=0.5,
         max_value=200.0,
-        value=float(_ss("max_detour_km", 5.0)),
         step=0.5,
         key="max_detour_km",
     )
@@ -216,7 +209,6 @@ def _render_trip_planner_action() -> SidebarState:
         "Maximum extra time (min)",
         min_value=1.0,
         max_value=240.0,
-        value=float(_ss("max_detour_min", 10.0)),
         step=1.0,
         key="max_detour_min",
         help=(
@@ -229,7 +221,6 @@ def _render_trip_planner_action() -> SidebarState:
         "Min net saving (€)",
         min_value=0.0,
         max_value=100.0,
-        value=float(_ss("min_net_saving_eur", 0.0)),
         step=0.5,
         key="min_net_saving_eur",
         help=(
@@ -248,7 +239,6 @@ def _render_trip_planner_action() -> SidebarState:
 
     filter_closed_at_eta = st.sidebar.checkbox(
         "Stations open at ETA",
-        value=bool(_ss("filter_closed_at_eta", True)),
         key="filter_closed_at_eta",
         help=(
             "If enabled, stations are filtered out when Google indicates they are closed at the "
@@ -262,7 +252,6 @@ def _render_trip_planner_action() -> SidebarState:
     brand_filter_selected = st.sidebar.multiselect(
         "Filter by brand",
         options=brand_options,
-        default=list(_ss("brand_filter_selected", [])),
         key="brand_filter_selected",
         help=(
             "10 most common brands in Germany. "
