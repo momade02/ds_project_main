@@ -57,44 +57,67 @@ def _ss(key: str, default: Any) -> Any:
 
 def _inject_route_input_gutter_css_once() -> None:
     """
-    Reserve a small right-side gutter for the route decoration (circle/dots/pin)
-    so the Start/Destination input containers do not paint underneath.
-
-    Why this is needed:
-      - The decoration is positioned on the right side of the sidebar.
-      - Streamlit/BaseWeb input containers can end up spanning the full sidebar width,
-        which makes their background/border overlap the decoration.
-
-    We only inject this CSS once per session.
+    Reserve a right-side gutter and render the start/end icons (circle + pin)
+    aligned in that gutter. Targets the actual widget keys used in this file:
+    w_start_locality / w_end_locality.
     """
     flag_key = "_css_route_input_gutter_applied"
     if st.session_state.get(flag_key):
         return
 
-    # Keep the selector narrow and robust: target only the two route inputs by placeholder.
-    # NOTE: We style the outer stTextInput container so the visible border also shrinks.
     st.sidebar.markdown(
-        """
+        r"""
         <style>
-          :root { --route-icon-gutter: 52px; }
+          :root { --route-icon-gutter: 56px; }  /* adjust 44–64px if desired */
 
-          div[data-testid="stSidebar"]
-          div[data-testid="stTextInput"]:has(input[placeholder="Start: city or full address"]),
-          div[data-testid="stSidebar"]
-          div[data-testid="stTextInput"]:has(input[placeholder="Destination: city or full address"]) {
-            width: calc(100% - var(--route-icon-gutter));
-            max-width: calc(100% - var(--route-icon-gutter));
+          /* Make the two route inputs narrower to leave room for the icons */
+          section[data-testid="stSidebar"] .st-key-w_start_locality,
+          section[data-testid="stSidebar"] .st-key-w_end_locality {
+            width: calc(100% - var(--route-icon-gutter)) !important;
+            max-width: calc(100% - var(--route-icon-gutter)) !important;
+            position: relative !important; /* anchor pseudo-elements */
           }
 
-          /* Defensive: if Streamlit changes the wrapper, also clamp the BaseWeb input. */
-          div[data-testid="stSidebar"]
-          div[data-testid="stTextInput"]:has(input[placeholder="Start: city or full address"])
-          div[data-baseweb="input"],
-          div[data-testid="stSidebar"]
-          div[data-testid="stTextInput"]:has(input[placeholder="Destination: city or full address"])
-          div[data-baseweb="input"] {
-            width: 100%;
-            max-width: 100%;
+          section[data-testid="stSidebar"] .st-key-w_start_locality div[data-baseweb="input"],
+          section[data-testid="stSidebar"] .st-key-w_end_locality div[data-baseweb="input"] {
+            width: 100% !important;
+            max-width: 100% !important;
+          }
+
+          /* START icon: grey/black outlined circle */
+          section[data-testid="stSidebar"] .st-key-w_start_locality::after {
+            content: "";
+            position: absolute;
+            right: calc(-1 * var(--route-icon-gutter) + 18px);
+            top: 50%;
+            transform: translateY(-50%);
+            width: 14px;
+            height: 14px;
+            border: 2px solid rgba(0,0,0,0.55);
+            border-radius: 999px;
+            background: transparent;
+            pointer-events: none;
+            z-index: 9999;
+          }
+
+          /* DESTINATION icon: red map pin (inline SVG) */
+          section[data-testid="stSidebar"] .st-key-w_end_locality::after {
+            content: "";
+            position: absolute;
+            right: calc(-1 * var(--route-icon-gutter) + 14px);
+            top: 50%;
+            transform: translateY(-50%);
+            width: 22px;
+            height: 22px;
+            background-repeat: no-repeat;
+            background-position: center;
+            background-size: contain;
+            pointer-events: none;
+            z-index: 9999;
+            background-image: url("data:image/svg+xml;utf8,\
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>\
+<path fill='%23d32f2f' d='M12 2c-3.86 0-7 3.14-7 7 0 5.25 7 13 7 13s7-7.75 7-13c0-3.86-3.14-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z'/>\
+</svg>");
           }
         </style>
         """,
@@ -102,6 +125,7 @@ def _inject_route_input_gutter_css_once() -> None:
     )
 
     st.session_state[flag_key] = True
+
 
 
 def _coerce_sidebar_view(value: Any) -> str:
@@ -162,37 +186,89 @@ def _render_trip_planner_action() -> SidebarState:
         key="run_recommender_btn",
     )
 
+    # ------------------------------------------------------------------
+    # IMPORTANT: Stable, cross-tab state
+    # ------------------------------------------------------------------
+    # Streamlit may garbage-collect widget state for keys whose widgets are
+    # not rendered in a given run. This happens here when the user switches
+    # the sidebar segmented-control away from "Action" (we stop rendering the
+    # Action widgets). If the Action widgets use the *same* keys as your
+    # persisted contract keys (e.g., "litres_to_refuel"), those keys can
+    # disappear and later re-initialize from defaults.
+    #
+    # Solution: decouple widget keys from persisted keys.
+    # - Widgets use internal keys:  w_<name>
+    # - Persisted/canonical values live under the original keys: <name>
+    # - After rendering widgets we sync: <name> = w_<name>
+    #
+    # This keeps values stable across:
+    # - switching sidebar tabs (Action/Help/Settings/Profile)
+    # - switching pages via st.switch_page
+    # - Redis restore / persist cycles
+    def _w(key: str) -> str:
+        return f"w_{key}"
+
+    def _canonical(key: str, default: Any) -> Any:
+        return st.session_state.get(key, default)
+
+    def _sync(key: str) -> None:
+        wk = _w(key)
+        if wk in st.session_state:
+            st.session_state[key] = st.session_state[wk]
+
     st.sidebar.markdown("### Route")
 
-    # Keep the route decoration (circle/dots/pin on the right) visually separated
-    # from the input containers (avoid the inputs painting underneath it).
-    _inject_route_input_gutter_css_once()
+    route_box = st.sidebar.container()
 
-    start_locality = st.sidebar.text_input(
+    # Row 1: Start input + start icon
+    c1, c2 = route_box.columns([0.86, 0.14], vertical_alignment="center")
+    start_locality = c1.text_input(
         "Start",
-        key="start_locality",
+        value=str(_canonical("start_locality", "Tübingen")),
+        key=_w("start_locality"),
         label_visibility="collapsed",
         placeholder="Start: city or full address",
     )
-
-    # Right-side connector dots between the two inputs (visual only)
-    # NOTE: Decorative element only. After decoupling widget keys (w_*), Streamlit's
-    # internal DOM order/stacking can change slightly and the following input can paint
-    # above these dots in some browsers. Force a higher z-index so the dots stay visible.
-    st.sidebar.markdown(
+    c2.markdown(
         """
-        <div class="route-dots-right" aria-hidden="true" style="z-index: 9999; pointer-events: none;">
-          <span></span><span></span><span></span>
+        <div style="display:flex; justify-content:center; align-items:center; height:100%;">
+        <div style="width:14px; height:14px; border:2px solid rgba(0,0,0,0.55); border-radius:999px;"></div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    end_locality = st.sidebar.text_input(
+    # Dots between rows (in the icon column)
+    d1, d2 = route_box.columns([0.86, 0.14])
+    d2.markdown(
+        """
+        <div style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:2px 0;">
+        <span style="width:5px; height:5px; border-radius:50%; background:rgba(0,0,0,0.35);"></span>
+        <span style="width:5px; height:5px; border-radius:50%; background:rgba(0,0,0,0.35);"></span>
+        <span style="width:5px; height:5px; border-radius:50%; background:rgba(0,0,0,0.35);"></span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Row 2: Destination input + destination icon
+    c3, c4 = route_box.columns([0.86, 0.14], vertical_alignment="center")
+    end_locality = c3.text_input(
         "Destination",
-        key="end_locality",
+        value=str(_canonical("end_locality", "Sindelfingen")),
+        key=_w("end_locality"),
         label_visibility="collapsed",
         placeholder="Destination: city or full address",
+    )
+    c4.markdown(
+        """
+        <div style="display:flex; justify-content:center; align-items:center; height:100%;">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+            <path fill="#d32f2f" d="M12 2c-3.86 0-7 3.14-7 7 0 5.25 7 13 7 13s7-7.75 7-13c0-3.86-3.14-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z"/>
+        </svg>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
     # (You currently keep these empty; preserve behavior)
@@ -202,7 +278,7 @@ def _render_trip_planner_action() -> SidebarState:
     st.sidebar.subheader("Fuel type")
 
     fuel_options = ["E5", "E10", "Diesel"]
-    fuel_label_default = str(_ss("fuel_label", "E5"))
+    fuel_label_default = str(_canonical("fuel_label", "E5"))
     if fuel_label_default not in fuel_options:
         fuel_label_default = "E5"
 
@@ -211,7 +287,7 @@ def _render_trip_planner_action() -> SidebarState:
         options=fuel_options,
         index=fuel_options.index(fuel_label_default),
         label_visibility="collapsed",
-        key="fuel_label",
+        key=_w("fuel_label"),
     )
     fuel_code = _fuel_label_to_code(fuel_label)
 
@@ -226,7 +302,8 @@ def _render_trip_planner_action() -> SidebarState:
 
     use_economics = st.sidebar.checkbox(
         "Economics-based decision",
-        key="use_economics",
+        value=bool(_canonical("use_economics", True)),
+        key=_w("use_economics"),
     )
 
     litres_to_refuel = st.sidebar.number_input(
@@ -234,7 +311,8 @@ def _render_trip_planner_action() -> SidebarState:
         min_value=1.0,
         max_value=1000.0,
         step=1.0,
-        key="litres_to_refuel",
+        value=float(_canonical("litres_to_refuel", 40.0)),
+        key=_w("litres_to_refuel"),
     )
 
     consumption_l_per_100km = st.sidebar.number_input(
@@ -242,7 +320,8 @@ def _render_trip_planner_action() -> SidebarState:
         min_value=0.0,
         max_value=30.0,
         step=0.5,
-        key="consumption_l_per_100km",
+        value=float(_canonical("consumption_l_per_100km", 7.0)),
+        key=_w("consumption_l_per_100km"),
     )
 
     value_of_time_eur_per_hour = st.sidebar.number_input(
@@ -250,7 +329,8 @@ def _render_trip_planner_action() -> SidebarState:
         min_value=0.0,
         max_value=200.0,
         step=5.0,
-        key="value_of_time_eur_per_hour",
+        value=float(_canonical("value_of_time_eur_per_hour", 0.0)),
+        key=_w("value_of_time_eur_per_hour"),
     )
 
     max_detour_km = st.sidebar.number_input(
@@ -258,7 +338,8 @@ def _render_trip_planner_action() -> SidebarState:
         min_value=0.5,
         max_value=200.0,
         step=0.5,
-        key="max_detour_km",
+        value=float(_canonical("max_detour_km", 5.0)),
+        key=_w("max_detour_km"),
     )
 
     max_detour_min = st.sidebar.number_input(
@@ -266,7 +347,8 @@ def _render_trip_planner_action() -> SidebarState:
         min_value=1.0,
         max_value=240.0,
         step=1.0,
-        key="max_detour_min",
+        value=float(_canonical("max_detour_min", 10.0)),
+        key=_w("max_detour_min"),
         help=(
             "The maximum additional travel time you are willing to accept for a detour compared to the baseline route. "
             "Stations requiring more extra time are excluded (hard constraint)."
@@ -278,7 +360,8 @@ def _render_trip_planner_action() -> SidebarState:
         min_value=0.0,
         max_value=100.0,
         step=0.5,
-        key="min_net_saving_eur",
+        value=float(_canonical("min_net_saving_eur", 0.0)),
+        key=_w("min_net_saving_eur"),
         help=(
             "Minimum required net benefit for accepting a detour. Net saving = fuel price saving − "
             "detour fuel cost − optional time cost. Set to 0 to allow any positive or zero net saving."
@@ -295,7 +378,8 @@ def _render_trip_planner_action() -> SidebarState:
 
     filter_closed_at_eta = st.sidebar.checkbox(
         "Stations open at ETA",
-        key="filter_closed_at_eta",
+        value=bool(_canonical("filter_closed_at_eta", True)),
+        key=_w("filter_closed_at_eta"),
         help=(
             "If enabled, stations are filtered out when Google indicates they are closed at the "
             "estimated time of arrival (ETA) at the station. If opening hours are unavailable, the station "
@@ -308,13 +392,45 @@ def _render_trip_planner_action() -> SidebarState:
     brand_filter_selected = st.sidebar.multiselect(
         "Filter by brand",
         options=brand_options,
-        key="brand_filter_selected",
+        default=list(_canonical("brand_filter_selected", [])),
+        key=_w("brand_filter_selected"),
         help=(
             "10 most common brands in Germany. "
             "Only stations of selected brands are considered. "
             "When active, stations with unknown/missing brand are excluded."
         ),
     )
+
+    # Sync widget values back into canonical persisted keys
+    for k in (
+        "start_locality",
+        "end_locality",
+        "fuel_label",
+        "use_economics",
+        "litres_to_refuel",
+        "consumption_l_per_100km",
+        "value_of_time_eur_per_hour",
+        "max_detour_km",
+        "max_detour_min",
+        "min_net_saving_eur",
+        "filter_closed_at_eta",
+        "brand_filter_selected",
+    ):
+        _sync(k)
+
+    # Use canonical values from session_state for downstream consistency
+    start_locality = str(_canonical("start_locality", start_locality))
+    end_locality = str(_canonical("end_locality", end_locality))
+    fuel_label = str(_canonical("fuel_label", fuel_label))
+    use_economics = bool(_canonical("use_economics", use_economics))
+    litres_to_refuel = float(_canonical("litres_to_refuel", litres_to_refuel))
+    consumption_l_per_100km = float(_canonical("consumption_l_per_100km", consumption_l_per_100km))
+    value_of_time_eur_per_hour = float(_canonical("value_of_time_eur_per_hour", value_of_time_eur_per_hour))
+    max_detour_km = float(_canonical("max_detour_km", max_detour_km))
+    max_detour_min = float(_canonical("max_detour_min", max_detour_min))
+    min_net_saving_eur = float(_canonical("min_net_saving_eur", min_net_saving_eur))
+    filter_closed_at_eta = bool(_canonical("filter_closed_at_eta", filter_closed_at_eta))
+    brand_filter_selected = list(_canonical("brand_filter_selected", brand_filter_selected))
 
     return SidebarState(
         view="Action",
