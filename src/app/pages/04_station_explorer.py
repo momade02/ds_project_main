@@ -110,6 +110,7 @@ def main() -> None:
 
     target = NAV_TARGETS.get(selected, NAV_TARGETS[CURRENT])
     if target != NAV_TARGETS[CURRENT]:
+        maybe_persist_state()
         st.switch_page(target)
 
     # Persistent state
@@ -334,6 +335,7 @@ def main() -> None:
         if st.button("Open Station Details", use_container_width=True):
             st.session_state["selected_station_uuid"] = chosen_uuid
             st.session_state["selected_station_data"] = chosen_station
+            maybe_persist_state()
             st.switch_page("pages/03_station_details.py")
     with col_c:
         st.caption("Station Details provides the full deep dive (history, hourly pattern, comparisons).")
