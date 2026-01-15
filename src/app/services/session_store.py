@@ -322,6 +322,26 @@ def restore_persisted_state(*, overwrite_existing: bool = True) -> bool:
         return False
 
 
+def restore_persisted_state_once(*, overwrite_existing: bool = True) -> bool:
+    """
+    Restore persisted state at most once per Streamlit session (per page load).
+    This prevents Redis restore from clobbering widget interactions on every rerun.
+
+    - On a hard refresh/new session_state: this runs once and restores.
+    - On ordinary reruns (widget clicks): this is a no-op.
+    """
+    flag_key = "_redis_restore_done"
+
+    # If we've already attempted restore in this session, do not do it again.
+    if bool(st.session_state.get(flag_key, False)):
+        return False
+
+    # Mark as done *before* the network call to avoid repeated retries on transient reruns.
+    st.session_state[flag_key] = True
+
+    return restore_persisted_state(overwrite_existing=overwrite_existing)
+
+
 def _hash_state_subset() -> str:
     contract = _load_contract()
     subset = {k: st.session_state.get(k) for k in contract.keys}
