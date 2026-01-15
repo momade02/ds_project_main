@@ -76,7 +76,7 @@ from ui.formatting import (
 from ui.styles import apply_app_css
 
 from config.settings import ensure_persisted_state_defaults
-from services.session_store import init_session_context, restore_persisted_state_once, maybe_persist_state
+from services.session_store import init_session_context, restore_persisted_state, maybe_persist_state
 
 
 # =============================================================================
@@ -426,11 +426,25 @@ def main() -> None:
     )
 
     # Redis-backed persistence (best-effort)
+    # IMPORTANT: preserve widget-managed keys so Redis restore does not clobber user clicks
+    _preserve_top_nav = st.session_state.get("top_nav")
+    _preserve_sidebar_view = st.session_state.get("sidebar_view")
+    _preserve_map_style_mode = st.session_state.get("map_style_mode")  # <-- ADD THIS
+
     init_session_context()
     ensure_persisted_state_defaults(st.session_state)
 
-    # Restore only once per session (avoids clobbering sidebar/tab clicks on reruns)
-    restore_persisted_state_once(overwrite_existing=True)
+    # Keep refresh persistence working:
+    # - overwrite_existing=True restores persisted values on a cold start / hard refresh
+    # - then we re-apply widget keys if the user interaction already set them for this rerun
+    restore_persisted_state(overwrite_existing=True)
+
+    if _preserve_top_nav is not None:
+        st.session_state["top_nav"] = _preserve_top_nav
+    if _preserve_sidebar_view is not None:
+        st.session_state["sidebar_view"] = _preserve_sidebar_view
+    if _preserve_map_style_mode is not None:
+        st.session_state["map_style_mode"] = _preserve_map_style_mode  # <-- ADD THIS
 
     apply_app_css()
 
@@ -464,7 +478,6 @@ def main() -> None:
 
     target = NAV_TARGETS.get(selected_nav, NAV_TARGETS[CURRENT])
     if target != NAV_TARGETS[CURRENT]:
-        maybe_persist_state()
         st.switch_page(target)
 
     # -----------------------------
@@ -592,11 +605,9 @@ def main() -> None:
         c1, c2 = st.columns(2)
         with c1:
             if st.button("Go to Trip Planner", use_container_width=True):
-                maybe_persist_state()
                 st.switch_page("streamlit_app.py")
         with c2:
             if st.button("Go to Station Explorer", use_container_width=True):
-                maybe_persist_state()
                 st.switch_page("pages/04_station_explorer.py")
         return
 

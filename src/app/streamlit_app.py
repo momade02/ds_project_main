@@ -83,8 +83,7 @@ from ui.formatting import (
 
 from services.route_recommender import RouteRunInputs, run_route_recommendation
 
-from services.session_store import init_session_context, restore_persisted_state_once, maybe_persist_state
-
+from services.session_store import init_session_context, restore_persisted_state, maybe_persist_state
 
 from ui.styles import apply_app_css
 
@@ -914,11 +913,25 @@ def main() -> None:
     )
 
     # Redis-backed persistence (best-effort)
+    # IMPORTANT: preserve widget-managed keys so Redis restore does not clobber user clicks
+    _preserve_top_nav = st.session_state.get("top_nav")
+    _preserve_sidebar_view = st.session_state.get("sidebar_view")
+    _preserve_map_style_mode = st.session_state.get("map_style_mode")  # <-- ADD THIS
+
     init_session_context()
     ensure_persisted_state_defaults(st.session_state)
 
-    # Restore only once per session (avoids clobbering sidebar/tab clicks on reruns)
-    restore_persisted_state_once(overwrite_existing=True)
+    # Keep refresh persistence working:
+    # - overwrite_existing=True restores persisted values on a cold start / hard refresh
+    # - then we re-apply widget keys if the user interaction already set them for this rerun
+    restore_persisted_state(overwrite_existing=True)
+
+    if _preserve_top_nav is not None:
+        st.session_state["top_nav"] = _preserve_top_nav
+    if _preserve_sidebar_view is not None:
+        st.session_state["sidebar_view"] = _preserve_sidebar_view
+    if _preserve_map_style_mode is not None:
+        st.session_state["map_style_mode"] = _preserve_map_style_mode  # <-- ADD THIS
 
     # Apply custom CSS styles
     apply_app_css()
@@ -933,12 +946,6 @@ def main() -> None:
         "Station": "pages/03_station_details.py",
         "Explorer": "pages/04_station_explorer.py",
     }
-    CURRENT = "Home"
-
-    # Ensure correct selection when landing on this page (prevents auto-redirect loops)
-    if st.session_state.get("_active_page") != CURRENT:
-        st.session_state["_active_page"] = CURRENT
-        st.session_state["top_nav"] = CURRENT
 
     selected = st.segmented_control(
         label="Page navigation",
@@ -946,14 +953,13 @@ def main() -> None:
         selection_mode="single",
         label_visibility="collapsed",
         width="stretch",
-        key="top_nav",  # single source of truth across pages
+        key="top_nav",  # this is the single source of truth
     )
 
-    target = NAV_TARGETS.get(selected, NAV_TARGETS[CURRENT])
+    target = NAV_TARGETS.get(selected, "streamlit_app.py")
 
-    # Persist before leaving this script run (switch_page aborts the rest of the file)
-    if target != NAV_TARGETS[CURRENT]:
-        maybe_persist_state()
+    # Only switch away from Home when needed
+    if target != "streamlit_app.py":
         st.switch_page(target)
 
 
@@ -1028,7 +1034,6 @@ def main() -> None:
 
         if not start_locality or not end_locality:
             st.error("Please provide a Start and Destination (city or full address).")
-            maybe_persist_state()
             return
 
         try:
