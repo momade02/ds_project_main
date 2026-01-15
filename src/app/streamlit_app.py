@@ -1385,60 +1385,6 @@ def main() -> None:
             stations_for_map_all = list(cached.get("stations_for_map_all") or cached.get("stations") or [])
             best_uuid = cached.get("best_uuid")
 
-            # ------------------------------------------------------------------
-            # Map click → Station Details deep-link (implemented via query params)
-            #
-            # maps.py sets:
-            #   ?goto=Station&station_uuid=<uuid>
-            # We resolve the station dict from the stable map-universe (stations_for_map_all),
-            # store it for Page 03, then switch pages.
-            # ------------------------------------------------------------------
-            def _qp_get_first(key: str) -> str:
-                try:
-                    v = st.query_params.get(key)  # type: ignore[attr-defined]
-                    if isinstance(v, (list, tuple)):
-                        return str(v[0]) if v else ""
-                    return str(v) if v is not None else ""
-                except Exception:
-                    try:
-                        v = st.experimental_get_query_params().get(key, [])  # type: ignore[attr-defined]
-                        return str(v[0]) if v else ""
-                    except Exception:
-                        return ""
-
-            def _qp_clear(*keys: str) -> None:
-                # Best-effort removal (avoid breaking older Streamlit versions)
-                try:
-                    for k in keys:
-                        try:
-                            if k in st.query_params:  # type: ignore[attr-defined]
-                                del st.query_params[k]  # type: ignore[attr-defined]
-                        except Exception:
-                            pass
-                except Exception:
-                    try:
-                        qp = st.experimental_get_query_params()  # type: ignore[attr-defined]
-                        for k in keys:
-                            qp.pop(k, None)
-                        st.experimental_set_query_params(**qp)  # type: ignore[attr-defined]
-                    except Exception:
-                        return
-
-            _goto = _qp_get_first("goto").strip()
-            _clicked_uuid = _qp_get_first("station_uuid").strip()
-
-            if _goto.lower() == "station" and _clicked_uuid:
-                # Resolve station dict (so Page 03 can render even if station is not in ranked/stations)
-                _station_by_uuid = {(_station_uuid(s) or ""): s for s in stations_for_map_all if _station_uuid(s)}
-                st.session_state["selected_station_uuid"] = _clicked_uuid
-                st.session_state["selected_station_data"] = _station_by_uuid.get(_clicked_uuid)
-                st.session_state["selected_station_source"] = "map_click"
-
-                # Keep nav consistent and switch page
-                st.session_state["top_nav"] = "Station"
-                _qp_clear("goto", "station_uuid")
-                st.switch_page("pages/03_station_details.py")
-
             value_view_uuids = set()
             for s in (cached.get("value_view_stations") or []):
                 u = _station_uuid(s)
@@ -1457,6 +1403,9 @@ def main() -> None:
                 else:
                     marker_category_by_uuid[u] = "other"
 
+            _value_view_meta = cached.get("value_view_meta") or {}
+            onroute_worst_price = _value_view_meta.get("onroute_worst_price")
+
             map_html = create_mapbox_gl_html(
                 route_coords=route_coords,
                 stations=stations_for_map_all,  # <-- key change (was ranked)
@@ -1466,6 +1415,10 @@ def main() -> None:
                 selected_station_uuid=st.session_state.get("selected_station_uuid"),
                 marker_category_by_uuid=marker_category_by_uuid,  # <-- new
                 height_px=560,
+
+                fuel_code=fuel_code,
+                litres_to_refuel=litres_to_refuel,
+                onroute_worst_price=onroute_worst_price,
             )
 
             components.html(map_html, height=560, scrolling=False)

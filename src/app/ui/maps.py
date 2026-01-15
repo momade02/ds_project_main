@@ -401,7 +401,13 @@ def create_mapbox_gl_html(
     selected_station_uuid: str | None,
     marker_category_by_uuid: dict[str, str] | None = None,
     height_px: int = 560,
+
+    # --- New (optional) ---
+    fuel_code: str | None = None,
+    litres_to_refuel: float | None = None,
+    onroute_worst_price: float | None = None,
 ) -> str:
+
     """
     Mapbox GL JS map (iframe HTML) with cooperative gestures:
       - Desktop: Ctrl/⌘ + scroll to zoom
@@ -429,6 +435,42 @@ def create_mapbox_gl_html(
         else "mapbox://styles/mapbox/streets-v12"
     )
 
+    # Price keys (optional)
+    pred_key = f"pred_price_{fuel_code}" if fuel_code else None
+    curr_key = f"price_current_{fuel_code}" if fuel_code else None
+
+    econ_detour_fuel_cost_key = f"econ_detour_fuel_cost_eur_{fuel_code}" if fuel_code else None
+    econ_time_cost_key = f"econ_time_cost_eur_{fuel_code}" if fuel_code else None
+
+    def _build_address_line(s: dict[str, Any]) -> str:
+        """
+        Best-effort address line from commonly used fields (Tankerkönig / OSM / your pipeline).
+        No external geocoding is used here.
+        """
+        # Prefer already-formatted fields if present
+        for k in ("formatted_address", "address", "full_address", "tk_address", "osm_address"):
+            v = s.get(k)
+            if v and str(v).strip():
+                return str(v).strip()
+
+        street = s.get("street") or s.get("tk_street") or s.get("osm_street")
+        house = (
+            s.get("houseNumber") or s.get("house_number") or s.get("housenumber")
+            or s.get("tk_house_number") or s.get("osm_house_number")
+        )
+        postcode = (
+            s.get("post_code") or s.get("postcode") or s.get("zip") or s.get("postal_code")
+            or s.get("tk_postcode") or s.get("osm_postcode")
+        )
+        city = s.get("place") or s.get("city") or s.get("town") or s.get("village") or s.get("tk_city") or s.get("osm_city")
+
+        line1 = " ".join([str(x).strip() for x in [street, house] if x and str(x).strip()]).strip()
+        line2 = " ".join([str(x).strip() for x in [postcode, city] if x and str(x).strip()]).strip()
+
+        if line1 and line2:
+            return f"{line1}, {line2}"
+        return line1 or line2 or ""
+
     # ---- Build station features for JS ----
     features: list[dict[str, Any]] = []
     for s in stations or []:
@@ -449,6 +491,48 @@ def create_mapbox_gl_html(
         if marker_category_by_uuid and suuid:
             props_category = marker_category_by_uuid.get(suuid)
 
+        # Headline: brand preferred; fallback to station name
+        headline = str(brand).strip() if (brand and str(brand).strip()) else str(name)
+
+        # Address (best-effort)
+        address_line = _build_address_line(s)
+
+        # Prices (formatted)
+        current_price_s = _fmt_price(s.get(curr_key)) if curr_key else "—"
+        predicted_price_s = _fmt_price(s.get(pred_key)) if pred_key else "—"
+
+        # Detour (formatted)
+        detour_km_s = _fmt_km(s.get("detour_distance_km") or s.get("detour_km"))
+        detour_min_s = _fmt_min(s.get("detour_duration_min") or s.get("detour_min"))
+
+        # Saving vs worst on-route (net if detour costs exist; else gross)
+        save_vs_worst_s = "—"
+        if onroute_worst_price is not None and litres_to_refuel and pred_key and s.get(pred_key) is not None:
+            try:
+                p_station = float(s.get(pred_key))
+                litres_f = float(litres_to_refuel)
+                worst_f = float(onroute_worst_price)
+
+                gross = (worst_f - p_station) * litres_f
+
+                detour_fuel_cost = s.get(econ_detour_fuel_cost_key) if econ_detour_fuel_cost_key else None
+                time_cost = s.get(econ_time_cost_key) if econ_time_cost_key else None
+
+                try:
+                    detour_fuel_cost_f = float(detour_fuel_cost) if detour_fuel_cost is not None else 0.0
+                except (TypeError, ValueError):
+                    detour_fuel_cost_f = 0.0
+
+                try:
+                    time_cost_f = float(time_cost) if time_cost is not None else 0.0
+                except (TypeError, ValueError):
+                    time_cost_f = 0.0
+
+                net = gross - detour_fuel_cost_f - time_cost_f
+                save_vs_worst_s = _fmt_eur(net)
+            except Exception:
+                save_vs_worst_s = "—"
+
         features.append(
             {
                 "type": "Feature",
@@ -457,6 +541,14 @@ def create_mapbox_gl_html(
                     "station_uuid": suuid,
                     "title": str(name),
                     "brand": str(brand),
+                    "headline": headline,
+                    "address": str(address_line),
+                    "current_price": str(current_price_s),
+                    "predicted_price": str(predicted_price_s),
+                    "detour_km": str(detour_km_s),
+                    "detour_min": str(detour_min_s),
+                    "save_vs_worst": str(save_vs_worst_s),
+
                     "is_best": is_best,
                     "is_selected": is_selected,
                     "marker_category": str(props_category or ("best" if is_best else "better")),
@@ -661,93 +753,45 @@ def create_mapbox_gl_html(
         // Keep the SVG responsive inside the container
         el.innerHTML = pinSVG(fill, stroke);
 
-        const title = props.title || "Station";
-        const brand = props.brand || "";
+        // --- 1. Helper: Minimal HTML escaping (defensive) ---
+            function esc(x) {{
+                return String(x ?? "").replace(/[&<>"']/g, (c) => ({{
+                    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+                }}[c]));
+            }}
 
-        el.addEventListener("mouseenter", () => {{
-          popup
-            .setLngLat(coords)
-            .setHTML(`<div style="font-size:12px;"><b>${{title}}</b><div style="opacity:.85;">${{brand}}</div></div>`)
-            .addTo(map);
+            // --- 2. Prepare Data for Popup ---
+            const headline = props.headline || props.brand || props.title || "Station";
+            const address = props.address || "";
+            const curP = props.current_price || "-";
+            const predP = props.predicted_price || "-";
+            const detKm = props.detour_km || "-";
+            const detMin = props.detour_min || "-";
+            const save = props.save_vs_worst || "-";
 
-          // Ensure popup is always above markers (your markers go up to z=30)
-          const pe = popup.getElement();
-          if (pe) pe.style.zIndex = "9999";
-        }});
+            // --- 3. Event Listener: Mouse Enter ---
+            el.addEventListener("mouseenter", () => {{
+                popup
+                    .setLngLat(coords)
+                    .setHTML(`
+                        <div style="font-size:12px; line-height:1.25;">
+                            <div style="font-weight:700; margin-bottom:4px;">${{esc(headline)}}</div>
+                            ${{address ? `<div style="opacity:.85; margin-bottom:6px;">${{esc(address)}}</div>` : ""}}
+                            <div><b>Current</b>: ${{esc(curP)}} &nbsp; <b>Pred</b>: ${{esc(predP)}}</div>
+                            <div><b>Detour</b>: ${{esc(detKm)}} &nbsp; (${{esc(detMin)}})</div>
+                            <div><b>Safe up to</b>: ${{esc(save)}}</div>
+                        </div>
+                    `)
+                    .addTo(map);
+
+                // Ensure popup is always above markers (z-index override)
+                const pe = popup.getElement();
+                if (pe) pe.style.zIndex = "9999";
+            }});
 
         el.addEventListener("mouseleave", () => {{
           popup.remove();
         }});
-
-        // Click: navigate to Station Details (Page 03) in the parent Streamlit app.
-            // We do this by updating the TOP window URL query params; Streamlit will rerun and switch pages.
-            el.addEventListener("click", (ev) => {{
-                // Stop propagation safely
-                try {{ ev.stopPropagation(); }} catch (e) {{}}
-
-                const suuid = (props.station_uuid || "").toString();
-                if (!suuid) return;
-
-                let baseHref = null;
-
-                // Prefer top-level URL (works when Streamlit allows top-navigation-by-user-activation)
-                try {{
-                    if (window.top && window.top.location && window.top.location.href) {{
-                        baseHref = window.top.location.href;
-                    }}
-                }} catch (e) {{
-                    // blocked; ignore
-                }}
-
-                // Fallback: parent URL
-                if (!baseHref) {{
-                    try {{
-                        if (window.parent && window.parent.location && window.parent.location.href) {{
-                            baseHref = window.parent.location.href;
-                        }}
-                    }} catch (e) {{
-                        // blocked; ignore
-                    }}
-                }}
-
-                // Last fallback: current iframe URL (may not help, but avoids throwing)
-                if (!baseHref) {{
-                    try {{
-                        baseHref = window.location.href;
-                    }} catch (e) {{
-                        return;
-                    }}
-                }}
-
-                try {{
-                    const url = new URL(baseHref);
-                    url.searchParams.set("goto", "station");
-                    url.searchParams.set("station_uuid", suuid);
-                    const targetUrl = url.toString();
-
-                    // 1) Try direct top navigation
-                    try {{
-                        if (window.top && window.top.location) {{
-                            window.top.location.href = targetUrl;
-                            return;
-                        }}
-                    }} catch (e) {{}}
-
-                    // 2) Try opening in _top (often permitted when triggered by user click)
-                    try {{
-                        window.open(targetUrl, "_top");
-                        return;
-                    }} catch (e) {{}}
-
-                    // 3) Fallback: navigate inside iframe (not ideal, but better than nothing)
-                    try {{
-                        window.location.href = targetUrl;
-                    }} catch (e) {{}}
-
-                }} catch (e) {{
-                    // no-op
-                }}
-            }});
 
         // ---- Create marker and force z-order ----
         const marker = new mapboxgl.Marker({{ element: el, anchor: "bottom" }})
