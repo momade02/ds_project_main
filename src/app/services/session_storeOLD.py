@@ -80,20 +80,6 @@ def _ensure_defaults() -> None:
 _SESSION_ID_KEY = "_persisted_session_id"
 _QUERY_PARAM_NAME = "sid"
 
-# ---------------------------------------------------------------------
-# Restore guard
-# ---------------------------------------------------------------------
-#
-# Many pages call restore_persisted_state(overwrite_existing=True) at the top
-# of main(). That is correct for a cold start / hard refresh, but if we do it
-# on every rerun we can effectively "freeze" widgets: the user's interaction
-# updates st.session_state, then the next rerun immediately overwrites the
-# updated values from Redis again.
-#
-# We therefore apply Redis restore at most once per Streamlit session (per sid).
-_REDIS_RESTORE_DONE_KEY = "_redis_restore_done"
-_REDIS_RESTORE_SID_KEY = "_redis_restore_sid"
-
 
 def _get_query_params() -> Dict[str, Any]:
     # Streamlit 1.52+ supports st.query_params (preferred)
@@ -290,14 +276,6 @@ def restore_persisted_state(*, overwrite_existing: bool = True) -> bool:
     _ensure_defaults()
 
     sid = get_session_id() or init_session_context()
-
-    # Guard: if we already restored for this sid in this Streamlit session,
-    # do not restore again (prevents clobbering widget-updated values).
-    if (
-        st.session_state.get(_REDIS_RESTORE_DONE_KEY) is True
-        and str(st.session_state.get(_REDIS_RESTORE_SID_KEY) or "") == str(sid)
-    ):
-        return False
     r = _redis_client()
     contract = _load_contract()
 
@@ -338,10 +316,6 @@ def restore_persisted_state(*, overwrite_existing: bool = True) -> bool:
 
         # Cache hash so we avoid redundant writes on the next run
         st.session_state["_redis_snapshot_hash"] = str(env.get("hash", "")) or _hash_state_subset()
-
-        # Mark restore complete for this sid, so we never clobber widget state on reruns.
-        st.session_state[_REDIS_RESTORE_DONE_KEY] = True
-        st.session_state[_REDIS_RESTORE_SID_KEY] = str(sid)
 
         return True
     except Exception:
