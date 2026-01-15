@@ -464,6 +464,7 @@ def main() -> None:
 
     target = NAV_TARGETS.get(selected_nav, NAV_TARGETS[CURRENT])
     if target != NAV_TARGETS[CURRENT]:
+        maybe_persist_state()
         st.switch_page(target)
 
     # -----------------------------
@@ -591,9 +592,11 @@ def main() -> None:
         c1, c2 = st.columns(2)
         with c1:
             if st.button("Go to Trip Planner", use_container_width=True):
+                maybe_persist_state()
                 st.switch_page("streamlit_app.py")
         with c2:
             if st.button("Go to Station Explorer", use_container_width=True):
+                maybe_persist_state()
                 st.switch_page("pages/04_station_explorer.py")
         return
 

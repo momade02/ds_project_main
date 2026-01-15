@@ -637,6 +637,7 @@ def main() -> None:
 
     target = NAV_TARGETS.get(selected, NAV_TARGETS[CURRENT])
     if target != NAV_TARGETS[CURRENT]:
+        maybe_persist_state()
         st.switch_page(target)
 
     render_sidebar_shell(
@@ -661,7 +662,9 @@ def main() -> None:
     if not cached:
         st.info("No cached run found. Run a route recommendation first on the main page.")
         if st.button("Open main page"):
+            maybe_persist_state()
             st.switch_page("streamlit_app.py")
+        maybe_persist_state()
         return
 
 
@@ -870,6 +873,7 @@ def main() -> None:
                 if st.button("Open Station Details", use_container_width=True):
                     st.session_state["selected_station_uuid"] = _station_uuid(best_station)
                     st.session_state["selected_station_data"] = best_station
+                    maybe_persist_state()
                     st.switch_page("pages/03_station_details.py")
             with action_col2:
                 st.caption("Use Station Details for the full station profile (prices, prediction basis, debugging).")

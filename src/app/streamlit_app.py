@@ -933,6 +933,12 @@ def main() -> None:
         "Station": "pages/03_station_details.py",
         "Explorer": "pages/04_station_explorer.py",
     }
+    CURRENT = "Home"
+
+    # Ensure correct selection when landing on this page (prevents auto-redirect loops)
+    if st.session_state.get("_active_page") != CURRENT:
+        st.session_state["_active_page"] = CURRENT
+        st.session_state["top_nav"] = CURRENT
 
     selected = st.segmented_control(
         label="Page navigation",
@@ -940,13 +946,14 @@ def main() -> None:
         selection_mode="single",
         label_visibility="collapsed",
         width="stretch",
-        key="top_nav",  # this is the single source of truth
+        key="top_nav",  # single source of truth across pages
     )
 
-    target = NAV_TARGETS.get(selected, "streamlit_app.py")
+    target = NAV_TARGETS.get(selected, NAV_TARGETS[CURRENT])
 
-    # Only switch away from Home when needed
-    if target != "streamlit_app.py":
+    # Persist before leaving this script run (switch_page aborts the rest of the file)
+    if target != NAV_TARGETS[CURRENT]:
+        maybe_persist_state()
         st.switch_page(target)
 
 
@@ -1021,6 +1028,7 @@ def main() -> None:
 
         if not start_locality or not end_locality:
             st.error("Please provide a Start and Destination (city or full address).")
+            maybe_persist_state()
             return
 
         try:
