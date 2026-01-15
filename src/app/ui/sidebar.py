@@ -55,79 +55,6 @@ def _ss(key: str, default: Any) -> Any:
     return st.session_state.get(key, default)
 
 
-def _inject_route_input_gutter_css_once() -> None:
-    """
-    Reserve a right-side gutter and render the start/end icons (circle + pin)
-    aligned in that gutter. Targets the actual widget keys used in this file:
-    w_start_locality / w_end_locality.
-    """
-    flag_key = "_css_route_input_gutter_applied"
-    if st.session_state.get(flag_key):
-        return
-
-    st.sidebar.markdown(
-        r"""
-        <style>
-          :root { --route-icon-gutter: 56px; }  /* adjust 44–64px if desired */
-
-          /* Make the two route inputs narrower to leave room for the icons */
-          section[data-testid="stSidebar"] .st-key-w_start_locality,
-          section[data-testid="stSidebar"] .st-key-w_end_locality {
-            width: calc(100% - var(--route-icon-gutter)) !important;
-            max-width: calc(100% - var(--route-icon-gutter)) !important;
-            position: relative !important; /* anchor pseudo-elements */
-          }
-
-          section[data-testid="stSidebar"] .st-key-w_start_locality div[data-baseweb="input"],
-          section[data-testid="stSidebar"] .st-key-w_end_locality div[data-baseweb="input"] {
-            width: 100% !important;
-            max-width: 100% !important;
-          }
-
-          /* START icon: grey/black outlined circle */
-          section[data-testid="stSidebar"] .st-key-w_start_locality::after {
-            content: "";
-            position: absolute;
-            right: calc(-1 * var(--route-icon-gutter) + 18px);
-            top: 50%;
-            transform: translateY(-50%);
-            width: 14px;
-            height: 14px;
-            border: 2px solid rgba(0,0,0,0.55);
-            border-radius: 999px;
-            background: transparent;
-            pointer-events: none;
-            z-index: 9999;
-          }
-
-          /* DESTINATION icon: red map pin (inline SVG) */
-          section[data-testid="stSidebar"] .st-key-w_end_locality::after {
-            content: "";
-            position: absolute;
-            right: calc(-1 * var(--route-icon-gutter) + 14px);
-            top: 50%;
-            transform: translateY(-50%);
-            width: 22px;
-            height: 22px;
-            background-repeat: no-repeat;
-            background-position: center;
-            background-size: contain;
-            pointer-events: none;
-            z-index: 9999;
-            background-image: url("data:image/svg+xml;utf8,\
-<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>\
-<path fill='%23d32f2f' d='M12 2c-3.86 0-7 3.14-7 7 0 5.25 7 13 7 13s7-7.75 7-13c0-3.86-3.14-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z'/>\
-</svg>");
-          }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.session_state[flag_key] = True
-
-
-
 def _coerce_sidebar_view(value: Any) -> str:
     """
     Ensure sidebar_view is always one of: Action/Help/Settings/Profile.
@@ -216,59 +143,106 @@ def _render_trip_planner_action() -> SidebarState:
         if wk in st.session_state:
             st.session_state[key] = st.session_state[wk]
 
+    # Ensure the connector dots render above Streamlit input widgets (stacking fix only)
+    st.sidebar.markdown(
+        """
+        <style>
+          /* The dots are injected via HTML; make sure they sit above the text inputs */
+          .route-dots-right{
+            z-index: 9999 !important;
+            pointer-events: none !important;
+          }
+          .route-dots-right span{
+            z-index: 10000 !important;
+            pointer-events: none !important;
+          }
+
+          /* Anchor pseudo-elements without moving the dots column */
+            .route-dots-right{
+            position: relative;              /* does NOT move it; only anchors ::before/::after */
+            z-index: 9999 !important;
+            pointer-events: none !important;
+            }
+
+            /* Make the three connector dots black */
+            .route-dots-right span{
+            background: rgba(0,0,0,0.90) !important;
+            border: none !important;
+            box-shadow: none !important;
+            }
+            .route-dots-right span{
+            width: 5px !important;
+            height: 5px !important;
+            border-radius: 999px !important;
+            }
+
+            /* Top: black/grey outlined start circle */
+            .route-dots-right::before{
+            content: "";
+            position: absolute;
+            left: 50%;
+            top: -22px;                      /* sits above the first dot */
+            transform: translateX(-50%);
+            width: 14px;
+            height: 14px;
+            border: 3px solid rgba(0,0,0,.90);
+            border-radius: 999px;
+            background: transparent;
+            z-index: 10000;
+            pointer-events: none;
+            }
+
+            /* Bottom: red destination pin (inline SVG) */
+            .route-dots-right::after{
+            content: "";
+            position: absolute;
+            left: 50%;
+            bottom: -26px;                   /* sits below the last dot */
+            transform: translateX(-50%);
+            width: 22px;
+            height: 22px;
+            background-repeat: no-repeat;
+            background-position: center;
+            background-size: contain;
+            background-image: url("data:image/svg+xml;utf8,\
+            <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>\
+            <path fill='%23d32f2f' d='M12 2c-3.86 0-7 3.14-7 7 0 5.25 7 13 7 13s7-7.75 7-13c0-3.86-3.14-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z'/>\
+            </svg>");
+            z-index: 10000;
+            pointer-events: none;
+            }
+
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     st.sidebar.markdown("### Route")
 
-    route_box = st.sidebar.container()
-
-    # Row 1: Start input + start icon
-    c1, c2 = route_box.columns([0.86, 0.14], vertical_alignment="center")
-    start_locality = c1.text_input(
+    start_locality = st.sidebar.text_input(
         "Start",
         value=str(_canonical("start_locality", "Tübingen")),
         key=_w("start_locality"),
         label_visibility="collapsed",
         placeholder="Start: city or full address",
     )
-    c2.markdown(
+
+    # Right-side connector dots between the two inputs (visual only)
+    st.sidebar.markdown(
         """
-        <div style="display:flex; justify-content:center; align-items:center; height:100%;">
-        <div style="width:14px; height:14px; border:2px solid rgba(0,0,0,0.55); border-radius:999px;"></div>
+        <div class="route-dots-right" aria-hidden="true">
+          <span></span><span></span><span></span>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    # Dots between rows (in the icon column)
-    d1, d2 = route_box.columns([0.86, 0.14])
-    d2.markdown(
-        """
-        <div style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:2px 0;">
-        <span style="width:5px; height:5px; border-radius:50%; background:rgba(0,0,0,0.35);"></span>
-        <span style="width:5px; height:5px; border-radius:50%; background:rgba(0,0,0,0.35);"></span>
-        <span style="width:5px; height:5px; border-radius:50%; background:rgba(0,0,0,0.35);"></span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # Row 2: Destination input + destination icon
-    c3, c4 = route_box.columns([0.86, 0.14], vertical_alignment="center")
-    end_locality = c3.text_input(
+    end_locality = st.sidebar.text_input(
         "Destination",
         value=str(_canonical("end_locality", "Sindelfingen")),
         key=_w("end_locality"),
         label_visibility="collapsed",
         placeholder="Destination: city or full address",
-    )
-    c4.markdown(
-        """
-        <div style="display:flex; justify-content:center; align-items:center; height:100%;">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
-            <path fill="#d32f2f" d="M12 2c-3.86 0-7 3.14-7 7 0 5.25 7 13 7 13s7-7.75 7-13c0-3.86-3.14-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z"/>
-        </svg>
-        </div>
-        """,
-        unsafe_allow_html=True,
     )
 
     # (You currently keep these empty; preserve behavior)
