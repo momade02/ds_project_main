@@ -35,7 +35,6 @@ from app_errors import AppError, ConfigError, ExternalServiceError, DataAccessEr
 from src.app.services.station_explorer import (
     StationExplorerInputs,
     search_stations_nearby,
-    pick_best_station_uuid,
 )
 
 from src.app.ui.maps import (
@@ -73,6 +72,80 @@ def _build_results_table(stations: List[Dict[str, Any]], fuel_code: str) -> pd.D
     return pd.DataFrame(rows)
 
 
+def _try_float(v: object) -> Optional[float]:
+    if v is None:
+        return None
+    try:
+        # handle "1,599" style strings defensively
+        if isinstance(v, str):
+            v = v.replace(",", ".").strip()
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _pick_cheapest_station(stations: List[Dict[str, Any]], fuel_code: str) -> Optional[Dict[str, Any]]:
+    """
+    Returns the station with the lowest current price for the selected fuel.
+    Ignores stations with missing/non-numeric prices.
+    """
+    price_key = f"price_current_{fuel_code}"
+
+    best_s: Optional[Dict[str, Any]] = None
+    best_p: Optional[float] = None
+
+    for s in stations or []:
+        p = _try_float((s or {}).get(price_key))
+        if p is None:
+            continue
+        if best_p is None or p < best_p:
+            best_p = p
+            best_s = s
+
+    return best_s
+
+
+def _render_cheapest_station_header(station: Dict[str, Any], fuel_code: str) -> None:
+    """
+    Reuse Page 01 'station-header' styling for Explorer.
+    No reverse-geocoding; use payload fields only.
+    """
+    if not station:
+        return
+
+    station_name = station.get("tk_name") or station.get("osm_name") or station.get("name") or "Unknown"
+    brand = station.get("brand")
+    city = station.get("city") or station.get("place") or ""
+
+    # Line 1: brand preferred; fall back to station name
+    base_name = brand if (brand and str(brand).strip()) else station_name
+    city_clean = str(city).strip() if city else ""
+    title_line = f"{base_name} in {city_clean}" if (base_name and city_clean) else base_name
+
+    price_key = f"price_current_{fuel_code}"
+    price_line = f"Current {fuel_code.upper()}: {_format_price(station.get(price_key))}"
+
+    subtitle_line = price_line
+
+    label_html = _safe_text("Cheapest station found:")
+    name_html = _safe_text(title_line) if title_line else ""
+    addr_html = _safe_text(subtitle_line) if subtitle_line else ""
+
+    station_header_html = (
+        "<div class='station-header'>"
+        f"<div class='label'>{label_html}</div>"
+        f"<div class='name'>{name_html}</div>"
+        + (f"<div class='addr'>{addr_html}</div>" if addr_html else "")
+        + "</div>"
+    )
+
+    st.markdown(station_header_html, unsafe_allow_html=True)
+
+
+# ------------------------------------------------------------------
+# MAIN
+# ------------------------------------------------------------------
+
 def main() -> None:
     st.set_page_config(page_title="Station Explorer", layout="wide")
 
@@ -96,6 +169,12 @@ def main() -> None:
         st.session_state["sidebar_view"] = _preserve_sidebar_view
     if _preserve_map_style_mode is not None:
         st.session_state["map_style_mode"] = _preserve_map_style_mode  # <-- ADD THIS
+
+    # ------------------------------------------------------------------
+    # Page 04 hard overrides (do not expose as UI on this page)
+    # ------------------------------------------------------------------
+    st.session_state["debug_mode"] = True
+    st.session_state["explorer_use_realtime"] = True
 
     apply_app_css()
     st.title("Station Explorer")
@@ -146,6 +225,10 @@ def main() -> None:
     def _action_tab() -> None:
         st.sidebar.header("Explorer Settings")
 
+        # Hard-force settings for this page (no sidebar toggles here)
+        st.session_state["explorer_use_realtime"] = True
+        st.session_state["debug_mode"] = True
+
         # IMPORTANT: These widgets live only in the sidebar "Action" tab. When the user switches
         # the sidebar segmented-control away from Action, Streamlit may garbage-collect widget state
         # for keys whose widgets are not rendered. To keep the latest values stable, we decouple:
@@ -192,12 +275,6 @@ def main() -> None:
             key=_w("explorer_only_open"),
         )
 
-        st.sidebar.checkbox(
-            "Use realtime prices (Tankerkönig)",
-            value=bool(_canonical("explorer_use_realtime", True)),
-            key=_w("explorer_use_realtime"),
-        )
-
         st.sidebar.slider(
             "Max stations to load (performance)",
             min_value=50,
@@ -207,25 +284,15 @@ def main() -> None:
             key=_w("explorer_limit"),
         )
 
-        st.sidebar.checkbox(
-            "Debug mode",
-            value=bool(_canonical("debug_mode", False)),
-            key="w_debug_mode_explorer",  # decoupled from canonical debug_mode
-        )
-
         # Sync widget values back into canonical persisted keys
         for k in (
             "explorer_location_query",
             "explorer_fuel_label",
             "explorer_radius_km",
             "explorer_only_open",
-            "explorer_use_realtime",
             "explorer_limit",
         ):
             _sync(k)
-
-        if "w_debug_mode_explorer" in st.session_state:
-            st.session_state["debug_mode"] = bool(st.session_state["w_debug_mode_explorer"])
 
         run_clicked["value"] = st.sidebar.button(
             "Search stations",
@@ -236,6 +303,8 @@ def main() -> None:
     sidebar_view = render_sidebar_shell(action_renderer=_action_tab)
 
     # Read values from session_state so they remain available even on non-Action tabs
+    use_realtime = True
+    debug_mode = True
     location_query = str(st.session_state.get("explorer_location_query", st.session_state.get("explorer_last_query", "Tübingen")))
     fuel_label = str(st.session_state.get("explorer_fuel_label", "E5"))
     fuel_code = _fuel_label_to_code(fuel_label)
@@ -243,7 +312,7 @@ def main() -> None:
     only_open = bool(st.session_state.get("explorer_only_open", False))
     use_realtime = bool(st.session_state.get("explorer_use_realtime", True))
     limit = int(st.session_state.get("explorer_limit", 200))
-    debug_mode = bool(st.session_state.get("debug_mode", False))
+    debug_mode = bool(st.session_state.get("debug_mode", True))
 
     run = bool(run_clicked["value"]) and (sidebar_view == "Action")
 
@@ -266,9 +335,10 @@ def main() -> None:
             st.session_state["explorer_results"] = payload["stations"]
 
             # Optional: set a "best" selection to reuse your Station Details flow
-            best_uuid = pick_best_station_uuid(payload["stations"], fuel_code=fuel_code)
-            if best_uuid:
-                st.session_state["selected_station_uuid"] = best_uuid
+            cheapest_station = _pick_cheapest_station(payload["stations"], fuel_code=fuel_code)
+            cheapest_uuid = _station_uuid(cheapest_station) if cheapest_station else None
+            if cheapest_uuid:
+                st.session_state["selected_station_uuid"] = cheapest_uuid
 
         except AppError as exc:
             st.error(exc.user_message)
@@ -285,17 +355,86 @@ def main() -> None:
         st.info("Enter a location and click **Search stations**.")
         return
 
-    st.markdown(
-        f"**Search center:** {_safe_text(center.get('label', ''))}  \n"
-        f"Radius: **{center.get('radius_km', 0)} km** · Fuel: **{fuel_code.upper()}**"
-    )
-
     if not stations:
         st.warning("No stations found for this area/filter. Try increasing the radius or disabling 'Only open stations'.")
         return
+    
+    # Cheapest station (Explorer)
+    cheapest_station = _pick_cheapest_station(stations, fuel_code=fuel_code)
+    cheapest_uuid = _station_uuid(cheapest_station) if cheapest_station else None
+
+    if cheapest_station:
+        _render_cheapest_station_header(cheapest_station, fuel_code=fuel_code)
+    else:
+        st.info("No valid current prices found for the selected fuel.")
 
     # Determine best station for highlighting
-    best_uuid = pick_best_station_uuid(stations, fuel_code=fuel_code)
+    best_uuid = cheapest_uuid  # highlight cheapest station
+
+    # ------------------------------------------------------------------
+    # Stations dropdown (ranked) — placed between Cheapest block and Map
+    # ------------------------------------------------------------------
+    st.markdown(f"### Stations in {int(round(radius_km))} km Radius")
+    st.caption("Choose station and find out more in Station Explorer.")
+
+    def _station_display_name(s: Dict[str, Any]) -> str:
+        return str(s.get("tk_name") or s.get("osm_name") or s.get("name") or "Unknown").strip()
+
+    def _station_price_value(s: Dict[str, Any]) -> float:
+        v = _try_float(s.get(f"price_current_{fuel_code}"))
+        return v if v is not None else float("inf")
+
+    # Rank: cheapest first (then closer as tie-break)
+    ranked = sorted(
+        stations,
+        key=lambda s: (_station_price_value(s), float(s.get("distance_km", 1e9))),
+    )
+
+    # Build dropdown options
+    options: List[Dict[str, Any]] = []
+    labels: List[str] = []
+    for i, s in enumerate(ranked, start=1):
+        u = _station_uuid(s)
+        if not u:
+            continue
+        labels.append(f"{i}. {_station_display_name(s)}")
+        options.append(s)
+
+    if not options:
+        st.info("No selectable stations available.")
+    else:
+        # Pick default: currently selected uuid (if present), otherwise the first ranked station
+        selected_uuid = st.session_state.get("selected_station_uuid")
+        default_index = 0
+        if selected_uuid:
+            for idx, s in enumerate(options):
+                if _station_uuid(s) == selected_uuid:
+                    default_index = idx
+                    break
+
+        chosen_label = st.selectbox(
+            "Station",
+            options=labels,
+            index=default_index,
+            key="explorer_station_dropdown",
+            label_visibility="collapsed",
+        )
+
+        chosen_idx = labels.index(chosen_label)
+        chosen_station = options[chosen_idx]
+        chosen_uuid = _station_uuid(chosen_station)
+
+        # Optional: show a compact line under the dropdown (remove if you want it cleaner)
+        st.caption(f"Current {fuel_code.upper()}: {_format_price(chosen_station.get(f'price_current_{fuel_code}'))}")
+
+        if st.button("Open in Station Details", key=f"open_station_details_{chosen_uuid}", use_container_width=True):
+            st.session_state["selected_station_uuid"] = chosen_uuid
+            st.session_state["selected_station_data"] = chosen_station
+            try:
+                maybe_persist_state(force=True)
+            except Exception:
+                pass
+            st.switch_page("pages/03_station_details.py")
 
     # Map (Explorer mode: empty route coords, map auto-fits to station bounds)
     st.markdown("### Map")
