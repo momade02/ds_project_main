@@ -653,9 +653,10 @@ def main():
     # INFO CARDS
     # =========================================================================
     
-    info_cols = st.columns(2)
-    
+    info_cols = st.columns(3)
+
     with info_cols[0]:
+        # Detour info (same as before)
         if detour_km < 0.1:
             if detour_min > 0.5:
                 st.info(f"On route • +{detour_min:.0f} min stop")
@@ -663,8 +664,28 @@ def main():
                 st.success("On route")
         else:
             st.info(f"{detour_km:.1f} km detour • +{detour_min:.0f} min")
-    
+
     with info_cols[1]:
+        # NEW: ETA (Expected Time of Arrival)
+        eta_str = station.get("eta")
+        if eta_str:
+            try:
+                # Parse ISO format datetime
+                if isinstance(eta_str, str):
+                    eta_dt = datetime.fromisoformat(eta_str.replace('Z', '+00:00'))
+                else:
+                    eta_dt = eta_str
+                
+                # Format as HH:MM
+                eta_time = eta_dt.strftime("%H:%M")
+                st.info(f"Estimated Time of Arrvial: {eta_time}")
+            except Exception:
+                st.info("Estimated Time of Arrvial: —")
+        else:
+            st.info("Estimated Time of Arrvial: —")
+
+    with info_cols[2]:
+        # Opening hours (same as before)
         if is_open and time_info:
             st.success(f"Opening hours: OPEN until {time_info}")
         elif not is_open and time_info:
@@ -804,6 +825,21 @@ def main():
         
         if len(ranked) >= 1:
             # Current station card
+            # Format ETA for current station
+            eta_display = ""
+            eta_str = station.get("eta")
+            if eta_str:
+                try:
+                    if isinstance(eta_str, str):
+                        eta_dt = datetime.fromisoformat(eta_str.replace("Z", "+00:00"))
+                    else:
+                        eta_dt = eta_str
+                    eta_display = f" • Estimated Time of Arrvial: {eta_dt.strftime('%H:%M')}"
+                except:
+                    pass
+            
+            detour_text = "On route" if detour_min < 0.5 else f"+{detour_min:.0f} min detour"
+            
             st.markdown(f"""
             <div style='background: #e0f2fe; border-left: 4px solid #0284c7; padding: 1rem; border-radius: 0.5rem; margin-bottom: 1rem;'>
                 <div style='font-weight: 700; font-size: 1.1rem; color: #0c4a6e;'>{name} (Current)</div>
@@ -811,7 +847,7 @@ def main():
                     <span style='font-size: 1.3rem; font-weight: 700;'>€{display_price:.3f}</span> / L
                 </div>
                 <div style='margin-top: 0.3rem; color: #0369a1; font-size: 0.9rem;'>
-                    {"On route" if detour_min < 0.5 else f"+{detour_min:.0f} min detour"}
+                    {detour_text}{eta_display}
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -826,6 +862,21 @@ def main():
                 s_price = _safe_float(s.get(pred_key))
                 s_detour = _safe_float(s.get("detour_duration_min"))
                 
+                # Format ETA for this station
+                s_eta_display = ""
+                s_eta_str = s.get("eta")
+                if s_eta_str:
+                    try:
+                        if isinstance(s_eta_str, str):
+                            s_eta_dt = datetime.fromisoformat(s_eta_str.replace("Z", "+00:00"))
+                        else:
+                            s_eta_dt = s_eta_str
+                        s_eta_display = f" • Estimated Time of Arrvial: {s_eta_dt.strftime('%H:%M')}"
+                    except:
+                        pass
+                
+                s_detour_text = "On route" if (s_detour or 0) < 0.5 else f"+{s_detour:.0f} min detour"
+                
                 if s_price:
                     st.markdown(f"""
                     <div style='background: #f3f4f6; border-left: 4px solid #9ca3af; padding: 1rem; border-radius: 0.5rem; margin-bottom: 0.8rem;'>
@@ -834,7 +885,7 @@ def main():
                             <span style='font-size: 1.2rem; font-weight: 700;'>€{s_price:.3f}</span> / L
                         </div>
                         <div style='margin-top: 0.3rem; color: #6b7280; font-size: 0.9rem;'>
-                            {"On route" if (s_detour or 0) < 0.5 else f"+{s_detour:.0f} min detour"}
+                            {s_detour_text}{s_eta_display}
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
