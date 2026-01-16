@@ -489,7 +489,7 @@ def google_places_fuel_along_route(
         (lat, lon) for lon, lat in segment_coords_lonlat
     ]
     # Encode geometry into polyline string format required by Places API
-    encoded_poly_str = polyline.encode(latlon_tuples, precision=6)
+    encoded_poly_str = polyline.encode(latlon_tuples, precision=5)
 
     # 2. Prepare API Request
     # Using the new Places API v1 endpoint
