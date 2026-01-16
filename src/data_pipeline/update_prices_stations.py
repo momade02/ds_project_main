@@ -347,24 +347,53 @@ def generate_synthetic_gap_data():
         
         logger.info(f"Fetching source: {yesterday_start} to {yesterday_end}...")
         
-        response = (
-            supabase.table('prices')
-            .select('date,station_uuid,diesel,e5,e10')
-            .eq('is_synthetic', False)  # Only real data as source
-            .gte('date', yesterday_start)
-            .lte('date', yesterday_end)
-            .limit(50000)  # Set high limit to get all gap period data (~29k expected)
-            .order('date', desc=False)
-            .execute()
-        )
+        # Fetch data in batches (Supabase has 1000-row server limit)
+        all_source_data = []
+        batch_size = 1000
+        offset = 0
         
-        if not response.data:
+        logger.info("Fetching in batches (Supabase 1000-row limit)...")
+        
+        while True:
+            response = (
+                supabase.table('prices')
+                .select('date,station_uuid,diesel,e5,e10')
+                .eq('is_synthetic', False)
+                .gte('date', yesterday_start)
+                .lte('date', yesterday_end)
+                .order('date', desc=False)
+                .range(offset, offset + batch_size - 1)
+                .execute()
+            )
+            
+            if not response.data:
+                break  # No more data
+            
+            all_source_data.extend(response.data)
+            
+            # Log progress every 5 batches
+            if len(all_source_data) % 5000 == 0:
+                logger.info(f"  Fetched {len(all_source_data):,} records so far...")
+            
+            # If we got less than batch_size, we've reached the end
+            if len(response.data) < batch_size:
+                break
+            
+            offset += batch_size
+            
+            # Safety limit: stop after 50 batches (50k records)
+            if offset >= 50000:
+                logger.warning("Reached 50k record limit, stopping fetch")
+                break
+        
+        if not all_source_data:
             logger.warning("⚠️ No source data from yesterday's gap")
             logger.warning("   Cannot generate synthetic data")
             return False
         
-        source_df = pd.DataFrame(response.data)
-        logger.info(f"✓ Fetched {len(source_df):,} source records")
+        source_df = pd.DataFrame(all_source_data)
+        logger.info(f"✓ Fetched {len(source_df):,} source records total")
+
         
         # Generate synthetic records (time-matched)
         synthetic_records = []
