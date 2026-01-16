@@ -1023,6 +1023,9 @@ def main() -> None:
             "\n- A map with the planned route, on which the gas stations along the route are marked."
         )
 
+        # --- YouTube intro video shown only before first run ---
+        st.video("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+
     # -----------------------------
     # Parameters hash (controls recompute warnings)
     # -----------------------------
@@ -1108,14 +1111,14 @@ def main() -> None:
             progress_bar = st.progress(0)
             status = st.empty()
 
-            def _progress_cb(step_name: str, step_idx: int, total_steps: int) -> None:
+            def _progress_cb(step_name: str, step_idx: int) -> None:
                 """
                 Map discrete steps to a weighted progress percentage and show
                 only a human-readable label.
                 """
                 try:
                     # UI weights for the four major steps (provided as absolute fractions summing to 1.0).
-                    weights = [0.02, 0.58, 0.2, 0.018, 0.02]
+                    weights = [0.02, 0.04, 0.54, 0.2, 0.2]  # sum = 1.0
 
                     # Cumulative mapping (step index is 1-based)
                     cum = []
