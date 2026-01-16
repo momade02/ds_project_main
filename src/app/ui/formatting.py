@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Optional
-
+from typing import Any, Dict, Optional, List, Tuple
+import pandas as pd
 
 # --- Fuel label mapping (UI label -> internal fuel code) ---------------------
 
@@ -164,3 +164,182 @@ _format_min = format_min
 _format_liters = format_liters
 _describe_price_basis = describe_price_basis
 _fuel_label_to_code = fuel_label_to_code
+
+
+# =============================================================================
+# Station Details Page Helpers (Page 03)
+# =============================================================================
+
+def calculate_traffic_light_status(
+    station_price: Optional[float],
+    ranked_stations: List[Dict[str, Any]],
+    fuel_code: str,
+) -> Tuple[str, str, str]:
+    """
+    Determine traffic light indicator (green/yellow/red) for a station.
+    
+    Logic: Compare station price to all ranked stations
+    - Green: Top 33% (cheapest)
+    - Yellow: Middle 33%
+    - Red: Bottom 33% (most expensive)
+    
+    Returns:
+        Tuple of (status_color, status_text, css_classes)
+        Example: ("green", "Excellent Deal", "active inactive inactive")
+    """
+    if not station_price or not ranked_stations:
+        return ("yellow", "Unknown", "inactive inactive active")
+    
+    pred_key = f"pred_price_{fuel_code}"
+    
+    # Extract all valid prices
+    prices = []
+    for s in ranked_stations:
+        p = s.get(pred_key)
+        if p is not None:
+            try:
+                prices.append(float(p))
+            except (TypeError, ValueError):
+                pass
+    
+    if not prices or len(prices) < 3:
+        return ("yellow", "Fair Price", "inactive active inactive")
+    
+    prices_sorted = sorted(prices)
+    n = len(prices_sorted)
+    
+    # Calculate percentile thresholds
+    p33 = prices_sorted[n // 3]
+    p66 = prices_sorted[2 * n // 3]
+    
+    price = float(station_price)
+    
+    # Determine status
+    if price <= p33:
+        # Top 33% - Excellent
+        status_color = "green"
+        status_text = "Excellent Deal"
+        css_classes = "active inactive inactive"
+    elif price <= p66:
+        # Middle 33% - Good
+        status_color = "yellow"
+        status_text = "Good Price"
+        css_classes = "inactive active inactive"
+    else:
+        # Bottom 33% - Expensive
+        status_color = "red"
+        status_text = "Above Average"
+        css_classes = "inactive inactive active"
+    
+    return (status_color, status_text, css_classes)
+
+
+def calculate_trip_fuel_info(
+    route_info: Dict[str, Any],
+    consumption_l_per_100km: Optional[float],
+    litres_to_refuel: Optional[float],
+) -> Optional[Dict[str, Any]]:
+    """
+    Calculate trip fuel information for display.
+    
+    Returns dict with:
+        - origin: str
+        - destination: str
+        - distance_km: float
+        - fuel_needed_l: float (estimated)
+        - refuel_amount_l: float
+        - arrival_fuel_remaining_l: float (if positive)
+    
+    Returns None if insufficient data.
+    """
+    if not route_info or not consumption_l_per_100km or not litres_to_refuel:
+        return None
+    
+    distance_km = route_info.get("distance_km")
+    origin = route_info.get("origin_address", "Start")
+    destination = route_info.get("destination_address", "Destination")
+    
+    if not distance_km:
+        return None
+    
+    try:
+        distance = float(distance_km)
+        consumption = float(consumption_l_per_100km)
+        refuel = float(litres_to_refuel)
+    except (TypeError, ValueError):
+        return None
+    
+    # Calculate fuel needed for trip
+    fuel_needed = distance * (consumption / 100.0)
+    
+    # Calculate remaining fuel at arrival
+    arrival_remaining = refuel - fuel_needed
+    
+    # Shorten addresses for display
+    def shorten_address(addr: str) -> str:
+        parts = str(addr).split(",")
+        if len(parts) >= 2:
+            return parts[0].strip()
+        return str(addr)[:30]
+    
+    return {
+        "origin": shorten_address(origin),
+        "destination": shorten_address(destination),
+        "distance_km": distance,
+        "fuel_needed_l": fuel_needed,
+        "refuel_amount_l": refuel,
+        "arrival_fuel_remaining_l": arrival_remaining,
+    }
+
+
+def check_smart_price_alert(
+    hourly_df: pd.DataFrame,
+    current_hour: int,
+    station_open_until_hour: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Check if there's a significant price drop coming soon.
+    
+    Returns dict with alert info if:
+    - Price drop >€0.03/L expected within 3 hours
+    - Station is still open at that time
+    
+    Returns None if no alert needed.
+    """
+    if hourly_df is None or hourly_df.empty:
+        return None
+    
+    current_price = None
+    for _, row in hourly_df.iterrows():
+        if int(row.get("hour", -1)) == current_hour:
+            current_price = row.get("avg_price")
+            break
+    
+    if current_price is None or pd.isna(current_price):
+        return None
+    
+    # Check next 3 hours
+    for offset in range(1, 4):
+        check_hour = (current_hour + offset) % 24
+        
+        # Skip if station will be closed
+        if station_open_until_hour is not None:
+            if check_hour > station_open_until_hour:
+                continue
+        
+        for _, row in hourly_df.iterrows():
+            if int(row.get("hour", -1)) == check_hour:
+                future_price = row.get("avg_price")
+                if future_price is None or pd.isna(future_price):
+                    continue
+                
+                price_drop = float(current_price) - float(future_price)
+                
+                if price_drop >= 0.03:
+                    return {
+                        "hours_to_wait": offset,
+                        "drop_hour": check_hour,
+                        "price_drop": price_drop,
+                    }
+    
+    return None

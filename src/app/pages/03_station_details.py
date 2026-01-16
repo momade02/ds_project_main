@@ -1,31 +1,24 @@
 """
 Station Details & Analysis (Page 03)
 
-Design intent:
-- Single-station analysis workspace: one selected station is the central object.
-- Sidebar (Action tab) is the control plane: selection, context, comparison set, display density.
-- Main page is the analysis canvas: summary → rationale → history/patterns → economics → comparison.
-- Diagnostics are available but not visually leading: bottom expander only.
+FINAL VERSION
+- Trip settings in LEFT SIDEBAR "Action" tab (replaces placeholder)
+- 7-day price trend (clean line, no dots)
+- Hourly chart with gridlines
+- All mobile optimizations
+- Zoom disabled on plots
 
 Selection sources supported (cross-page navigation):
 1) st.session_state["selected_station_data"] (preferred)
 2) st.session_state["selected_station_uuid"] resolved from last_run["ranked"]/["stations"]
 3) st.session_state["explorer_results"] (Page 04 → Page 03 handoff)
-
-State keys preserved:
-- st.session_state["last_run"]
-- st.session_state["selected_station_uuid"]
-- st.session_state["selected_station_data"]
-- st.session_state["explorer_results"]
-
-Added (optional) disambiguation key:
-- st.session_state["selected_station_source"] ∈ {"route", "explorer"}
 """
 
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+import json
+from datetime import datetime, time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -33,22 +26,23 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 
-# Plotly config (mobile-friendly: hide modebar/buttons)
-PLOTLY_CONFIG = {"displayModeBar": False, "displaylogo": False, "responsive": True}
-
+# Plotly config (mobile-friendly + NO ZOOM)
+PLOTLY_CONFIG = {
+    "displayModeBar": False,  # Hides zoom/pan toolbar
+    "displaylogo": False,
+    "responsive": True,
+}
 
 try:
-    from zoneinfo import ZoneInfo  # py3.9+
-except Exception:  # pragma: no cover
-    ZoneInfo = None  # type: ignore
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
 
 from ui.sidebar import render_sidebar_shell, render_station_selector
 
-# ---------------------------------------------------------------------
-# Import bootstrap (align with your other pages)
-# ---------------------------------------------------------------------
-APP_ROOT = Path(__file__).resolve().parents[1]       # .../src/app
-PROJECT_ROOT = Path(__file__).resolve().parents[3]   # repo root
+# Path setup
+APP_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -71,326 +65,217 @@ from ui.formatting import (
     _fmt_km,
     _fmt_min,
     _safe_text,
+    calculate_traffic_light_status,
+    calculate_trip_fuel_info,
+    check_smart_price_alert,
 )
 
 from ui.styles import apply_app_css
-
 from config.settings import ensure_persisted_state_defaults
-from services.session_store import init_session_context, restore_persisted_state, maybe_persist_state
+from services.session_store import (
+    init_session_context,
+    restore_persisted_state,
+    maybe_persist_state,
+)
 
 
 # =============================================================================
-# Plotly charts (kept close to your current implementation, with minor UX tweaks)
+# Address Extraction (Google Maps Reverse Geocode)
 # =============================================================================
 
-def create_price_trend_chart(df: pd.DataFrame, fuel_type: str, station_name: str) -> go.Figure:
-    """Simple 14-day price trend chart."""
-    if df is None or df.empty:
-        fig = go.Figure()
-        fig.add_annotation(
-            text="No historical data available",
-            xref="paper", yref="paper",
-            x=0.5, y=0.5, showarrow=False,
-            font=dict(size=16, color="gray"),
-        )
-        fig.update_layout(title=f"{fuel_type.upper()} Price History - {station_name}", height=380)
-        return fig
+def _reverse_geocode_station_payload(station: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Returns the first Google reverse-geocode result payload for the station.
+    Cached in session_state to avoid repeated API calls on reruns.
+    """
+    if not station:
+        return None
 
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=df["date"],
-        y=df["price"],
-        mode="lines",
-        name="Price",
-        line=dict(color="#1f77b4", width=2.5),
-        hovertemplate="%{x|%b %d, %H:%M}<br>€%{y:.3f}/L<extra></extra>",
-    ))
+    station_uuid = _station_uuid(station) or f"{station.get('lat')}_{station.get('lon')}"
+    if "reverse_geocode_cache" not in st.session_state:
+        st.session_state["reverse_geocode_cache"] = {}
 
-    avg_price = float(df["price"].mean())
-    min_price = float(df["price"].min())
-    max_price = float(df["price"].max())
+    cache: Dict[str, Dict[str, Any]] = st.session_state["reverse_geocode_cache"]
+    if station_uuid in cache:
+        return cache[station_uuid]
 
-    fig.update_layout(
-        title=f"{fuel_type.upper()} Price History (Last 14 Days)",
-        xaxis_title="Date",
-        yaxis_title="Price (€/L)",
-        hovermode="x unified",
-        height=400,
-        showlegend=False,
-        margin=dict(b=70),
-    )
+    lat = station.get("lat")
+    lon = station.get("lon")
+    if lat is None or lon is None:
+        return None
 
-    fig.add_annotation(
-        text=f"Average: €{avg_price:.3f} | Min: €{min_price:.3f} | Max: €{max_price:.3f}",
-        xref="paper", yref="paper",
-        x=0.5, y=-0.18,
-        showarrow=False,
-        font=dict(size=11, color="gray"),
-        xanchor="center",
-    )
-    return fig
+    try:
+        lat_f = float(lat)
+        lon_f = float(lon)
+    except (TypeError, ValueError):
+        return None
+
+    try:
+        from config.settings import environment_check
+        import googlemaps
+
+        api_key = environment_check()
+        client = googlemaps.Client(key=api_key)
+        results = client.reverse_geocode((lat_f, lon_f), language="de")
+        if not results:
+            return None
+
+        cache[station_uuid] = results[0]
+        return results[0]
+
+    except Exception:
+        return None
 
 
-def create_hourly_pattern_chart(hourly_df: pd.DataFrame, fuel_type: str, station_name: str) -> go.Figure:
-    """Hourly price pattern bar chart."""
-    if hourly_df is None or hourly_df.empty or hourly_df["avg_price"].isna().all():
-        fig = go.Figure()
-        fig.add_annotation(
-            text="Not enough data for hourly pattern",
-            xref="paper", yref="paper",
-            x=0.5, y=0.5, showarrow=False,
-            font=dict(size=16, color="gray"),
-        )
-        fig.update_layout(title=f"Best Time to Refuel - {station_name}", height=380)
-        return fig
+def _reverse_geocode_station_address(station: Dict[str, Any]) -> Optional[str]:
+    """Extract formatted address from Google Maps reverse geocode."""
+    payload = _reverse_geocode_station_payload(station)
+    if not payload:
+        return None
+    formatted = payload.get("formatted_address")
+    return str(formatted).strip() if formatted else None
 
-    optimal = get_cheapest_and_most_expensive_hours(hourly_df)
-    cheapest_hour = optimal.get("cheapest_hour")
-    most_expensive_hour = optimal.get("most_expensive_hour")
 
-    colors: List[str] = []
-    price_range = float(hourly_df["avg_price"].max() - hourly_df["avg_price"].min()) if hourly_df["avg_price"].dropna().any() else 0.0
+def _reverse_geocode_station_city(station: Dict[str, Any]) -> Optional[str]:
+    """Extract city name from Google Maps reverse geocode."""
+    payload = _reverse_geocode_station_payload(station)
+    if not payload:
+        return None
 
-    for _, row in hourly_df.iterrows():
-        if pd.isna(row["avg_price"]):
-            colors.append("lightgray")
-        elif cheapest_hour is not None and int(row["hour"]) == int(cheapest_hour):
-            colors.append("green")
-        elif most_expensive_hour is not None and int(row["hour"]) == int(most_expensive_hour):
-            colors.append("red")
+    comps = payload.get("address_components") or []
+    preferred_type_order = [
+        "locality",
+        "postal_town",
+        "administrative_area_level_3",
+        "administrative_area_level_2",
+    ]
+
+    for t in preferred_type_order:
+        for c in comps:
+            types = c.get("types") or []
+            if t in types:
+                name = c.get("long_name")
+                return str(name).strip() if name else None
+
+    return None
+
+
+# =============================================================================
+# Opening Hours Parsing
+# =============================================================================
+
+def _parse_opening_hours(station: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    """
+    Parse opening hours from station data.
+    Returns (is_open_now, closing_time_text)
+    """
+    opening_times_json = station.get("openingtimes_json")
+    
+    if not opening_times_json or opening_times_json == "{}":
+        return (False, None)
+    
+    try:
+        if isinstance(opening_times_json, str):
+            hours_data = json.loads(opening_times_json)
         else:
-            if price_range > 0:
-                normalized = float((row["avg_price"] - hourly_df["avg_price"].min()) / price_range)
-                colors.append(f"rgb({int(255*normalized)}, {int(200*(1-normalized))}, 0)")
-            else:
-                colors.append("orange")
-
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=hourly_df["hour"],
-        y=hourly_df["avg_price"],
-        marker_color=colors,
-        text=hourly_df["avg_price"].apply(lambda x: f"€{x:.3f}" if pd.notna(x) else "—"),
-        textposition="outside",
-        hovertemplate="Hour %{x}:00<br>€%{y:.3f}/L<extra></extra>",
-    ))
-
-    fig.update_layout(
-        title=f"Hourly Pattern ({fuel_type.upper()}) - {station_name}",
-        xaxis_title="Hour of Day",
-        yaxis_title="Average Price (€/L)",
-        height=430,
-        showlegend=False,
-        xaxis=dict(tickmode="linear", tick0=0, dtick=2),
-        margin=dict(t=70),
-    )
-    return fig
-
-
-def create_comparison_chart(
-    stations_data: Dict[str, pd.DataFrame],
-    fuel_type: str,
-    current_station_name: Optional[str] = None,
-) -> go.Figure:
-    """Comparison chart: current station vs selected alternatives."""
-    if not stations_data:
-        fig = go.Figure()
-        fig.add_annotation(
-            text="No stations to compare",
-            xref="paper", yref="paper",
-            x=0.5, y=0.5, showarrow=False,
-            font=dict(size=16, color="gray"),
-        )
-        fig.update_layout(title=f"Station Comparison ({fuel_type.upper()})", height=380)
-        return fig
-
-    fig = go.Figure()
-    for idx, (station_name, df) in enumerate(stations_data.items()):
-        if df is None or df.empty:
-            continue
-
-        is_current = ("(Current)" in station_name) or (current_station_name and station_name.startswith(current_station_name))
-
-        if is_current:
-            color = "#00C800"
-            width = 3
-            opacity = 1.0
-            dash = "solid"
-        else:
-            colors_palette = ["#FF6B6B", "#4ECDC4", "#FFD93D", "#6C5CE7", "#00B894"]
-            color = colors_palette[idx % len(colors_palette)]
-            width = 2
-            opacity = 0.65
-            dash = "dot"
-
-        fig.add_trace(go.Scatter(
-            x=df["date"],
-            y=df["price"],
-            mode="lines",
-            name=station_name.replace(" (Current)", ""),
-            line=dict(color=color, width=width, dash=dash),
-            opacity=opacity,
-            hovertemplate=f"{station_name}<br>%{{x|%b %d}}<br>€%{{y:.3f}}/L<extra></extra>",
-        ))
-
-    fig.update_layout(
-        title="Historical Comparison (Last 14 Days)",
-        xaxis_title="Date",
-        yaxis_title="Price (€/L)",
-        hovermode="x unified",
-        height=450,
-        showlegend=True,
-        legend=dict(orientation="v", yanchor="top", y=0.99, xanchor="left", x=1.02, bgcolor="rgba(255,255,255,0.8)"),
-        margin=dict(r=170),
-    )
-
-    fig.add_annotation(
-        text="Solid = selected station | Dotted = comparison set",
-        xref="paper", yref="paper",
-        x=0.5, y=-0.12,
-        showarrow=False,
-        font=dict(size=10, color="gray"),
-        xanchor="center",
-    )
-    return fig
+            hours_data = opening_times_json
+        
+        if not hours_data or hours_data == {}:
+            return (False, None)
+        
+        try:
+            now = datetime.now(tz=ZoneInfo("Europe/Berlin") if ZoneInfo else None)
+        except:
+            now = datetime.now()
+        
+        current_time = now.time()
+        weekday = now.strftime("%A").lower()
+        
+        today_hours = hours_data.get(weekday, [])
+        if not today_hours:
+            return (False, None)
+        
+        for period in today_hours:
+            start_str = period.get("start")
+            end_str = period.get("end")
+            
+            if not start_str or not end_str:
+                continue
+            
+            try:
+                start_time = time.fromisoformat(start_str)
+                end_time = time.fromisoformat(end_str)
+                
+                if start_time <= current_time <= end_time:
+                    return (True, end_str)
+            except Exception:
+                continue
+        
+        for period in today_hours:
+            start_str = period.get("start")
+            if start_str:
+                try:
+                    start_time = time.fromisoformat(start_str)
+                    if current_time < start_time:
+                        return (False, start_str)
+                except Exception:
+                    pass
+        
+        return (False, None)
+    
+    except Exception:
+        return (False, None)
 
 
 # =============================================================================
-# Helpers: station identity, time localization, price basis inference
+# Helper Functions
 # =============================================================================
+
+def _safe_float(value: Any) -> Optional[float]:
+    """Safely convert value to float, return None on failure."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
 
 def _station_name(station: Dict[str, Any]) -> str:
-    return str(station.get("tk_name") or station.get("osm_name") or station.get("name") or "Unknown").strip()
+    """Extract station name with brand fallback."""
+    name = station.get("tk_name") or station.get("osm_name") or station.get("name")
+    brand = station.get("brand")
+    
+    if name:
+        return _safe_text(name)
+    elif brand:
+        return _safe_text(brand)
+    else:
+        return "Unknown Station"
 
 
 def _station_brand(station: Dict[str, Any]) -> str:
-    return str(station.get("brand") or "").strip()
+    """Extract station brand."""
+    return _safe_text(station.get("brand", ""))
 
 
 def _station_city(station: Dict[str, Any]) -> str:
-    return str(station.get("city") or "").strip()
-
-
-def _to_berlin_dt(value: Any) -> Optional[pd.Timestamp]:
-    """
-    Convert a timestamp-like value to Europe/Berlin.
-    Accepts:
-      - pandas Timestamp
-      - python datetime
-      - ISO string
-      - unix epoch seconds
-    """
-    if value is None:
-        return None
-
-    try:
-        ts = pd.to_datetime(value, utc=True, errors="coerce")
-        if ts is pd.NaT:
-            return None
-        # ts is tz-aware UTC here
-        if ZoneInfo is not None:
-            return ts.tz_convert(ZoneInfo("Europe/Berlin"))
-        # fallback: pytz-like string
-        return ts.tz_convert("Europe/Berlin")
-    except Exception:
-        return None
-
-
-@dataclass(frozen=True)
-class PriceBasisInfo:
-    label: str
-    used_current_price: Optional[bool]
-    horizon_used: Optional[Any]
-    eta_local: Optional[pd.Timestamp]
-    minutes_to_arrival: Optional[float]
-    cells_ahead: Optional[Any]
-    raw: Dict[str, Any]
-
-
-def _infer_price_basis(station: Dict[str, Any], fuel_code: str) -> PriceBasisInfo:
-    """
-    Robust price-basis inference for a station.
-    Does not rely on upstream helper behavior and never raises.
-    """
-    raw: Dict[str, Any] = {}
-
-    # Canonical debug keys used across the project
-    used_current = station.get(f"debug_{fuel_code}_used_current_price")
-    horizon = station.get(f"debug_{fuel_code}_horizon_used")
-    minutes = station.get(f"debug_{fuel_code}_minutes_to_arrival")
-    if minutes is None:
-        minutes = station.get(f"debug_{fuel_code}_minutes_ahead")
-    cells = station.get(f"debug_{fuel_code}_cells_ahead_raw")
-
-    # ETA can be present under different names depending on pipeline stage
-    eta_any = station.get("eta")
-    if eta_any is None:
-        eta_any = station.get(f"debug_{fuel_code}_eta_utc")
-    if eta_any is None:
-        eta_any = station.get("eta_utc")
-
-    eta_local = _to_berlin_dt(eta_any)
-
-    raw.update({
-        "used_current_price": used_current,
-        "horizon_used": horizon,
-        "minutes_to_arrival": minutes,
-        "cells_ahead_raw": cells,
-        "eta_input": eta_any,
-        "eta_local": str(eta_local) if eta_local is not None else None,
-    })
-
-    # Derive label
-    if used_current is True:
-        label = "Current price (forced/fallback)"
-    elif used_current is False:
-        label = "Forecast price (ETA-aligned)"
-    else:
-        # Heuristic fallback: compare values if present
-        curr = station.get(f"price_current_{fuel_code}")
-        pred = station.get(f"pred_price_{fuel_code}")
-        try:
-            if curr is not None and pred is not None and float(pred) != float(curr):
-                label = "Forecast price (inferred)"
-            else:
-                label = "Current price (inferred)"
-        except Exception:
-            label = "Unknown"
-
-    # Normalize minutes
-    minutes_f: Optional[float] = None
-    try:
-        if minutes is not None:
-            minutes_f = float(minutes)
-    except Exception:
-        minutes_f = None
-
-    return PriceBasisInfo(
-        label=label,
-        used_current_price=used_current if isinstance(used_current, bool) else None,
-        horizon_used=horizon,
-        eta_local=eta_local,
-        minutes_to_arrival=minutes_f,
-        cells_ahead=cells,
-        raw=raw,
-    )
+    """Extract station city."""
+    return _safe_text(station.get("city", ""))
 
 
 def _resolve_station(
-    *,
     selected_station_data: Any,
     selected_uuid: str,
     ranked: List[Dict[str, Any]],
     stations: List[Dict[str, Any]],
     explorer_results: List[Dict[str, Any]],
 ) -> Tuple[Optional[Dict[str, Any]], str]:
-    """
-    Return (station_dict, station_uuid) with a conservative resolution strategy.
-    """
-    if isinstance(selected_station_data, dict):
-        u = _station_uuid(selected_station_data) or selected_uuid or ""
-        return selected_station_data, u
-
+    """Resolve selected station from various sources."""
+    
+    if selected_station_data:
+        return selected_station_data, _station_uuid(selected_station_data)
+    
     if selected_uuid:
         for s in ranked:
             if _station_uuid(s) == selected_uuid:
@@ -401,59 +286,212 @@ def _resolve_station(
         for s in explorer_results:
             if _station_uuid(s) == selected_uuid:
                 return s, selected_uuid
-
+    
     return None, ""
 
 
-def _safe_float(value: Any) -> Optional[float]:
-    try:
-        if value is None:
-            return None
-        return float(value)
-    except Exception:
-        return None
+# =============================================================================
+# Plotly Charts (MOBILE-OPTIMIZED)
+# =============================================================================
+
+def create_price_trend_chart(df: pd.DataFrame, fuel_type: str) -> Tuple[go.Figure, str]:
+    """7-day price trend - MOBILE OPTIMIZED. Returns (figure, stats_text)."""
+    if df is None or df.empty:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No historical data available",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=14, color="gray"),
+        )
+        fig.update_layout(
+            title=f"{fuel_type.upper()} Price History",
+            height=300,
+        )
+        return fig, ""
+
+    # For mobile: Sample every 3rd point if we have many data points
+    df_sampled = df.iloc[::3] if len(df) > 30 else df
+
+    fig = go.Figure()
+    # Clean line only (no markers)
+    fig.add_trace(go.Scatter(
+        x=df_sampled["date"],
+        y=df_sampled["price"],
+        mode="lines",
+        name="Price",
+        line=dict(color="#1f77b4", width=3),
+        hovertemplate="%{x|%b %d}<br>€%{y:.3f}/L<extra></extra>",
+    ))
+
+    avg_price = float(df["price"].mean())
+    min_price = float(df["price"].min())
+    max_price = float(df["price"].max())
+
+    fig.update_layout(
+        title=f"{fuel_type.upper()} Price History",
+        xaxis_title=None,
+        yaxis_title=None,
+        hovermode="x unified",
+        height=300,
+        showlegend=False,
+        margin=dict(l=40, r=20, t=50, b=40),
+    )
+
+    # Add average line
+    fig.add_hline(
+        y=avg_price,
+        line_dash="dash",
+        line_color="gray",
+        opacity=0.5,
+        annotation_text=f"Avg",
+        annotation_position="right",
+        annotation_font_size=10,
+    )
+
+    # Return stats as text
+    stats_text = f"Min: €{min_price:.3f} | Avg: €{avg_price:.3f} | Max: €{max_price:.3f}"
+    
+    return fig, stats_text
+
+
+def create_hourly_pattern_chart(hourly_df: pd.DataFrame, fuel_type: str) -> go.Figure:
+    """Hourly price pattern - MOBILE OPTIMIZED with gridlines."""
+    if hourly_df is None or hourly_df.empty or hourly_df["avg_price"].isna().all():
+        fig = go.Figure()
+        fig.add_annotation(
+            text="Not enough data for hourly pattern",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=14, color="gray"),
+        )
+        fig.update_layout(
+            title="Best Time to Refuel",
+            height=250,
+        )
+        return fig
+
+    # MOBILE: Show every 2 hours (12 bars instead of 24)
+    hourly_df_mobile = hourly_df[hourly_df["hour"] % 2 == 0].copy()
+
+    optimal = get_cheapest_and_most_expensive_hours(hourly_df)
+    cheapest_hour = optimal.get("cheapest_hour")
+    most_expensive_hour = optimal.get("most_expensive_hour")
+
+    # Color bars
+    colors = []
+    for _, row in hourly_df_mobile.iterrows():
+        if pd.isna(row["avg_price"]):
+            colors.append("#e0e0e0")
+        elif cheapest_hour is not None and int(row["hour"]) == int(cheapest_hour):
+            colors.append("#4caf50")
+        elif most_expensive_hour is not None and int(row["hour"]) == int(most_expensive_hour):
+            colors.append("#f44336")
+        else:
+            colors.append("#ffc107")
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=hourly_df_mobile["hour"],
+        y=hourly_df_mobile["avg_price"],
+        marker_color=colors,
+        hovertemplate="Hour %{x}:00<br>€%{y:.3f}/L<extra></extra>",
+        showlegend=False,
+        width=1.5,
+    ))
+
+    fig.update_layout(
+        title=f"Best Time to Refuel - {fuel_type.upper()}",
+        xaxis_title="Hour of Day",
+        yaxis_title=None,
+        height=300,
+        margin=dict(l=40, r=20, t=60, b=50),
+    )
+
+    # Add gridlines and configure axes
+    fig.update_xaxes(tickmode="linear", tick0=0, dtick=4)
+    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='#e0e0e0')
+
+    return fig
 
 
 # =============================================================================
-# Main page
+# Sidebar Trip Settings Renderer
 # =============================================================================
 
-def main() -> None:
+def _render_trip_settings():
+    """
+    Render trip settings in the sidebar Action tab.
+    Replaces "Placeholder: Action" with actual trip info.
+    """
+    last_run = st.session_state.get("last_run") or {}
+    
+    if not last_run:
+        st.sidebar.info("No trip data available. Run Trip Planner first.")
+        return
+    
+    # Extract settings
+    fuel_code = str(last_run.get("fuel_code") or st.session_state.get("fuel_label") or "e5")
+    fuel_label = fuel_code.upper()
+    
+    use_economics = bool(last_run.get("use_economics", False))
+    econ_status = "Yes" if use_economics else "No"
+    
+    litres = _safe_float(last_run.get("litres_to_refuel"))
+    refuel_amount = f"{litres:.0f} L" if litres else "—"
+    
+    stations = list(last_run.get("stations") or [])
+    route_station_count = len(stations)
+    
+    explorer_results = list(st.session_state.get("explorer_results") or [])
+    explorer_station_count = len(explorer_results)
+    
+    # Display settings
+    st.sidebar.markdown("**Fuel:** " + fuel_label)
+    st.sidebar.markdown("**Economics:** " + econ_status)
+    st.sidebar.markdown("**Refuel amount:** " + refuel_amount)
+    st.sidebar.markdown("**Route stations:** " + str(route_station_count))
+    st.sidebar.markdown("**Explorer stations:** " + str(explorer_station_count))
+
+
+# =============================================================================
+# Main Page
+# =============================================================================
+
+def main():
+    """Main entry point for Station Details page."""
+    
     st.set_page_config(
         page_title="Station Details",
+        page_icon="⛽",
         layout="wide",
         initial_sidebar_state="expanded",
     )
-
-    # Redis-backed persistence (best-effort)
-    # IMPORTANT: preserve widget-managed keys so Redis restore does not clobber user clicks
+    
+    # Redis-backed persistence
     _preserve_top_nav = st.session_state.get("top_nav")
     _preserve_sidebar_view = st.session_state.get("sidebar_view")
-    _preserve_map_style_mode = st.session_state.get("map_style_mode")  # <-- ADD THIS
-
+    _preserve_map_style_mode = st.session_state.get("map_style_mode")
+    
     init_session_context()
     ensure_persisted_state_defaults(st.session_state)
-
-    # Keep refresh persistence working:
-    # - overwrite_existing=True restores persisted values on a cold start / hard refresh
-    # - then we re-apply widget keys if the user interaction already set them for this rerun
     restore_persisted_state(overwrite_existing=True)
-
+    
     if _preserve_top_nav is not None:
         st.session_state["top_nav"] = _preserve_top_nav
     if _preserve_sidebar_view is not None:
         st.session_state["sidebar_view"] = _preserve_sidebar_view
     if _preserve_map_style_mode is not None:
-        st.session_state["map_style_mode"] = _preserve_map_style_mode  # <-- ADD THIS
-
+        st.session_state["map_style_mode"] = _preserve_map_style_mode
+    
     apply_app_css()
-
+    
     st.title("Station Details & Analysis")
-    st.caption("Inspect one station at a time: price basis, timing, patterns, and economics.")
-
-    # -----------------------------
-    # Top navigation (consistent)
-    # -----------------------------
+    st.caption("Detailed analysis of individual stations")
+    
+    # =========================================================================
+    # TOP NAVIGATION
+    # =========================================================================
     NAV_TARGETS = {
         "Home": "streamlit_app.py",
         "Analytics": "pages/02_route_analytics.py",
@@ -461,12 +499,11 @@ def main() -> None:
         "Explorer": "pages/04_station_explorer.py",
     }
     CURRENT = "Station"
-
-    # Ensure correct tab is selected on landing
+    
     if st.session_state.get("_active_page") != CURRENT:
         st.session_state["_active_page"] = CURRENT
         st.session_state["top_nav"] = CURRENT
-
+    
     selected_nav = st.segmented_control(
         label="",
         options=list(NAV_TARGETS.keys()),
@@ -475,560 +512,335 @@ def main() -> None:
         width="stretch",
         key="top_nav",
     )
-
+    
     target = NAV_TARGETS.get(selected_nav, NAV_TARGETS[CURRENT])
     if target != NAV_TARGETS[CURRENT]:
-        # Persist before navigation so a reconnect / next page sees the most recent state.
         try:
             maybe_persist_state(force=True)
         except Exception:
             pass
         st.switch_page(target)
-
-    # -----------------------------
-    # Read state inputs
-    # -----------------------------
-    cached: Dict[str, Any] = st.session_state.get("last_run") or {}
-    ranked: List[Dict[str, Any]] = list(cached.get("ranked") or [])
-    stations: List[Dict[str, Any]] = list(cached.get("stations") or [])
-    explorer_results: List[Dict[str, Any]] = list(st.session_state.get("explorer_results") or [])
-
-    params: Dict[str, Any] = dict(cached.get("params") or {})
-    fuel_code: str = str(cached.get("fuel_code", "e5"))
-    litres_to_refuel: float = float(cached.get("litres_to_refuel", params.get("litres_to_refuel", 40.0)) or 40.0)
-    use_economics: bool = bool(params.get("use_economics", True))
-
-    # Do not mutate global debug_mode; diagnostics are always available on this page.
-    debug_mode = True
-
-    # -----------------------------
-    # Sidebar control plane (Action tab)
-    # -----------------------------
-    def _action_tab() -> None:
-        # A) Station selection (source + selectbox)
-        st.sidebar.markdown("### Station")
-        selection = render_station_selector(
-            last_run=cached,
-            explorer_results=explorer_results,
-            widget_key_prefix="station_details",
-        )
-
-        # B) Context / run metadata (read-only)
-        st.sidebar.markdown("### Context")
-        ctx_rows = [
-            ("Fuel", fuel_code.upper()),
-            ("Economics enabled", "Yes" if use_economics else "No"),
-            ("Refuel litres (assumed)", f"{float(litres_to_refuel):.0f} L"),
-            ("Route stations available", str(len(ranked) if ranked else 0)),
-            ("Explorer stations available", str(len(explorer_results) if explorer_results else 0)),
-            ("Selected source", str(selection.source)),
-        ]
-        for k, v in ctx_rows:
-            st.sidebar.markdown(f"- **{k}:** {v}")
-
-
-        # C) Comparison set (configure once; view in Comparison section)
-        st.sidebar.markdown("### Comparison set")
-        if ranked:
-            # Candidate comparison options come from the ranked list (stable and meaningful).
-            # Store UUIDs only (labels are display-only).
-            uuid_labels: Dict[str, str] = {}
-            for i, s in enumerate(ranked[:25], start=1):
-                u = _station_uuid(s)
-                if not u:
-                    continue
-                nm = _safe_text(_station_name(s))
-                br = _safe_text(_station_brand(s))
-                city = _safe_text(_station_city(s).upper()) if _station_city(s) else ""
-                label = f"#{i} {nm}" + (f" ({br})" if br else "") + (f" · {city}" if city else "")
-                uuid_labels[u] = label
-
-            current_uuid = str(st.session_state.get("selected_station_uuid") or "")
-            candidates = [u for u in uuid_labels.keys() if u and u != current_uuid]
-
-            # Default: first 2 candidates (if any)
-            default_uuids = st.session_state.get("comparison_station_uuids")
-            if not isinstance(default_uuids, list):
-                default_uuids = candidates[:2]
-
-            chosen = st.sidebar.multiselect(
-                "Compare against (up to 2)",
-                options=candidates,
-                default=default_uuids[:2],
-                max_selections=2,
-                format_func=lambda u: uuid_labels.get(u, u),
-                key="comparison_station_uuids_widget",
-                help="Configured here; rendered in the Comparison section (expander).",
-            )
-            st.session_state["comparison_station_uuids"] = list(chosen)
-        else:
-            st.sidebar.info("Run the recommender to enable comparison against ranked alternatives.")
-
-        # D) Display options
-        st.sidebar.markdown("### Display")
-        # IMPORTANT: This widget lives only in the sidebar "Action" tab. When the user switches
-        # the sidebar segmented-control away from Action, Streamlit may garbage-collect widget
-        # state for keys whose widgets are not rendered. To avoid losing the latest selection,
-        # we decouple the widget key from the canonical persisted key.
-        current_density = str(st.session_state.get("station_details_density", "Detailed"))
-        density = st.sidebar.radio(
-            "Density",
-            options=["Detailed", "Compact"],
-            index=0 if current_density == "Detailed" else 1,
-            key="w_station_details_density",
-            help="Compact hides some explanatory text while preserving all numbers.",
-        )
-        st.session_state["station_details_density"] = str(density)
-
-        # E) Diagnostics note (no toggle)
-        st.sidebar.markdown("### Diagnostics")
-
-    render_sidebar_shell(action_renderer=_action_tab)
-
-    # -----------------------------
-    # Resolve station selection (single source of truth)
-    # -----------------------------
-    selected_uuid = str(st.session_state.get("selected_station_uuid") or "")
-    selected_station_data = st.session_state.get("selected_station_data")
-
-    station, station_uuid = _resolve_station(
-        selected_station_data=selected_station_data,
-        selected_uuid=selected_uuid,
-        ranked=ranked,
-        stations=stations,
+    
+    # =========================================================================
+    # SIDEBAR - WITH TRIP SETTINGS IN ACTION TAB
+    # =========================================================================
+    render_sidebar_shell(action_renderer=_render_trip_settings)
+    
+    last_run = st.session_state.get("last_run") or {}
+    ranked = list(last_run.get("ranked") or [])
+    stations = list(last_run.get("stations") or [])
+    explorer_results = list(st.session_state.get("explorer_results") or [])
+    
+    selection = render_station_selector(
+        last_run=last_run,
         explorer_results=explorer_results,
     )
-
-    # Persist resolved station for cross-page consistency (safe)
-    if station is not None:
-        st.session_state["selected_station_data"] = station
-        if station_uuid:
-            st.session_state["selected_station_uuid"] = station_uuid
-
-    # -----------------------------
-    # Empty state guard
-    # -----------------------------
-    if station is None:
-        st.info(
-            "No station selected yet. Use the sidebar (Action tab) to select a station. "
-            "If you have no stations available, run a route or search via Station Explorer."
-        )
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("Go to Trip Planner", use_container_width=True):
-                st.switch_page("streamlit_app.py")
-        with c2:
-            if st.button("Go to Station Explorer", use_container_width=True):
-                st.switch_page("pages/04_station_explorer.py")
+    
+    # =========================================================================
+    # RESOLVE STATION
+    # =========================================================================
+    selected_station_data = st.session_state.get("selected_station_data")
+    selected_uuid = st.session_state.get("selected_station_uuid") or ""
+    
+    station, station_uuid = _resolve_station(
+        selected_station_data,
+        selected_uuid,
+        ranked,
+        stations,
+        explorer_results,
+    )
+    
+    if not station or not station_uuid:
+        st.info("No station selected. Please select a station from the sidebar.")
+        st.markdown("---")
+        st.caption("Tip: Run Trip Planner or use Station Explorer to find stations.")
+        maybe_persist_state()
         return
-
-    # -----------------------------
-    # Header: identity + source badge line
-    # -----------------------------
-    name = _safe_text(_station_name(station))
-    brand = _safe_text(_station_brand(station))
-    city = _safe_text(_station_city(station))
-
-    source = str(st.session_state.get("selected_station_source") or "")
-    if source not in {"route", "explorer"}:
-        # Best-effort inference: if station is in explorer_results UUID set → explorer, else route if ranked/stations exists.
-        u = _station_uuid(station) or ""
-        ex_uuids = {_station_uuid(s) for s in explorer_results if _station_uuid(s)}
-        if u and u in ex_uuids:
-            source = "explorer"
-        elif ranked or stations:
-            source = "route"
-        else:
-            source = "explorer"
-        st.session_state["selected_station_source"] = source
-
-    basis = _infer_price_basis(station, fuel_code=fuel_code)
-    source_badge = "Selected from Route Run" if source == "route" else "Selected from Explorer"
-
-    st.markdown(f"## {name}")
-    subtitle_parts = []
-    if brand:
-        subtitle_parts.append(brand)
-    if city:
-        subtitle_parts.append(city.upper())
-    st.caption(" · ".join(subtitle_parts) if subtitle_parts else "—")
-
-    st.caption(f"{source_badge} · Fuel: {fuel_code.upper()} · Price basis: {basis.label}")
-
-    # -----------------------------
-    # KPI strip (single source of truth; rendered once)
-    # -----------------------------
-    curr_key = f"price_current_{fuel_code}"
+    
+    # =========================================================================
+    # EXTRACT STATION INFO
+    # =========================================================================
+    name = _station_name(station)
+    brand = _station_brand(station)
+    city = _station_city(station) or _reverse_geocode_station_city(station)
+    full_address = _reverse_geocode_station_address(station)
+    
+    route_info = last_run.get("route_info") or {}
+    fuel_code = str(last_run.get("fuel_code") or st.session_state.get("fuel_label") or "e5").lower()
+    use_economics = bool(last_run.get("use_economics", False))
+    litres_to_refuel = _safe_float(last_run.get("litres_to_refuel")) or 40.0
+    
+    detour_km = _safe_float(station.get("detour_distance_km") or station.get("detour_km")) or 0.0
+    detour_min = _safe_float(station.get("detour_duration_min") or station.get("detour_min")) or 0.0
+    detour_km = max(0.0, detour_km)
+    detour_min = max(0.0, detour_min)
+    
     pred_key = f"pred_price_{fuel_code}"
-    econ_net_key = f"econ_net_saving_eur_{fuel_code}"
-
-    current_price = _safe_float(station.get(curr_key))
+    current_key = f"price_current_{fuel_code}"
+    
     predicted_price = _safe_float(station.get(pred_key))
-
-    # Route-only detour keys (robust handling)
-    detour_km = station.get("detour_distance_km")
-    if detour_km is None:
-        detour_km = station.get("detour_km")
-    detour_min = station.get("detour_duration_min")
-    if detour_min is None:
-        detour_min = station.get("detour_min")
-
-    detour_km_f = _safe_float(detour_km)
-    detour_min_f = _safe_float(detour_min)
-
-    if source != "route":
-        detour_text = "—"
+    current_price = _safe_float(station.get(current_key))
+    display_price = predicted_price if predicted_price is not None else current_price
+    
+    econ_net_key = f"econ_net_saving_eur_{fuel_code}"
+    econ_baseline_key = f"econ_baseline_price_{fuel_code}"
+    net_saving = _safe_float(station.get(econ_net_key))
+    baseline_price = _safe_float(station.get(econ_baseline_key))
+    
+    # Traffic light status
+    traffic_status, traffic_text_raw, traffic_css = calculate_traffic_light_status(
+        display_price,
+        ranked,
+        fuel_code,
+    )
+    
+    # Improve text clarity
+    if traffic_status == "red":
+        traffic_text = "Expensive"
+    elif traffic_status == "yellow":
+        traffic_text = "Fair Price"
     else:
-        detour_text = f"{_fmt_km(detour_km_f)} / {_fmt_min(detour_min_f)}"
-
-    # ETA KPI: only show if we have it
-    eta_text = "—"
-    if basis.eta_local is not None:
-        # show without timezone abbreviation (Germany context assumed)
-        try:
-            eta_text = basis.eta_local.strftime("%a %H:%M")
-        except Exception:
-            eta_text = str(basis.eta_local)
-
-    net_saving_text = "—"
-    if use_economics and econ_net_key in station:
-        net_saving_text = _fmt_eur(station.get(econ_net_key))
-
-    # Predicted metric delta vs current (if both exist)
-    pred_delta = None
-    if current_price is not None and predicted_price is not None:
-        pred_delta = predicted_price - current_price
-
-    c1, c2, c3, c4, c5 = st.columns(5)
-    with c1:
-        st.metric("Current", _fmt_price(current_price))
-    with c2:
-        st.metric("Predicted", _fmt_price(predicted_price), delta=(f"{pred_delta:+.3f} €/L" if pred_delta is not None else None), delta_color="inverse")
-    with c3:
-        st.metric("ETA (local)", eta_text)
-    with c4:
-        st.metric("Detour", detour_text)
-    with c5:
-        st.metric("Net saving", net_saving_text)
-
-    # -----------------------------
-    # Sections (single scroll)
-    # -----------------------------
-    st.caption("All station analytics are shown on one page. Use the sidebar to change station and comparison set.")
-
-
-    # Collect exceptions for diagnostics
-    diagnostics_errors: List[str] = []
-
-    # =========================
-    # Overview
-    # =========================
-    st.markdown("### Overview")
-
-    density = str(st.session_state.get("station_details_density", "Detailed"))
-    compact = density == "Compact"
-
-    st.markdown("### Decision rationale")
-    rationale_rows: List[Dict[str, Any]] = []
-
-    # Basis summary
-    rationale_rows.append({"Field": "Chosen basis", "Value": basis.label})
-    if basis.used_current_price is True:
-        rationale_rows.append({"Field": "Reason", "Value": "Forecast not used (forced fallback or unavailable)."})
-    elif basis.used_current_price is False:
-        rationale_rows.append({"Field": "Reason", "Value": "Forecast used (ETA-aligned)."})
+        traffic_text = "Excellent Deal"
+    
+    is_open, time_info = _parse_opening_hours(station)
+    
+    # =========================================================================
+    # HERO SECTION - CYAN BOX WITH PRICE + TRAFFIC LIGHT
+    # =========================================================================
+    
+    base_name = brand if (brand and brand != "—") else name
+    city_clean = city if (city and city != "—") else ""
+    title_line = f"{base_name} in {city_clean}" if (base_name and city_clean) else base_name
+    
+    # Clean subtitle
+    if full_address:
+        subtitle_line = full_address
+    elif city_clean:
+        subtitle_line = city_clean
     else:
-        rationale_rows.append({"Field": "Reason", "Value": "Inferred from available fields."})
-
-    if basis.horizon_used is not None:
-        rationale_rows.append({"Field": "Forecast horizon", "Value": str(basis.horizon_used)})
-    if basis.minutes_to_arrival is not None:
-        rationale_rows.append({"Field": "Minutes to arrival", "Value": f"{basis.minutes_to_arrival:.0f} min"})
-    if basis.eta_local is not None:
-        try:
-            rationale_rows.append({"Field": "ETA (Europe/Berlin)", "Value": basis.eta_local.strftime("%Y-%m-%d %H:%M")})
-        except Exception:
-            rationale_rows.append({"Field": "ETA (Europe/Berlin)", "Value": str(basis.eta_local)})
-
-    # Route context (only if source == route)
-    if source == "route":
-        ranked_uuids = {_station_uuid(s) for s in ranked if _station_uuid(s)}
-        tag = "Ranked" if station_uuid in ranked_uuids else "Excluded"
-        rationale_rows.append({"Field": "Route context", "Value": f"{tag} candidate in latest route run"})
+        subtitle_line = ""
+    
+    # Traffic light circles
+    if traffic_status == "green":
+        circles = '<span style="color: #4ade80; font-size: 1.6rem;">●</span> <span style="color: #fbbf24; font-size: 1.6rem;">○</span> <span style="color: #f87171; font-size: 1.6rem;">○</span>'
+    elif traffic_status == "yellow":
+        circles = '<span style="color: #4ade80; font-size: 1.6rem;">○</span> <span style="color: #fbbf24; font-size: 1.6rem;">●</span> <span style="color: #f87171; font-size: 1.6rem;">○</span>'
     else:
-        # Explorer-specific: show distance if present
-        dist = station.get("distance_km")
-        if dist is not None:
-            try:
-                rationale_rows.append({"Field": "Explorer distance", "Value": f"{float(dist):.1f} km"})
-            except Exception:
-                rationale_rows.append({"Field": "Explorer distance", "Value": str(dist)})
-
-    st.dataframe(pd.DataFrame(rationale_rows), hide_index=True, use_container_width=True)
-
-    st.markdown("### Economics summary")
-    if not use_economics:
-        st.info("Economics are disabled for the latest route run. Enable economics in Trip Planner and run again.")
-    else:
-        if econ_net_key not in station:
-            st.warning("Economic metrics are not available for this station.")
-        else:
-            net = _safe_float(station.get(econ_net_key))
-            gross = _safe_float(station.get(f"econ_gross_saving_eur_{fuel_code}"))
-            detour_fuel_cost = _safe_float(station.get(f"econ_detour_fuel_cost_eur_{fuel_code}"))
-            time_cost = _safe_float(station.get(f"econ_time_cost_eur_{fuel_code}"))
-            breakeven = _safe_float(station.get(f"econ_breakeven_liters_{fuel_code}"))
-
-            if net is not None:
-                if net > 0:
-                    st.success("This detour is economically worthwhile for the assumed refuel amount.")
-                else:
-                    st.warning("This detour is not economically worthwhile for the assumed refuel amount.")
-
-            econ_cols = st.columns(3)
-            with econ_cols[0]:
-                st.metric("Gross saving", _fmt_eur(gross))
-            with econ_cols[1]:
-                detour_cost_total = (detour_fuel_cost or 0.0) + (time_cost or 0.0)
-                st.metric("Detour cost", _fmt_eur(detour_cost_total))
-            with econ_cols[2]:
-                st.metric("Net saving", _fmt_eur(net))
-
-            if breakeven is not None and breakeven > 0:
-                st.caption(f"Break-even: refuel at least {breakeven:.1f} L for a positive net saving.")
-
-            if not compact:
-                with st.expander("Formula (how net saving is computed)", expanded=False):
-                    st.markdown(
-                        f"""
-                        Net saving is computed on the assumed refuel amount (**{litres_to_refuel:.1f} L**) as:
-
-                        **Net saving** = **Gross saving** − **Detour fuel cost** − **Time cost**
-
-                        - Gross saving captures the station's price advantage relative to the baseline (cheapest on-route).
-                        - Detour fuel cost captures extra fuel consumed by the detour.
-                        - Time cost captures the value of extra time (if configured).
-                        """
-                    )
-
-# =========================
-# History & Patterns
-# =========================
-
-    st.markdown("---")
-    st.markdown("### Price history & patterns")
-    if not station_uuid:
-        st.warning("Station UUID is missing; cannot load historical data.")
-    else:
-        with st.spinner("Loading historical price data..."):
-            try:
-                df_history = get_station_price_history(
-                    station_uuid=station_uuid,
-                    fuel_type=fuel_code,
-                    days=14,
-                )
-            except Exception as e:
-                df_history = None
-                diagnostics_errors.append(f"Price history error: {e!r}")
-
-        if df_history is None or df_history.empty:
-            st.info("No historical price data available for this station/fuel type.")
-        else:
-            st.plotly_chart(create_price_trend_chart(df_history, fuel_code, name), use_container_width=True, config=PLOTLY_CONFIG)
-
-            st.markdown("---")
-            st.markdown("### Best time to refuel (hourly pattern)")
-
-            try:
-                hourly_stats = calculate_hourly_price_stats(df_history)
-            except Exception as e:
-                hourly_stats = None
-                diagnostics_errors.append(f"Hourly stats error: {e!r}")
-
-            if hourly_stats is None or hourly_stats.empty or hourly_stats["avg_price"].dropna().empty:
-                st.info("Not enough data to calculate hourly patterns.")
+        circles = '<span style="color: #4ade80; font-size: 1.6rem;">○</span> <span style="color: #fbbf24; font-size: 1.6rem;">○</span> <span style="color: #f87171; font-size: 1.6rem;">●</span>'
+    
+    price_display = f"€{display_price:.3f}" if display_price else "—"
+    
+    hero_html = f"""
+    <div class='station-header'>
+        <div class='label'>Selected station:</div>
+        <div class='name'>{_safe_text(title_line)}</div>
+        {f"<div class='addr'>{_safe_text(subtitle_line)}</div>" if subtitle_line else ""}
+        <div style='margin-top: 1.5rem; text-align: center;'>
+            <div style='font-size: 3rem; font-weight: 800; color: #1f2937; margin-bottom: 0.8rem;'>
+                {price_display} <span style='font-size: 1.8rem; font-weight: 600; color: #6b7280;'>/L</span>
+            </div>
+            <div style='display: flex; align-items: center; justify-content: center; gap: 0.4rem; color: #374151; font-size: 1.1rem; font-weight: 600;'>
+                {circles}
+                <span style='margin-left: 0.5rem;'>{traffic_text}</span>
+            </div>
+        </div>
+    </div>
+    """
+    
+    st.markdown(hero_html, unsafe_allow_html=True)
+    
+    # =========================================================================
+    # INFO CARDS
+    # =========================================================================
+    
+    info_cols = st.columns(2)
+    
+    with info_cols[0]:
+        if detour_km < 0.1:
+            if detour_min > 0.5:
+                st.info(f"On route • +{detour_min:.0f} min stop")
             else:
-                st.plotly_chart(create_hourly_pattern_chart(hourly_stats, fuel_code, name), use_container_width=True, config=PLOTLY_CONFIG)
-
-                optimal = get_cheapest_and_most_expensive_hours(hourly_stats) or {}
-                cheapest_hour = optimal.get("cheapest_hour")
-                most_expensive_hour = optimal.get("most_expensive_hour")
-                cheapest_price = optimal.get("cheapest_price")
-                most_expensive_price = optimal.get("most_expensive_price")
-
-                if cheapest_hour is not None and most_expensive_hour is not None and cheapest_price is not None and most_expensive_price is not None:
-                    col_a, col_b, col_c = st.columns(3)
-                    with col_a:
-                        st.metric("Cheapest hour", f"{int(cheapest_hour):02d}:00", f"€{float(cheapest_price):.3f}/L")
-                    with col_b:
-                        st.metric("Most expensive hour", f"{int(most_expensive_hour):02d}:00", f"€{float(most_expensive_price):.3f}/L", delta_color="inverse")
-                    with col_c:
-                        diff = float(most_expensive_price) - float(cheapest_price)
-                        if litres_to_refuel:
-                            st.metric("Potential savings", f"€{diff * litres_to_refuel:.2f}", f"€{diff:.3f}/L")
-                        else:
-                            st.metric("Price difference", f"€{diff:.3f}/L", "Best vs worst hour")
-
-# =========================
-# Economics (detailed)
-# =========================
-
+                st.success("On route")
+        else:
+            st.info(f"{detour_km:.1f} km detour • +{detour_min:.0f} min")
+    
+    with info_cols[1]:
+        if is_open and time_info:
+            st.success(f"Opening hours: OPEN until {time_info}")
+        elif not is_open and time_info:
+            st.error(f"Opening hours: CLOSED, opens at {time_info}")
+        else:
+            st.info("Opening hours: 24/7")
+    
     st.markdown("---")
-    st.markdown("### Economic breakdown")
-    st.caption("Detailed decomposition of savings vs detour costs.")
-
-    if not use_economics:
-        st.info("Economics are disabled for the latest route run. Enable economics in Trip Planner and run again.")
+    
+    # =========================================================================
+    # SAVINGS CALCULATOR
+    # =========================================================================
+    
+    st.markdown("### Savings Calculator")
+    st.caption("Compare savings against other stations on your route (within 1km detour)")
+    
+    if not baseline_price or not display_price:
+        st.info("Economics not available. Run Trip Planner with refuel amount to enable.")
     else:
-        econ_net_key = f"econ_net_saving_eur_{fuel_code}"
-        if econ_net_key not in station:
-            st.warning("Economic metrics are not available for this station.")
+        slider_value = st.slider(
+            "Refuel amount (liters)",
+            min_value=1.0,
+            max_value=80.0,
+            value=float(litres_to_refuel),
+            step=1.0,
+            key="savings_calc_slider",
+        )
+        
+        # Find worst on-route price
+        worst_price = display_price
+        for s in ranked:
+            s_price = _safe_float(s.get(pred_key))
+            if s_price and s_price > worst_price:
+                d_km = _safe_float(s.get("detour_distance_km") or s.get("detour_km") or 0)
+                if d_km < 1.0:
+                    worst_price = s_price
+        
+        price_diff = worst_price - display_price
+        total_savings = price_diff * slider_value
+        
+        # Weekly/monthly/yearly context
+        weekly_savings = total_savings
+        monthly_savings = total_savings * 4.3
+        yearly_savings = total_savings * 52
+        
+        if abs(total_savings) < 0.01:
+            st.success("You're already at the cheapest station on your route!")
         else:
-            econ_rows = [
-                {"Metric": "Baseline on-route price", "Value": _fmt_price(station.get(f"econ_baseline_price_{fuel_code}")), "Note": "Cheapest station without detouring"},
-                {"Metric": "Gross saving", "Value": _fmt_eur(station.get(f"econ_gross_saving_eur_{fuel_code}")), "Note": "Price advantage before costs"},
-                {"Metric": "Detour fuel (litres)", "Value": (f"{_safe_float(station.get(f'econ_detour_fuel_l_{fuel_code}')):.2f} L" if _safe_float(station.get(f"econ_detour_fuel_l_{fuel_code}")) is not None else "—"), "Note": "Extra fuel consumed due to detour"},
-                {"Metric": "Detour fuel cost", "Value": _fmt_eur(station.get(f"econ_detour_fuel_cost_eur_{fuel_code}")), "Note": "Cost of extra fuel"},
-                {"Metric": "Time cost", "Value": _fmt_eur(station.get(f"econ_time_cost_eur_{fuel_code}")), "Note": "Value of additional time (if configured)"},
-                {"Metric": "Net saving", "Value": _fmt_eur(station.get(econ_net_key)), "Note": "Gross saving minus all costs"},
-                {"Metric": "Break-even litres", "Value": (f"{_safe_float(station.get(f'econ_breakeven_liters_{fuel_code}')):.1f} L" if _safe_float(station.get(f"econ_breakeven_liters_{fuel_code}")) is not None else "—"), "Note": "Minimum litres for positive net saving"},
-            ]
-            st.dataframe(pd.DataFrame(econ_rows), hide_index=True, use_container_width=True)
-
-            # What-if slider (display-only): do not mutate last_run / station
-            with st.expander("What-if: different refuel amount (display-only)", expanded=False):
-                what_if_l = st.slider("Refuel litres", min_value=1.0, max_value=120.0, value=float(min(max(litres_to_refuel, 1.0), 120.0)), step=1.0)
-                st.caption("This section does not re-run the model. It provides an intuitive scaling of the gross saving component.")
-                baseline_price = _safe_float(station.get(f"econ_baseline_price_{fuel_code}"))
-                current_basis_price = _safe_float(station.get(f"price_current_{fuel_code}"))
-                # Use chosen basis for intuitive display: if forecast basis, use predicted, else current.
-                basis_price = _safe_float(station.get(f"pred_price_{fuel_code}")) if "Forecast" in basis.label else current_basis_price
-                if baseline_price is None or basis_price is None:
-                    st.info("Not enough data to compute a what-if estimate.")
-                else:
-                    gross_per_l = max(0.0, baseline_price - basis_price)
-                    gross_est = gross_per_l * float(what_if_l)
-                    detour_fuel_cost = _safe_float(station.get(f"econ_detour_fuel_cost_eur_{fuel_code}")) or 0.0
-                    time_cost = _safe_float(station.get(f"econ_time_cost_eur_{fuel_code}")) or 0.0
-                    net_est = gross_est - detour_fuel_cost - time_cost
-                    c_a, c_b, c_c = st.columns(3)
-                    with c_a:
-                        st.metric("Estimated gross saving", _fmt_eur(gross_est))
-                    with c_b:
-                        st.metric("Detour cost (fixed)", _fmt_eur(detour_fuel_cost + time_cost))
-                    with c_c:
-                        st.metric("Estimated net saving", _fmt_eur(net_est))
-
-            with st.expander("How to read these numbers", expanded=False):
-                st.markdown(
-                    """
-                    - **Baseline on-route price**: the cheapest station without leaving the baseline route.
-                    - **Gross saving**: price advantage for the assumed refuel amount (litres).
-                    - **Detour fuel cost**: extra fuel consumed because of the detour, valued at the baseline price.
-                    - **Time cost**: optional valuation of extra detour time.
-                    - **Net saving**: gross saving minus detour fuel cost minus time cost.
-                    - **Break-even litres**: litres required for net saving to become positive (if applicable).
-                    """
+            calc_cols = st.columns(2)
+            
+            with calc_cols[0]:
+                st.markdown("**Saved by choosing this station**")
+                st.markdown(f"# €{total_savings:.2f}")
+            
+            with calc_cols[1]:
+                st.markdown("**vs most expensive (on-route)**")
+                st.markdown(f"# {price_diff:.3f}€/L")
+            
+            if total_savings > 0.50:
+                st.info(
+                    f"If you refuel here weekly: **€{weekly_savings:.2f}** per week • "
+                    f"**€{monthly_savings:.2f}** per month • "
+                    f"**€{yearly_savings:.2f}** per year"
                 )
-
-# =========================
-# Comparison (only multi-station view)
-# =========================
-
+    
     st.markdown("---")
-
-    with st.expander("Comparison (optional)", expanded=False):
-        st.markdown("### Comparison")
-        st.caption("Compare the selected station against the sidebar-configured comparison set.")
-
-        comp_uuids = st.session_state.get("comparison_station_uuids")
-        if not isinstance(comp_uuids, list):
-            comp_uuids = []
-
-        if not station_uuid:
-            st.warning("Station UUID is missing; cannot load comparison data.")
-        elif not comp_uuids:
-            st.info("No comparison stations selected. Configure the comparison set in the sidebar (Action tab).")
-        else:
-            with st.spinner("Loading comparison data..."):
-                stations_data: Dict[str, pd.DataFrame] = {}
-                try:
-                    current_df = get_station_price_history(station_uuid, fuel_code, days=14)
-                    if current_df is not None and not current_df.empty:
-                        stations_data[f"{name} (Current)"] = current_df
-                except Exception as e:
-                    diagnostics_errors.append(f"Comparison current station history error: {e!r}")
-
-                # Map UUIDs to readable labels (prefer ranked context)
-                label_by_uuid: Dict[str, str] = {}
-                for i, s in enumerate(ranked[:50], start=1):
-                    u = _station_uuid(s)
-                    if not u:
-                        continue
-                    label_by_uuid[u] = f"#{i} {_safe_text(_station_name(s))}"
-
-                for u in comp_uuids[:2]:
-                    if not u or u == station_uuid:
-                        continue
-                    try:
-                        df = get_station_price_history(u, fuel_code, days=14)
-                        if df is not None and not df.empty:
-                            label = label_by_uuid.get(u, u)
-                            stations_data[label] = df
-                    except Exception as e:
-                        diagnostics_errors.append(f"Comparison history error for {u}: {e!r}")
-
-            if len(stations_data) < 2:
-                st.info("Not enough historical data to compare these stations.")
+    
+    # =========================================================================
+    # SMART PRICE ALERT
+    # =========================================================================
+    
+    try:
+        history_df = get_station_price_history(station_uuid, fuel_code, days=14)
+        hourly_df = calculate_hourly_price_stats(history_df) if history_df is not None else None
+    except Exception:
+        history_df = None
+        hourly_df = None
+    
+    if hourly_df is not None and not hourly_df.empty:
+        now = datetime.now()
+        current_hour = now.hour
+        alert = check_smart_price_alert(hourly_df, current_hour)
+        
+        if alert:
+            hours_wait = alert["hours_to_wait"]
+            drop_hour = alert["drop_hour"]
+            price_drop = alert["price_drop"]
+            
+            st.warning(
+                f"Price usually drops at {drop_hour}:00 (−€{price_drop:.3f}/L). "
+                f"Worth waiting {hours_wait} hour{'s' if hours_wait > 1 else ''}?"
+            )
+    
+    # =========================================================================
+    # BEST TIME TO REFUEL (WITH GRIDLINES)
+    # =========================================================================
+    
+    st.markdown("### Best Time to Refuel")
+    st.caption("Based on 14-day price patterns")
+    
+    if hourly_df is not None and not hourly_df.empty:
+        fig = create_hourly_pattern_chart(hourly_df, fuel_code)
+        st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+        
+        optimal = get_cheapest_and_most_expensive_hours(hourly_df)
+        cheapest_hour = optimal.get("cheapest_hour")
+        
+        if cheapest_hour is not None:
+            st.success(f"Usually cheapest: {cheapest_hour}:00")
+    else:
+        st.info("Not enough historical data to show hourly patterns.")
+    
+    st.markdown("---")
+    
+    # =========================================================================
+    # PRICE TREND (7 DAYS - NO DOTS)
+    # =========================================================================
+    
+    with st.expander("Price Trend (7 days)", expanded=False):
+        try:
+            history_df_7d = get_station_price_history(station_uuid, fuel_code, days=7)
+            if history_df_7d is not None and not history_df_7d.empty:
+                fig, stats_text = create_price_trend_chart(history_df_7d, fuel_code)
+                st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+                st.caption(stats_text)
             else:
-                st.plotly_chart(create_comparison_chart(stations_data, fuel_code, current_station_name=name), use_container_width=True, config=PLOTLY_CONFIG)
-
-                # Quick insight
-                try:
-                    current_avg = stations_data.get(f"{name} (Current)", pd.DataFrame())["price"].mean()
-                    if pd.notna(current_avg):
-                        diffs = []
-                        for label, df in stations_data.items():
-                            if "(Current)" in label or df.empty:
-                                continue
-                            alt_avg = df["price"].mean()
-                            if pd.notna(alt_avg):
-                                diffs.append(float(alt_avg) - float(current_avg))
-
-                        if diffs:
-                            avg_diff = sum(diffs) / len(diffs)
-                            if avg_diff > 0:
-                                st.success(f"On average over 14 days, the selected station is cheaper by about €{avg_diff:.3f}/L versus the comparison set.")
-                            elif avg_diff < 0:
-                                st.warning(f"On average over 14 days, the selected station is more expensive by about €{abs(avg_diff):.3f}/L versus the comparison set.")
-                            else:
-                                st.info("On average over 14 days, the selected station matches the comparison set.")
-                except Exception as e:
-                    diagnostics_errors.append(f"Comparison insight error: {e!r}")
-
-    # -----------------------------
-    # Diagnostics (bottom, collapsed)
-    # -----------------------------
-    st.markdown("---")
-    with st.expander("Diagnostics (debug)", expanded=False):
-        st.caption("This section is intended for debugging and development. It does not affect the recommender logic.")
-        debug_keys = sorted([k for k in station.keys() if str(k).startswith("debug_")])
-        st.markdown("**debug_* keys present**")
-        st.write(debug_keys if debug_keys else "No debug_* keys present on this station.")
-
-        st.markdown("**Price basis fields (normalized)**")
-        st.write(basis.raw)
-
-        if diagnostics_errors:
-            st.markdown("**Captured errors**")
-            for err in diagnostics_errors:
-                st.code(err)
-
-        st.markdown("**Raw station payload**")
-        st.json(station, expanded=False)
-
-    st.caption("Tip: Use Route Analytics or Station Explorer to change the selection, and Trip Planner to run a new route.")
-
+                st.info("No historical data available.")
+        except Exception:
+            st.info("No historical data available.")
+    
+    # =========================================================================
+    # COMPARE STATIONS
+    # =========================================================================
+    
+    with st.expander("Compare Stations", expanded=False):
+        st.caption("Top ranked stations from your route")
+        
+        if len(ranked) >= 1:
+            # Current station card
+            st.markdown(f"""
+            <div style='background: #e0f2fe; border-left: 4px solid #0284c7; padding: 1rem; border-radius: 0.5rem; margin-bottom: 1rem;'>
+                <div style='font-weight: 700; font-size: 1.1rem; color: #0c4a6e;'>{name} (Current)</div>
+                <div style='margin-top: 0.5rem; color: #075985;'>
+                    <span style='font-size: 1.3rem; font-weight: 700;'>€{display_price:.3f}</span> / L
+                </div>
+                <div style='margin-top: 0.3rem; color: #0369a1; font-size: 0.9rem;'>
+                    {"On route" if detour_min < 0.5 else f"+{detour_min:.0f} min detour"}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Top 3 from ranking
+            for idx, s in enumerate(ranked[:3], start=1):
+                s_uuid = _station_uuid(s)
+                if s_uuid == station_uuid:
+                    continue
+                
+                s_name = _station_name(s)
+                s_price = _safe_float(s.get(pred_key))
+                s_detour = _safe_float(s.get("detour_duration_min"))
+                
+                if s_price:
+                    st.markdown(f"""
+                    <div style='background: #f3f4f6; border-left: 4px solid #9ca3af; padding: 1rem; border-radius: 0.5rem; margin-bottom: 0.8rem;'>
+                        <div style='font-weight: 600; font-size: 1rem; color: #374151;'>#{idx} {s_name}</div>
+                        <div style='margin-top: 0.5rem; color: #1f2937;'>
+                            <span style='font-size: 1.2rem; font-weight: 700;'>€{s_price:.3f}</span> / L
+                        </div>
+                        <div style='margin-top: 0.3rem; color: #6b7280; font-size: 0.9rem;'>
+                            {"On route" if (s_detour or 0) < 0.5 else f"+{s_detour:.0f} min detour"}
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+        else:
+            st.info("Need route ranking to show comparison.")
+    
     maybe_persist_state()
 
 
