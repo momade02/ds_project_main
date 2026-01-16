@@ -678,11 +678,11 @@ def main():
                 
                 # Format as HH:MM
                 eta_time = eta_dt.strftime("%H:%M")
-                st.info(f"Estimated Time of Arrvial: {eta_time}")
+                st.info(f"Estimated Time of Arrival: {eta_time}")
             except Exception:
-                st.info("Estimated Time of Arrvial: —")
+                st.info("Estimated Time of Arrival: —")
         else:
-            st.info("Estimated Time of Arrvial: —")
+            st.info("Estimated Time of Arrival: —")
 
     with info_cols[2]:
         # Opening hours (same as before)
@@ -834,7 +834,7 @@ def main():
                         eta_dt = datetime.fromisoformat(eta_str.replace("Z", "+00:00"))
                     else:
                         eta_dt = eta_str
-                    eta_display = f" • Estimated Time of Arrvial: {eta_dt.strftime('%H:%M')}"
+                    eta_display = f" • Estimated Time of Arrival: {eta_dt.strftime('%H:%M')}"
                 except:
                     pass
             
@@ -871,7 +871,7 @@ def main():
                             s_eta_dt = datetime.fromisoformat(s_eta_str.replace("Z", "+00:00"))
                         else:
                             s_eta_dt = s_eta_str
-                        s_eta_display = f" • Estimated Time of Arrvial: {s_eta_dt.strftime('%H:%M')}"
+                        s_eta_display = f" • Estimated Time of Arrival: {s_eta_dt.strftime('%H:%M')}"
                     except:
                         pass
                 
