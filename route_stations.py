@@ -240,7 +240,6 @@ def downsample_route_coords(
 
     # Generate uniformly spaced indices from 0 .. (n_points - 1).
     # The rounding ensures we get a fixed count close to max_points.
-    # Example: if n_points=10000 and max_points=5000, we keep roughly every 2nd point.
     idxs = [
         round(i * (n_points - 1) / (max_points - 1))
         for i in range(max_points)
@@ -490,7 +489,7 @@ def google_places_fuel_along_route(
         (lat, lon) for lon, lat in segment_coords_lonlat
     ]
     # Encode geometry into polyline string format required by Places API
-    encoded_poly_str = polyline.encode(latlon_tuples, precision=5)
+    encoded_poly_str = polyline.encode(latlon_tuples, precision=6)
 
     # 2. Prepare API Request
     # Using the new Places API v1 endpoint
