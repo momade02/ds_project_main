@@ -242,7 +242,7 @@ def _render_trip_planner_action() -> SidebarState:
         value=str(_canonical("end_locality", "Sindelfingen")),
         key=_w("end_locality"),
         label_visibility="collapsed",
-        placeholder="Destination: city or full address",
+        placeholder="Destination: city or full address"
     )
 
     # (You currently keep these empty; preserve behavior)
@@ -287,6 +287,10 @@ def _render_trip_planner_action() -> SidebarState:
         step=1.0,
         value=float(_canonical("litres_to_refuel", 40.0)),
         key=_w("litres_to_refuel"),
+        help=(
+            "Amount of fuel (in litres) you plan to refuel at the selected station. "
+            "The more you refuel, the higher the potential savings from price differences."
+            ),
     )
 
     consumption_l_per_100km = st.sidebar.number_input(
@@ -296,6 +300,10 @@ def _render_trip_planner_action() -> SidebarState:
         step=0.5,
         value=float(_canonical("consumption_l_per_100km", 7.0)),
         key=_w("consumption_l_per_100km"),
+        help=(
+            "Your car's average fuel consumption in litres per 100 km. "
+            "Used to estimate extra fuel costs for detours."
+        ),
     )
 
     value_of_time_eur_per_hour = st.sidebar.number_input(
@@ -305,6 +313,10 @@ def _render_trip_planner_action() -> SidebarState:
         step=5.0,
         value=float(_canonical("value_of_time_eur_per_hour", 0.0)),
         key=_w("value_of_time_eur_per_hour"),
+        help=(
+            "Monetary value you assign to your time (in euros per hour). "
+            "Used to estimate the cost of extra travel time for detours. "
+            ),
     )
 
     max_detour_km = st.sidebar.number_input(
@@ -314,6 +326,10 @@ def _render_trip_planner_action() -> SidebarState:
         step=0.5,
         value=float(_canonical("max_detour_km", 5.0)),
         key=_w("max_detour_km"),
+        help=(
+            "The maximum additional distance you are willing to drive for a detour compared to the baseline route. "
+            "Stations requiring more extra distance are excluded (hard constraint)."
+        ),
     )
 
     max_detour_min = st.sidebar.number_input(
