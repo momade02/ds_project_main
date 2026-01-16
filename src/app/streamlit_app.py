@@ -1115,7 +1115,7 @@ def main() -> None:
                 """
                 try:
                     # UI weights for the four major steps (provided as absolute fractions summing to 1.0).
-                    weights = [0.6, 0.2, 0.018, 0.02]
+                    weights = [0.02, 0.58, 0.2, 0.018, 0.02]
 
                     # Cumulative mapping (step index is 1-based)
                     cum = []

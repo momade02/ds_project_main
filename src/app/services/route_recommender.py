@@ -49,6 +49,22 @@ def run_route_recommendation(
     Returns the 'last_run' dict in the exact structure your UI already expects
     (stations, ranked, best_station, route_coords, params, fuel_code, etc.).
     """
+    def _call_progress(name: str, idx: int, total: int) -> None:
+        if not progress_callback:
+            return
+        try:
+            # Use the 5-step mapping (caller uses total==5).
+            # Simplified: assume caller passes integer idx/total and total==5.
+            if total == 5 and 1 <= idx <= 5:
+                numerators = [0, 3, 4, 5, 5]
+                progress_callback(name, numerators[idx - 1], 5)
+            else:
+                progress_callback(name, idx, total)
+        except Exception:
+            # Never let progress reporting break the recommender
+            return
+    
+    _call_progress("Start of the recommender", 1, 5)
 
     integration_kwargs = dict(integration_kwargs or {})
     ranking_kwargs = dict(ranking_kwargs or {})
@@ -69,24 +85,15 @@ def run_route_recommendation(
     # IMPORTANT: do NOT inject fuel_code/debug_mode here unless your integration function
     # explicitly supports them (your UI currently does not pass them).
 
-    def _call_progress(name: str, idx: int, total: int) -> None:
-        if not progress_callback:
-            return
-        try:
-            progress_callback(name, idx, total)
-        except Exception:
-            # Never let progress reporting break the recommender
-            return
-
     try:
         # --- This call MUST stay identical to your current logic ---
         # It should return whatever your current integration function returns.
         # Provide a user-friendly progress label describing the main work inside
         # `get_fuel_prices_for_route`: geocoding, route calculation, place search
         # and enrichment with historical + realtime prices.
-        _call_progress("Convert addresses, calculate route, find stations along route", 1,4,)
+        _call_progress("Convert addresses, calculate route, find stations along route", 2, 5)
         stations, route_info = get_fuel_prices_for_route(**integration_kwargs)
-        _call_progress("Get (historical) prices", 2, 4,)
+        _call_progress("Get (historical) prices", 3, 5)
         route_coords = route_info.get("route_coords") if isinstance(route_info, dict) else None
 
         # recommender.py expects 'fuel_type' (positional or keyword), not 'fuel_code'
@@ -102,14 +109,14 @@ def run_route_recommendation(
             ranking_kwargs.setdefault("max_detour_min", inputs.max_detour_time_min)
             ranking_kwargs.setdefault("min_net_saving_eur", float(inputs.min_net_saving_eur or 0.0))
 
-        _call_progress("Prediction & ranking: forecast prices and rank stations", 3, 4)
+        _call_progress("Prediction & ranking: forecast prices and rank stations", 4, 5)
         ranked = rank_stations_by_predicted_price(
             stations,
             inputs.fuel_code, 
             audit_log=audit_log,  # <- fuel_type positional argument
             **ranking_kwargs,
         )
-        _call_progress("Ranking complete — recommendation ready", 4, 4)
+        _call_progress("Ranking complete — recommendation ready", 5, 5)
 
         # recommend_best_station() is just a wrapper around rank_stations_by_predicted_price()
         # and does NOT accept 'use_economics'. Since we already ranked, pick the top element.
