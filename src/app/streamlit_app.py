@@ -969,6 +969,10 @@ def main() -> None:
         st.switch_page(target)
 
 
+    # Show info box on fresh load (hide after first run)
+    if "has_run_once" not in st.session_state:
+        st.session_state["has_run_once"] = False
+
     # ----------------------------------------------------------------------
     # Sidebar (standardized)
     # ----------------------------------------------------------------------
@@ -998,6 +1002,25 @@ def main() -> None:
 
     debug_mode = bool(st.session_state.get("debug_mode", False))
 
+    # Mark that run was clicked to hide the intro message
+    if run_clicked:
+        st.session_state["has_run_once"] = True
+
+
+    # Show introduction message only on first load (before any run)
+    if not st.session_state.get("has_run_once", False):
+        st.info(
+            "**Welcome to the Fuel Station Recommender!**\n\n"
+            "This tool helps you find the best-value gas station along your driving route. "
+            "To use it:"
+            "\n\n- Enter a **starting point** and a **destination** (city or full address)."
+            "\n- Choose the **fuel type** and **how many litres** you plan to buy."
+            "\n- Click **Run Recommender** to search stations along the route and get a recommendation."
+            "\n\nWhat you will see:"
+            "\n- The maximum amount of money you can save."
+            "\n- Information for the best gas station, such as the current fuel price, the predicted price, the distance from the start point to the station, and the expected detour distance."
+            "\n- A map with the planned route, on which the gas stations along the route are marked."
+        )
 
     # -----------------------------
     # Parameters hash (controls recompute warnings)
