@@ -684,9 +684,9 @@ def main() -> None:
     # ETA KPI: only show if we have it
     eta_text = "—"
     if basis.eta_local is not None:
-        # show with timezone abbreviation (+01/+02)
+        # show without timezone abbreviation (Germany context assumed)
         try:
-            eta_text = basis.eta_local.strftime("%a %H:%M (%Z)")
+            eta_text = basis.eta_local.strftime("%a %H:%M")
         except Exception:
             eta_text = str(basis.eta_local)
 
@@ -746,7 +746,7 @@ def main() -> None:
         rationale_rows.append({"Field": "Minutes to arrival", "Value": f"{basis.minutes_to_arrival:.0f} min"})
     if basis.eta_local is not None:
         try:
-            rationale_rows.append({"Field": "ETA (Europe/Berlin)", "Value": basis.eta_local.strftime("%Y-%m-%d %H:%M (%Z)")})
+            rationale_rows.append({"Field": "ETA (Europe/Berlin)", "Value": basis.eta_local.strftime("%Y-%m-%d %H:%M")})
         except Exception:
             rationale_rows.append({"Field": "ETA (Europe/Berlin)", "Value": str(basis.eta_local)})
 
