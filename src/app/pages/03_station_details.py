@@ -703,7 +703,7 @@ def main() -> None:
     with c1:
         st.metric("Current", _fmt_price(current_price))
     with c2:
-        st.metric("Predicted", _fmt_price(predicted_price), delta=(f"{pred_delta:+.3f} €/L" if pred_delta is not None else None))
+        st.metric("Predicted", _fmt_price(predicted_price), delta=(f"{pred_delta:+.3f} €/L" if pred_delta is not None else None), delta_color="inverse")
     with c3:
         st.metric("ETA (local)", eta_text)
     with c4:
