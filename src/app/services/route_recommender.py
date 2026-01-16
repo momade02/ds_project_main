@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple, Callable
 
 from src.app.app_errors import AppError
-import time
 # Import your existing core functions exactly as you currently do in streamlit_app.py.
 # The names below must match your project.
 from src.integration.route_tankerkoenig_integration import get_fuel_prices_for_route
@@ -59,7 +58,6 @@ def run_route_recommendation(
             return
     
     _call_progress("Start of the recommender", 1)
-    time.sleep(0.25)  # slight delay to ensure progress bar updates in UI
 
     integration_kwargs = dict(integration_kwargs or {})
     ranking_kwargs = dict(ranking_kwargs or {})
@@ -88,7 +86,7 @@ def run_route_recommendation(
         # and enrichment with historical + realtime prices.
         _call_progress("Convert addresses, calculate route, find stations along route, get (historical) prices", 2)
         stations, route_info = get_fuel_prices_for_route(**integration_kwargs)
-        _call_progress("Done", 3)
+
         route_coords = route_info.get("route_coords") if isinstance(route_info, dict) else None
 
         # recommender.py expects 'fuel_type' (positional or keyword), not 'fuel_code'
@@ -104,14 +102,14 @@ def run_route_recommendation(
             ranking_kwargs.setdefault("max_detour_min", inputs.max_detour_time_min)
             ranking_kwargs.setdefault("min_net_saving_eur", float(inputs.min_net_saving_eur or 0.0))
 
-        _call_progress("Prediction & ranking: forecast prices and rank stations", 4)
+        _call_progress("Prediction & ranking: forecast prices and rank stations", 3)
         ranked = rank_stations_by_predicted_price(
             stations,
             inputs.fuel_code, 
             audit_log=audit_log,  # <- fuel_type positional argument
             **ranking_kwargs,
         )
-        _call_progress("Ranking complete — recommendation ready", 5)
+        _call_progress("Ranking complete — recommendation ready", 4)
 
         # recommend_best_station() is just a wrapper around rank_stations_by_predicted_price()
         # and does NOT accept 'use_economics'. Since we already ranked, pick the top element.
