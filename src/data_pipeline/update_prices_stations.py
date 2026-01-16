@@ -353,6 +353,7 @@ def generate_synthetic_gap_data():
             .eq('is_synthetic', False)  # Only real data as source
             .gte('date', yesterday_start)
             .lte('date', yesterday_end)
+            .limit(50000)  # Set high limit to get all gap period data (~29k expected)
             .order('date', desc=False)
             .execute()
         )
