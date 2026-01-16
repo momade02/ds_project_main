@@ -2,12 +2,7 @@
 Unified daily update script for Tankerkönig data.
 Downloads latest stations and prices CSVs and uploads to Supabase.
 Automatically deletes price data older than 14 days.
-
-IMPROVEMENTS IN THIS VERSION:
-- Better error handling for deletion failures
-- Script now STOPS if deletion fails (critical for avoiding data accumulation)
-- Clear error messages when index is missing
-- Added documentation about index requirement
+Generates synthetic gap data for 00:00-07:00 coverage.
 """
 
 import os
@@ -189,19 +184,15 @@ def update_prices():
     
     DELETION LOGIC: 
     - Deletes price records older than 14 days BEFORE inserting new data
+    - Deletes today's synthetic gap data (cleanup from yesterday)
     - Keeps a rolling 14-day window of historical prices
-    - This happens EVERY TIME the script runs
     
     INDEX REQUIREMENT (CRITICAL):
-    - Requires index on 'date' column for fast deletion: 
-      CREATE INDEX idx_prices_date ON prices(date);
-    - Without this index, deletion will timeout on tables with >1M rows
-    - If deletion fails, the script will now STOP to prevent data accumulation
+    - Requires index on 'date' column for fast deletion
+    - CREATE INDEX idx_prices_date ON prices(date);
     
     TIMEZONE HANDLING:
-    - CSV contains German local time with timezone marker (e.g., '2025-11-14 00:00:04+01')
-    - Strips timezone marker but keeps German local time (e.g., '2025-11-14 00:00:04')
-    - NO conversion to UTC - preserves the original German time
+    - Keeps German local time (no UTC conversion)
     """
     logger.info("\n=== UPDATING PRICES ===")
     
@@ -221,23 +212,19 @@ def update_prices():
         # Clean and prepare data
         logger.info("Preparing prices data...")
         
-        # FIXED: Keep German local time, strip timezone
-        # Input: '2025-11-14 00:00:04+01'
-        # Output: '2025-11-14 00:00:04'
+        # Strip timezone, keep German local time
         def strip_timezone(date_str):
             """Remove timezone info, keep local German time."""
             if pd.isna(date_str) or date_str == '' or date_str is None:
                 return None
             try:
-                # Parse the datetime with timezone info
                 dt = pd.to_datetime(date_str)
-                # Return as string WITHOUT timezone (keeps local time)
                 return dt.strftime('%Y-%m-%d %H:%M:%S')
             except:
                 return None
         
         df['date'] = df['date'].apply(strip_timezone)
-        logger.info(f"✓ Processed {df['date'].notna().sum():,} timestamps (kept German local time)")
+        logger.info(f"✓ Processed {df['date'].notna().sum():,} timestamps")
         
         # Convert numeric columns
         for col in ['diesel', 'e5', 'e10']:
@@ -246,52 +233,44 @@ def update_prices():
         for col in ['dieselchange', 'e5change', 'e10change']:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
         
-        # Handle NaN values - replace with None for Supabase
+        # Handle NaN values
         df = df.where(pd.notnull(df), None)
         
-        # === DELETION STEP (IMPROVED ERROR HANDLING) ===
-        # Delete data older than 14 days (keeps rolling 14-day window)
-        # Calculate cutoff as German local time (since we're storing German time)
+        # === DELETION STEP 1: Old data (>14 days) ===
         cutoff_date = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d %H:%M:%S')
-        logger.info(f"Deleting prices older than {cutoff_date} (German time)...")
+        logger.info(f"Deleting prices older than {cutoff_date}...")
         
         deletion_success = False
         try:
-            delete_result = supabase.table('prices').delete().lt('date', cutoff_date).execute()
-            logger.info(f"✓ Old price records deleted successfully (older than 14 days)")
+            supabase.table('prices').delete().lt('date', cutoff_date).execute()
+            logger.info(f"✓ Old price records deleted (older than 14 days)")
             deletion_success = True
         except Exception as e:
             error_msg = str(e)
-            # Log LOUD ERROR but continue running
             logger.error("=" * 80)
-            logger.error("❌❌❌ CRITICAL: DELETION FAILED! OLD DATA NOT REMOVED! ❌❌❌")
+            logger.error("❌ CRITICAL: DELETION FAILED!")
             logger.error("=" * 80)
-            
-            # Check for timeout error specifically
             if 'statement timeout' in error_msg.lower() or '57014' in error_msg:
                 logger.error(f"Error type: STATEMENT TIMEOUT")
-                logger.error(f"Possible cause: Missing or slow index on 'date' column")
-                logger.error(f"Fix: Run in Supabase SQL Editor:")
-                logger.error(f"     CREATE INDEX idx_prices_date ON prices(date);")
+                logger.error(f"Fix: CREATE INDEX idx_prices_date ON prices(date);")
             else:
-                logger.error(f"Error type: {type(e).__name__}")
-                logger.error(f"Error message: {e}")
-            
-            logger.error(f"⚠️  Old data WILL ACCUMULATE - manual cleanup needed!")
-            logger.error(f"⚠️  Continuing with upload to keep app functional...")
+                logger.error(f"Error: {e}")
+            logger.error("⚠️ Old data WILL ACCUMULATE!")
             logger.error("=" * 80)
-            
-            # Write to separate alert file for easy monitoring
-            alert_file = log_dir / "DELETION_FAILURES.txt"
-            with open(alert_file, 'a') as f:
-                f.write(f"\n{'='*80}\n")
-                f.write(f"DELETION FAILED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"Error: {error_msg}\n")
-                f.write(f"{'='*80}\n")
-            
-            # Continue with upload despite deletion failure
+            # Continue anyway to keep app functional
         
-        # Insert new data in batches
+        # === DELETION STEP 2: Today's synthetic data (cleanup) ===
+        logger.info("Cleaning up today's synthetic gap data...")
+        today_start = datetime.now().strftime('%Y-%m-%d 00:00:00')
+        today_7am = datetime.now().strftime('%Y-%m-%d 07:00:00')
+        
+        try:
+            supabase.table('prices').delete().eq('is_synthetic', True).gte('date', today_start).lt('date', today_7am).execute()
+            logger.info("✓ Today's synthetic gap data cleaned up")
+        except Exception as e:
+            logger.warning(f"Could not delete today's synthetic data: {e}")
+        
+        # === INSERT NEW DATA ===
         data = df.to_dict('records')
         batch_size = 1000
         total_batches = (len(data) + batch_size - 1) // batch_size
@@ -307,20 +286,27 @@ def update_prices():
                 supabase.table('prices').insert(batch).execute()
                 inserted_count += len(batch)
                 
-                # Log progress every 100 batches to reduce spam
                 batch_num = i//batch_size + 1
                 if batch_num % 100 == 0 or batch_num == total_batches:
                     logger.info(f"  Progress: {batch_num}/{total_batches} batches ({inserted_count:,} records)")
                     
             except Exception as e:
-                logger.warning(f"  Batch {i//batch_size + 1} failed: {e}")
-                failed_batches.append(i//batch_size + 1)
+                logger.warning(f"  Batch {batch_num} failed: {e}")
+                failed_batches.append(batch_num)
         
         if failed_batches:
             logger.warning(f"Failed batches: {failed_batches[:10]}{'...' if len(failed_batches) > 10 else ''}")
         
         success_rate = (inserted_count / len(data) * 100) if len(data) > 0 else 0
-        logger.info(f"✓ Prices updated: {inserted_count:,}/{len(data):,} records ({success_rate:.1f}% success)")
+        logger.info(f"✓ Prices updated: {inserted_count:,}/{len(data):,} ({success_rate:.1f}%)")
+        
+        # === GENERATE SYNTHETIC DATA FOR TOMORROW ===
+        logger.info("\nGenerating synthetic data for tomorrow's gap...")
+        synthetic_success = generate_synthetic_gap_data()
+        
+        if not synthetic_success:
+            logger.warning("⚠️ Synthetic gap data generation had issues")
+            logger.warning("   App may not work properly 00:00-07:00 tomorrow")
         
         # Return success if at least 95% of records were inserted
         return success_rate >= 95.0
@@ -330,28 +316,141 @@ def update_prices():
         return False
 
 
+def generate_synthetic_gap_data():
+    """
+    Generate synthetic data for tomorrow's gap period (00:00-06:59).
+    
+    Formula: On day N at 7am:
+    - Just uploaded: day (N-1) real data
+    - Generate for: day (N+1) gap (00:00-06:59)
+    - Source from: day (N-1) gap (time-matched, 48h old)
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    logger.info("\n=== GENERATING SYNTHETIC GAP DATA ===")
+    
+    try:
+        current_time = datetime.now()
+        yesterday = current_time - timedelta(days=1)  # N-1 (source)
+        tomorrow = current_time + timedelta(days=1)   # N+1 (target)
+        
+        tomorrow_date = tomorrow.date()
+        yesterday_date = yesterday.date()
+        
+        logger.info(f"Target: {tomorrow_date} gap (00:00-06:59)")
+        logger.info(f"Source: {yesterday_date} gap (00:00-06:59)")
+        
+        # Fetch source data from yesterday's gap
+        yesterday_start = f"{yesterday_date} 00:00:00"
+        yesterday_end = f"{yesterday_date} 06:59:59"
+        
+        logger.info(f"Fetching source: {yesterday_start} to {yesterday_end}...")
+        
+        response = (
+            supabase.table('prices')
+            .select('date,station_uuid,diesel,e5,e10')
+            .eq('is_synthetic', False)  # Only real data as source
+            .gte('date', yesterday_start)
+            .lte('date', yesterday_end)
+            .order('date', desc=False)
+            .execute()
+        )
+        
+        if not response.data:
+            logger.warning("⚠️ No source data from yesterday's gap")
+            logger.warning("   Cannot generate synthetic data")
+            return False
+        
+        source_df = pd.DataFrame(response.data)
+        logger.info(f"✓ Fetched {len(source_df):,} source records")
+        
+        # Generate synthetic records (time-matched)
+        synthetic_records = []
+        
+        for _, row in source_df.iterrows():
+            try:
+                source_time = pd.to_datetime(row['date'])
+                
+                # Map to tomorrow's same time
+                target_time = source_time.replace(
+                    year=tomorrow_date.year,
+                    month=tomorrow_date.month,
+                    day=tomorrow_date.day
+                )
+                
+                synthetic_records.append({
+                    'date': target_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'station_uuid': row['station_uuid'],
+                    'diesel': row.get('diesel'),
+                    'e5': row.get('e5'),
+                    'e10': row.get('e10'),
+                    'dieselchange': 0,
+                    'e5change': 0,
+                    'e10change': 0,
+                    'is_synthetic': True
+                })
+                
+            except Exception as e:
+                logger.warning(f"Could not process record: {e}")
+                continue
+        
+        if not synthetic_records:
+            logger.warning("⚠️ No synthetic records generated")
+            return False
+        
+        total_records = len(synthetic_records)
+        logger.info(f"Generated {total_records:,} synthetic records")
+        
+        # Insert in batches
+        batch_size = 1000
+        total_batches = (total_records + batch_size - 1) // batch_size
+        logger.info(f"Inserting in {total_batches} batches...")
+        
+        inserted_count = 0
+        for i in range(0, total_records, batch_size):
+            batch = synthetic_records[i:i+batch_size]
+            try:
+                supabase.table('prices').insert(batch).execute()
+                inserted_count += len(batch)
+                
+                batch_num = i//batch_size + 1
+                if batch_num % 5 == 0 or batch_num == total_batches:
+                    logger.info(f"  Progress: {batch_num}/{total_batches} batches ({inserted_count:,} records)")
+                    
+            except Exception as e:
+                logger.warning(f"  Batch {batch_num} failed: {e}")
+        
+        success_rate = (inserted_count / total_records * 100) if total_records > 0 else 0
+        logger.info(f"✓ Synthetic: {inserted_count:,}/{total_records:,} ({success_rate:.1f}%)")
+        
+        return success_rate >= 95.0
+        
+    except Exception as e:
+        logger.error(f"✗ Failed to generate synthetic gap data: {e}", exc_info=True)
+        return False
+
+
 def main():
     """
-    Run daily update for both stations and prices.
+    Run daily update for stations and prices.
     
-    SUMMARY OF WHAT THIS SCRIPT DOES:
-    1. Downloads yesterday's stations CSV from Tankerkönig (1 request)
-    2. Deletes ALL stations in Supabase
-    3. Inserts fresh stations data
-    4. Downloads yesterday's prices CSV from Tankerkönig (1 request)
-    5. Deletes prices older than 14 days from Supabase (REQUIRES INDEX!)
-    6. Inserts new prices data (keeping German local time)
+    WORKFLOW:
+    1. Download & insert yesterday's stations (full refresh)
+    2. Delete old prices (>14 days)
+    3. Delete today's synthetic gap data (cleanup)
+    4. Download & insert yesterday's prices
+    5. Generate tomorrow's synthetic gap data (00:00-06:59)
     
-    Total Tankerkönig requests: 2 per day (stations + prices)
-    
-    IMPORTANT: Script continues even if deletion fails (to keep app working)
-    but logs loud errors. Check DELETION_FAILURES.txt for issues.
+    Gap Strategy:
+    - At 7am on day N: generate synthetic for day (N+1)
+    - Source: day (N-1) data (48h old, time-matched)
+    - Enables 24/7 app usage
     """
     logger.info("=" * 60)
     logger.info("TANKERKÖNIG DAILY UPDATE STARTED")
     logger.info("=" * 60)
     logger.info(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info(f"Tankerkönig requests: 2 (stations + prices)")
     logger.info("=" * 60)
     
     start_time = datetime.now()
@@ -359,9 +458,8 @@ def main():
     # Update stations
     stations_success = update_stations()
     
-    # Update prices (returns tuple: (upload_success, deletion_success))
-    prices_result = update_prices()
-    prices_success = prices_result  # For now, just check if it's True/False
+    # Update prices
+    prices_success = update_prices()
     
     # Summary
     duration = (datetime.now() - start_time).total_seconds()
@@ -371,13 +469,6 @@ def main():
     logger.info(f"Stations: {'✓ SUCCESS' if stations_success else '✗ FAILED'}")
     logger.info(f"Prices:   {'✓ SUCCESS' if prices_success else '✗ FAILED'}")
     logger.info(f"Duration: {duration:.1f} seconds")
-    logger.info(f"Total Tankerkönig API calls: 2")
-    
-    # Check for deletion failures alert file
-    alert_file = Path.home() / "logs" / "DELETION_FAILURES.txt"
-    if alert_file.exists():
-        logger.warning("⚠️  DELETION_FAILURES.txt exists - check for accumulating data!")
-    
     logger.info("=" * 60)
     
     # Exit with error code if any update failed
