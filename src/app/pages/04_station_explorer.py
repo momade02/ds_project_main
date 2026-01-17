@@ -179,7 +179,7 @@ def _render_cheapest_station_header(station: Dict[str, Any], fuel_code: str) -> 
 
     subtitle_line = price_line
 
-    label_html = _safe_text("Cheapest & closest station found:")
+    label_html = _safe_text("Cheapest & closest station:")
     name_html = _safe_text(title_line) if title_line else ""
     addr_html = _safe_text(subtitle_line) if subtitle_line else ""
 
@@ -297,6 +297,7 @@ def main() -> None:
             type="primary",
             use_container_width=True,
             key="explorer_search_btn",
+            help="Runs a new search with the current settings and refreshes the map and results.",
         )
 
         st.sidebar.header("Where?")
@@ -305,6 +306,7 @@ def main() -> None:
             "City / ZIP / Address",
             value=str(_canonical("explorer_location_query", "Tübingen")),
             key=_w("explorer_location_query"),
+            help="Center location for the radius search (e.g., city, postal code, or full address).",
         )
 
         st.sidebar.slider(
@@ -314,6 +316,7 @@ def main() -> None:
             value=float(_canonical("explorer_radius_km", 10.0)),
             step=0.5,
             key=_w("explorer_radius_km"),
+            help="Search radius around the center point. Max 25 km (API limit).",
         )
 
         st.sidebar.header("What?")
@@ -323,6 +326,7 @@ def main() -> None:
             options=["E5", "E10", "Diesel"],
             index=["E5", "E10", "Diesel"].index(str(_canonical("explorer_fuel_label", "E5"))),
             key=_w("explorer_fuel_label"),
+            help="If a station has no price for the selected fuel, it will be treated as ‘no current price’ for this view.",
         )
 
         # Brand filter — same canonical key as Page 01 ("brand_filter_selected")
@@ -339,6 +343,7 @@ def main() -> None:
             options=brand_options,
             default=list(_canonical("brand_filter_selected", [])) if brand_options else [],
             key=_w("brand_filter_selected"),
+            help="Available after running a search once. If set, only stations matching these brands are included in results.",
         )
 
         st.sidebar.header("Advanced Settings")
@@ -350,12 +355,14 @@ def main() -> None:
             value=int(_canonical("explorer_limit", 50)),
             step=10,
             key=_w("explorer_limit"),
+            help="Limits the number of stations returned after filtering and ranking (cheapest first, then closest).",
         )
 
         st.sidebar.checkbox(
-            "Only open stations & realtime data",
+            "Only open stations & realtime prices",
             value=bool(_canonical("explorer_only_open", False)),
             key=_w("explorer_only_open"),
+            help="Only stations that are currently open and have a current price for the selected fuel are shown.",
         )
 
         # Sync widget values back into canonical persisted keys
@@ -502,9 +509,13 @@ def main() -> None:
         "</div>",
     ]
 
-    html_block = "<div class='metric-grid'>" + "".join(cards) + "</div>"
+    html_block = (
+        "<div class='explorer-metric-wrap'>"
+        "<div class='metric-grid'>"
+        + "".join(cards) +
+        "</div></div>"
+    )
     st.markdown(html_block, unsafe_allow_html=True)
-
 
     h_left, h_right = st.columns([0.70, 0.30], vertical_alignment="center")
     with h_left:
@@ -616,9 +627,11 @@ def main() -> None:
     if bool(only_open):
         st.markdown(
             """
+            <div class="explorer-map-legend-wrap">
             <div class="map-legend">
-              <div class="legend-item"><span class="legend-dot best"></span><span>Cheapest station(s)</span></div>
-              <div class="legend-item"><span class="legend-dot better"></span><span>Other open stations (with current price)</span></div>
+                <div class="legend-item"><span class="legend-dot best"></span><span>Cheapest station(s)</span></div>
+                <div class="legend-item"><span class="legend-dot better"></span><span>Other open stations (with current price)</span></div>
+            </div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -626,10 +639,12 @@ def main() -> None:
     else:
         st.markdown(
             """
+            <div class="explorer-map-legend-wrap">
             <div class="map-legend">
-              <div class="legend-item"><span class="legend-dot best"></span><span>Cheapest station(s)</span></div>
-              <div class="legend-item"><span class="legend-dot better"></span><span>Open stations (with current price)</span></div>
-              <div class="legend-item"><span class="legend-dot other"></span><span>Closed or missing current price</span></div>
+                <div class="legend-item"><span class="legend-dot best"></span><span>Cheapest station(s)</span></div>
+                <div class="legend-item"><span class="legend-dot better"></span><span>Open stations (with current price)</span></div>
+                <div class="legend-item"><span class="legend-dot other"></span><span>Closed or missing current price</span></div>
+            </div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -641,7 +656,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     st.markdown(f"#### Stations Selector")
     st.markdown(
-        "<div class='explorer-selector-subtitle'>Choose station and find out more in Station Explorer.</div>",
+        "<div class='explorer-selector-subtitle'>Find out more in Station Explorer.</div>",
         unsafe_allow_html=True,
     )
 
@@ -723,6 +738,7 @@ def main() -> None:
             index=default_index,
             key="explorer_station_dropdown",
             label_visibility="collapsed",
+            help="Ranked by current price for the selected fuel (tie-break: closer to center).",
         )
 
         chosen_idx = labels.index(chosen_label)
@@ -736,7 +752,10 @@ def main() -> None:
             unsafe_allow_html=True,
         )
 
-        if st.button("Open in Station Details", key="explorer_open_station_details_btn", use_container_width=True):
+        if st.button("Open in Station Details", 
+                     key="explorer_open_station_details_btn", 
+                     use_container_width=True, 
+                     help="Opens the selected station in Page 03 with the station preselected.",):
             st.session_state["selected_station_uuid"] = chosen_uuid
             st.session_state["selected_station_data"] = chosen_station
             try:
@@ -749,6 +768,10 @@ def main() -> None:
     # Results table (final section on this page)
     # ------------------------------------------------------------------
     st.markdown("#### Results")
+    st.markdown(
+        "<div class='explorer-selector-subtitle'>All stations returned by the current search (after filters and result limit).</div>",
+        unsafe_allow_html=True,
+    )
 
     df = _build_results_table(stations, fuel_code=fuel_code)
     st.dataframe(df, hide_index=True, use_container_width=True)
