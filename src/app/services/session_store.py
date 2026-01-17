@@ -35,7 +35,7 @@ except Exception:  # pragma: no cover
     except Exception:
         ManagedIdentityType = None  # type: ignore
         create_from_managed_identity = None  # type: ignore
-        
+
 
 # ---------------------------------------------------------------------
 # Configuration + contract import (best-effort, to avoid hard coupling)
@@ -123,25 +123,46 @@ def _get_query_params() -> Dict[str, Any]:
 
 
 def _set_query_params(**params: Any) -> None:
-    # Avoid unnecessary reruns: only set if something actually changes.
+    """
+    Persist query parameters robustly across Streamlit versions.
+
+    Goal: ensure `sid` is actually present in the URL so a browser refresh
+    can recover the same Redis key.
+    """
     current = _get_query_params()
     desired = dict(current)
-    for k, v in params.items():
-        desired[k] = v
+    desired.update(params)
 
-    if desired == current:
+    # Normalize list-like values for consistent comparisons
+    def _norm(v: Any) -> Any:
+        if isinstance(v, (list, tuple)):
+            return v[0] if v else ""
+        return v
+
+    current_norm = {k: _norm(v) for k, v in current.items()}
+    desired_norm = {k: _norm(v) for k, v in desired.items()}
+
+    if desired_norm == current_norm:
         return
 
+    # Preferred API (Streamlit 1.52+): st.query_params supports update-like behavior
     try:
-        # st.query_params is dict-like in recent Streamlit
-        for k, v in params.items():
-            st.query_params[k] = v  # type: ignore[attr-defined]
+        qp = st.query_params  # type: ignore[attr-defined]
+        # Apply full desired set to avoid partial-update edge cases
+        for k in list(qp.keys()):
+            if k not in desired_norm:
+                del qp[k]
+        for k, v in desired_norm.items():
+            qp[k] = v
+        return
     except Exception:
-        try:
-            st.experimental_set_query_params(**desired)  # type: ignore[attr-defined]
-        except Exception:
-            # If we cannot set query params, we still run; we just won't persist across refresh.
-            return
+        pass
+
+    # Fallback API
+    try:
+        st.experimental_set_query_params(**desired_norm)  # type: ignore[attr-defined]
+    except Exception:
+        return
 
 
 def _new_session_id() -> str:
