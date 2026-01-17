@@ -507,8 +507,8 @@ def _display_best_station(
         (f"Predicted {fuel_code.upper()} price:", _format_price(pred_price)),
         (f"Current {fuel_code.upper()} price:", _format_price(current_price)),
         ("Distance to station:", dist_str),
-        ("Worst on-route price:", "—" if onroute_worst is None else _format_price(onroute_worst)),
-        ("Detour distance", _format_km(detour_km)),
+        ("Worst on-route predicted price:", "—" if onroute_worst is None else _format_price(onroute_worst)),
+        ("Detour distance:", _format_km(detour_km)),
     ]
 
     _render_metric_grid(hero_items)
