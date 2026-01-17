@@ -1067,3 +1067,23 @@ section[data-testid="stMain"] div.st-key-explorer_station_dropdown {
 section[data-testid="stMain"] div.st-key-explorer_open_station_details_btn {
   margin-top: -0.25rem !important;
 }
+
+
+/* ======================================================================
+   PAGE 04 — Map legend spacing (scoped via wrapper)
+   - Pull legend closer to the map (reduce gap)
+   - Push Stations Selector heading further down (increase gap)
+   ====================================================================== */
+
+.explorer-map-legend-wrap{
+  margin-top: -0.65rem !important;   /* legend closer to the map */
+  margin-bottom: 0.9rem !important; /* more space before next heading */
+}
+
+
+/* ======================================================================
+   PAGE 04 — Extra spacing below the Explorer metric cards (scoped)
+   ====================================================================== */
+.explorer-metric-wrap {
+  margin-bottom: 0.7rem !important;
+}
