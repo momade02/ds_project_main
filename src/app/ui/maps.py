@@ -406,6 +406,8 @@ def create_mapbox_gl_html(
     fuel_code: str | None = None,
     litres_to_refuel: float | None = None,
     onroute_worst_price: float | None = None,
+    popup_variant: str = "route",  # "route" (Page 01) vs "explorer" (Page 04)
+    **_ignored_kwargs: Any,
 ) -> str:
 
     """
@@ -500,6 +502,7 @@ def create_mapbox_gl_html(
         # Prices (formatted)
         current_price_s = _fmt_price(s.get(curr_key)) if curr_key else "—"
         predicted_price_s = _fmt_price(s.get(pred_key)) if pred_key else "—"
+        distance_km_s = _fmt_km(s.get("distance_km"))
 
         # Detour (formatted)
         detour_km_s = _fmt_km(s.get("detour_distance_km") or s.get("detour_km"))
@@ -552,6 +555,7 @@ def create_mapbox_gl_html(
                     "is_best": is_best,
                     "is_selected": is_selected,
                     "marker_category": str(props_category or ("best" if is_best else "better")),
+                    "distance_km": str(distance_km_s),
                 },
             }
         )
@@ -761,30 +765,57 @@ def create_mapbox_gl_html(
             }}
 
             // --- 2. Prepare Data for Popup ---
-            const headline = props.headline || props.brand || props.title || "Station";
-            const address = props.address || "";
+            const popupVariant = {json.dumps(popup_variant)};
+
+            const brand = (props.brand || "").trim();
+            const title = (props.title || "Station").trim();
+            const line1 = brand ? brand : title;
+
+            const address = (props.address || "").trim();
+
             const curP = props.current_price || "-";
+            const dist = props.distance_km || "-";
+
+            // Route-mode fields (Page 01)
             const predP = props.predicted_price || "-";
             const detKm = props.detour_km || "-";
             const detMin = props.detour_min || "-";
             const save = props.save_vs_worst || "-";
 
-            // --- 3. Event Listener: Mouse Enter ---
             el.addEventListener("mouseenter", () => {{
-                popup
-                    .setLngLat(coords)
-                    .setHTML(`
+                // Fix: Extract address logic to avoid nested template literals in Python f-string
+                const addrHtml = address ? `<div style="opacity:.85; margin-bottom:6px;">${{esc(address)}}</div>` : "";
+                let html = "";
+
+                if (popupVariant === "explorer") {{
+                    // Page 04: Brand -> full address -> current price + distance
+                    html = `
+                        <div style="font-size:12px; line-height:1.25;">
+                            <div style="font-weight:700; margin-bottom:4px;">${{esc(line1)}}</div>
+                            ${{addrHtml}}
+                            <div><b>Current</b>: ${{esc(curP)}}</div>
+                            <div><b>Distance (air-line)</b>: ${{esc(dist)}}</div>
+                        </div>
+                    `;
+                }} else {{
+                    // Default (Page 01): keep existing richer content
+                    const headline = props.headline || props.brand || props.title || "Station";
+                    html = `
                         <div style="font-size:12px; line-height:1.25;">
                             <div style="font-weight:700; margin-bottom:4px;">${{esc(headline)}}</div>
-                            ${{address ? `<div style="opacity:.85; margin-bottom:6px;">${{esc(address)}}</div>` : ""}}
+                            ${{addrHtml}}
                             <div><b>Current</b>: ${{esc(curP)}} &nbsp; <b>Pred</b>: ${{esc(predP)}}</div>
                             <div><b>Detour</b>: ${{esc(detKm)}} &nbsp; (${{esc(detMin)}})</div>
                             <div><b>Safe up to</b>: ${{esc(save)}}</div>
                         </div>
-                    `)
+                    `;
+                }}
+
+                popup
+                    .setLngLat(coords)
+                    .setHTML(html)
                     .addTo(map);
 
-                // Ensure popup is always above markers (z-index override)
                 const pe = popup.getElement();
                 if (pe) pe.style.zIndex = "9999";
             }});

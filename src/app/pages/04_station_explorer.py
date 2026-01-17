@@ -19,6 +19,9 @@ load_env_once()
 from config.settings import ensure_persisted_state_defaults
 from services.session_store import init_session_context, restore_persisted_state, maybe_persist_state
 
+import json
+import hashlib
+
 # ---------------------------------------------------------------------
 # Import bootstrap (same pattern as your other pages)
 # ---------------------------------------------------------------------
@@ -34,13 +37,13 @@ from app_errors import AppError, ConfigError, ExternalServiceError, DataAccessEr
 
 from src.app.services.station_explorer import (
     StationExplorerInputs,
-    search_stations_nearby,
+    search_stations_nearby_list_api,
 )
 
-from src.app.ui.maps import (
-    _supports_pydeck_selections,
-    _create_map_visualization,
-)
+import ui.maps as maps_mod
+import inspect
+
+import streamlit.components.v1 as components
 
 from ui.formatting import (
     _station_uuid,
@@ -55,20 +58,63 @@ def _fuel_label_to_code(label: str) -> str:
 
 
 def _build_results_table(stations: List[Dict[str, Any]], fuel_code: str) -> pd.DataFrame:
+    """
+    Explorer results table (Page 04).
+    Columns (left -> right):
+      Brand, Name, City, Full Address, Distance (air-line in km), Current Price <fuel>, Open (Yes/No)
+    """
     price_key = f"price_current_{fuel_code}"
-    rows = []
-    for s in stations:
+
+    def _full_address(s: Dict[str, Any]) -> str:
+        def _first(*keys: str) -> str:
+            for k in keys:
+                v = (s or {}).get(k)
+                if v is None:
+                    continue
+                t = str(v).strip()
+                if t:
+                    return t
+            return ""
+
+        street = _first("street", "addr_street", "addr:street")
+        house = _first("houseNumber", "house_number", "housenumber", "addr_housenumber", "addr:housenumber")
+        postcode = _first("postCode", "postcode", "zip", "postal_code", "postalCode", "addr_postcode", "addr:postcode")
+        city = _first("city", "place", "town", "village")
+
+        line1 = " ".join([p for p in [street, house] if p]).strip()
+        line2 = " ".join([p for p in [postcode, city] if p]).strip()
+
+        if line1 and line2:
+            return f"{line1}, {line2}"
+        if line1:
+            return line1
+        if line2:
+            return line2
+        return city or ""
+
+    current_price_col = f"Current Price {fuel_code.upper()}"
+
+    rows: List[Dict[str, Any]] = []
+    for s in stations or []:
+        is_open = (s or {}).get("is_open")
+        open_label = "Yes" if is_open is True else "No"
+
+        name = (s or {}).get("tk_name") or (s or {}).get("osm_name") or (s or {}).get("name") or "Unknown"
+        brand = (s or {}).get("brand") or ""
+        city = (s or {}).get("city") or (s or {}).get("place") or ""
+
         rows.append(
             {
-                "Station": s.get("tk_name") or s.get("osm_name") or "Unknown",
-                "Brand": s.get("brand") or "",
-                "City": s.get("city") or "",
-                "Distance (km)": round(float(s.get("distance_km", 0.0)), 2),
-                f"Current {fuel_code.upper()}": _format_price(s.get(price_key)),
-                "Open": "Yes" if s.get("is_open") is True else ("No" if s.get("is_open") is False else "—"),
-                "UUID": _station_uuid(s) or "",
+                "Brand": brand,
+                "Name": name,
+                "City": city,
+                "Full Address": _full_address(s),
+                "Distance (air-line in km)": round(float((s or {}).get("distance_km") or 0.0), 2),
+                current_price_col: _format_price((s or {}).get(price_key)),
+                "Open (Yes/No)": open_label,
             }
         )
+
     return pd.DataFrame(rows)
 
 
@@ -87,19 +133,25 @@ def _try_float(v: object) -> Optional[float]:
 def _pick_cheapest_station(stations: List[Dict[str, Any]], fuel_code: str) -> Optional[Dict[str, Any]]:
     """
     Returns the station with the lowest current price for the selected fuel.
+    Tie-break: if multiple stations share the same best price, pick the closer one (distance_km).
     Ignores stations with missing/non-numeric prices.
     """
     price_key = f"price_current_{fuel_code}"
 
     best_s: Optional[Dict[str, Any]] = None
-    best_p: Optional[float] = None
+    best_key: Optional[tuple[float, float]] = None  # (price, distance_km)
 
     for s in stations or []:
         p = _try_float((s or {}).get(price_key))
         if p is None:
             continue
-        if best_p is None or p < best_p:
-            best_p = p
+
+        d = _try_float((s or {}).get("distance_km"))
+        d_f = float(d) if d is not None else 1e9
+
+        k = (float(p), d_f)
+        if best_key is None or k < best_key:
+            best_key = k
             best_s = s
 
     return best_s
@@ -127,7 +179,7 @@ def _render_cheapest_station_header(station: Dict[str, Any], fuel_code: str) -> 
 
     subtitle_line = price_line
 
-    label_html = _safe_text("Cheapest station found:")
+    label_html = _safe_text("Cheapest & closest station found:")
     name_html = _safe_text(title_line) if title_line else ""
     addr_html = _safe_text(subtitle_line) if subtitle_line else ""
 
@@ -222,42 +274,37 @@ def main() -> None:
     # ------------------------------------------------------------
     run_clicked = {"value": False}
 
-    def _action_tab() -> None:
-        st.sidebar.header("Explorer Settings")
+    # IMPORTANT:
+    # Sidebar widgets are rendered only in the sidebar "Action" tab. When the user switches
+    # away from Action, Streamlit may not render those widgets, so we decouple:
+    #   - widget keys use: w_<name>
+    #   - canonical persisted keys use: <name>
+    def _w(k: str) -> str:
+        return f"w_{k}"
 
-        # Hard-force settings for this page (no sidebar toggles here)
-        st.session_state["explorer_use_realtime"] = True
-        st.session_state["debug_mode"] = True
+    def _canonical(k: str, default: Any) -> Any:
+        return st.session_state.get(k, default)
 
-        # IMPORTANT: These widgets live only in the sidebar "Action" tab. When the user switches
-        # the sidebar segmented-control away from Action, Streamlit may garbage-collect widget state
-        # for keys whose widgets are not rendered. To keep the latest values stable, we decouple:
-        #   - widgets use keys: w_<name>
-        #   - canonical persisted values use keys: <name>
-        def _w(k: str) -> str:
-            return f"w_{k}"
+    def _sync(k: str) -> None:
+        wk = _w(k)
+        if wk in st.session_state:
+            st.session_state[k] = st.session_state[wk]
 
-        def _canonical(k: str, default: Any) -> Any:
-            return st.session_state.get(k, default)
+    def _action_tab():
+        # Button at the very top (same primary/green styling approach as Page 01)
+        run_clicked["value"] = st.sidebar.button(
+            "Search Stations",
+            type="primary",
+            use_container_width=True,
+            key="explorer_search_btn",
+        )
 
-        def _sync(k: str) -> None:
-            wk = _w(k)
-            if wk in st.session_state:
-                st.session_state[k] = st.session_state[wk]
+        st.sidebar.header("Where?")
 
         st.sidebar.text_input(
             "City / ZIP / Address",
-            value=str(_canonical("explorer_location_query", _canonical("explorer_last_query", "Tübingen"))),
-            help="Examples: 'Tübingen', '72074 Tübingen', 'Wilhelmstraße 7, Tübingen'",
+            value=str(_canonical("explorer_location_query", "Tübingen")),
             key=_w("explorer_location_query"),
-        )
-
-        fuel_default = str(_canonical("explorer_fuel_label", "E5"))
-        st.sidebar.selectbox(
-            "Fuel type",
-            options=["E5", "E10", "Diesel"],
-            index=["E5", "E10", "Diesel"].index(fuel_default) if fuel_default in ["E5", "E10", "Diesel"] else 0,
-            key=_w("explorer_fuel_label"),
         )
 
         st.sidebar.slider(
@@ -265,23 +312,50 @@ def main() -> None:
             min_value=1.0,
             max_value=25.0,
             value=float(_canonical("explorer_radius_km", 10.0)),
-            step=1.0,
+            step=0.5,
             key=_w("explorer_radius_km"),
         )
 
-        st.sidebar.checkbox(
-            "Only show open stations (requires realtime)",
-            value=bool(_canonical("explorer_only_open", False)),
-            key=_w("explorer_only_open"),
+        st.sidebar.header("What?")
+
+        st.sidebar.selectbox(
+            "Fuel type",
+            options=["E5", "E10", "Diesel"],
+            index=["E5", "E10", "Diesel"].index(str(_canonical("explorer_fuel_label", "E5"))),
+            key=_w("explorer_fuel_label"),
         )
 
+        # Brand filter — same canonical key as Page 01 ("brand_filter_selected")
+        # Options are derived from current cached results (if available).
+        stations_cached = st.session_state.get("explorer_results") or []
+        brand_options = sorted({
+            str(s.get("brand")).strip()
+            for s in stations_cached
+            if str(s.get("brand") or "").strip()
+        })
+
+        st.sidebar.multiselect(
+            "Station brand",
+            options=brand_options,
+            default=list(_canonical("brand_filter_selected", [])) if brand_options else [],
+            key=_w("brand_filter_selected"),
+        )
+
+        st.sidebar.header("Advanced Settings")
+
         st.sidebar.slider(
-            "Max stations to load (performance)",
-            min_value=50,
-            max_value=400,
-            value=int(_canonical("explorer_limit", 200)),
-            step=50,
+            "Max number stations",
+            min_value=10,
+            max_value=200,
+            value=int(_canonical("explorer_limit", 50)),
+            step=10,
             key=_w("explorer_limit"),
+        )
+
+        st.sidebar.checkbox(
+            "Only open stations & realtime data",
+            value=bool(_canonical("explorer_only_open", False)),
+            key=_w("explorer_only_open"),
         )
 
         # Sync widget values back into canonical persisted keys
@@ -289,16 +363,11 @@ def main() -> None:
             "explorer_location_query",
             "explorer_fuel_label",
             "explorer_radius_km",
-            "explorer_only_open",
+            "brand_filter_selected",
             "explorer_limit",
+            "explorer_only_open",
         ):
             _sync(k)
-
-        run_clicked["value"] = st.sidebar.button(
-            "Search stations",
-            use_container_width=True,
-            key="explorer_search_btn",
-        )
 
     sidebar_view = render_sidebar_shell(action_renderer=_action_tab)
 
@@ -311,17 +380,42 @@ def main() -> None:
     radius_km = float(st.session_state.get("explorer_radius_km", 10.0))
     only_open = bool(st.session_state.get("explorer_only_open", False))
     use_realtime = bool(st.session_state.get("explorer_use_realtime", True))
-    limit = int(st.session_state.get("explorer_limit", 200))
+    limit = int(st.session_state.get("explorer_limit", 50))
+    brand_filter_selected = list(st.session_state.get("brand_filter_selected", []))
     debug_mode = bool(st.session_state.get("debug_mode", True))
 
     run = bool(run_clicked["value"]) and (sidebar_view == "Action")
+
+    # -----------------------------
+    # Parameters hash (controls recompute warnings)
+    # -----------------------------
+    params = {
+        "explorer_location_query": location_query,
+        "fuel_label": fuel_label,
+        "fuel_code": fuel_code,
+        "radius_km": float(radius_km),
+        "only_open": bool(only_open),
+        "limit": int(limit),
+        "use_realtime": bool(use_realtime),  # forced True on this page, but keep in hash for correctness
+        "brand_filter_selected": sorted(brand_filter_selected),
+    }
+    params_hash = hashlib.sha256(
+        json.dumps(params, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+    have_cached = st.session_state.get("explorer_center") is not None
+    cached_is_stale = have_cached and (st.session_state.get("explorer_params_hash") != params_hash)
+
+    # If user changed settings, keep showing cached results but warn
+    if not run and cached_is_stale:
+        st.warning("Inputs changed. Showing previous results.")
 
     # Execute search
     if run:
         st.session_state["explorer_last_query"] = location_query
 
         try:
-            payload = search_stations_nearby(
+            payload = search_stations_nearby_list_api(
                 StationExplorerInputs(
                     location_query=location_query,
                     fuel_code=fuel_code,
@@ -329,10 +423,12 @@ def main() -> None:
                     limit=int(limit),
                     use_realtime=bool(use_realtime),
                     only_open=bool(only_open),
+                    brand_filter_selected=brand_filter_selected,
                 )
             )
             st.session_state["explorer_center"] = payload["center"]
             st.session_state["explorer_results"] = payload["stations"]
+            st.session_state["explorer_params_hash"] = params_hash
 
             # Optional: set a "best" selection to reuse your Station Details flow
             cheapest_station = _pick_cheapest_station(payload["stations"], fuel_code=fuel_code)
@@ -371,14 +467,221 @@ def main() -> None:
     # Determine best station for highlighting
     best_uuid = cheapest_uuid  # highlight cheapest station
 
+
+    # ------------------------------------------------------------------
+    # Map (Explorer) — Mapbox GL JS, same UX as Page 01 (toggle + legend)
+    # ------------------------------------------------------------------
+    if "map_style_mode" not in st.session_state:
+        st.session_state["map_style_mode"] = "Standard"
+
+    # ------------------------------------------------------------
+    # Explorer metric cards (Page 04) — same visual design as Page 01
+    # ------------------------------------------------------------
+    price_key = f"price_current_{fuel_code}"
+
+    def _has_current_price(s: Dict[str, Any]) -> bool:
+        return _try_float((s or {}).get(price_key)) is not None
+
+    stations_found = int(len(stations or []))
+    stations_open = int(sum(1 for s in (stations or []) if (s or {}).get("is_open") is True))
+    stations_with_price = int(sum(1 for s in (stations or []) if _has_current_price(s)))
+
+    # Build HTML WITHOUT leading indentation/newline, otherwise Markdown may treat it as code.
+    cards = [
+        "<div class='metric-card'>"
+        f"<div class='metric-label'>{_safe_text('Stations found')}</div>"
+        f"<div class='metric-value'>{_safe_text(str(stations_found))}</div>"
+        "</div>",
+        "<div class='metric-card'>"
+        f"<div class='metric-label'>{_safe_text('Stations open')}</div>"
+        f"<div class='metric-value'>{_safe_text(str(stations_open))}</div>"
+        "</div>",
+        "<div class='metric-card'>"
+        f"<div class='metric-label'>{_safe_text('Stations with current price')}</div>"
+        f"<div class='metric-value'>{_safe_text(str(stations_with_price))}</div>"
+        "</div>",
+    ]
+
+    html_block = "<div class='metric-grid'>" + "".join(cards) + "</div>"
+    st.markdown(html_block, unsafe_allow_html=True)
+
+
+    h_left, h_right = st.columns([0.70, 0.30], vertical_alignment="center")
+    with h_left:
+        st.subheader(
+            "Stations Map",
+            help="See legend below map.",
+            anchor=False,
+        )
+        st.caption("Hover a station marker to show details.")
+
+    with h_right:
+        st.segmented_control(
+            label="",
+            options=["Standard", "Satellite"],
+            selection_mode="single",
+            label_visibility="collapsed",
+            width="stretch",
+            key="map_style_mode",
+        )
+
+    use_satellite = (st.session_state.get("map_style_mode") == "Satellite")
+
+    # Marker semantics (Explorer):
+    # - best: cheapest station (green)
+    # - better: open + has current price for selected fuel (orange)
+    # - other: closed OR missing current price (red)
+    price_key = f"price_current_{fuel_code}"
+
+    def _has_price(s: Dict[str, Any]) -> bool:
+        return _try_float((s or {}).get(price_key)) is not None
+
+    stations_for_map: List[Dict[str, Any]] = list(stations)
+
+    # Determine ALL "best" stations for highlighting:
+    # all stations that share the lowest current price for the selected fuel.
+    best_uuids: set[str] = set()
+    best_price: Optional[float] = None
+
+    # We compare prices with a tiny epsilon to avoid float quirks.
+    EPS = 1e-9
+
+    for s in stations_for_map:
+        u = _station_uuid(s)
+        if not u:
+            continue
+
+        p = _try_float((s or {}).get(price_key))
+        if p is None:
+            continue
+
+        if best_price is None or p < (best_price - EPS):
+            best_price = p
+            best_uuids = {u}
+        elif abs(p - best_price) <= EPS:
+            best_uuids.add(u)
+
+    # Keep best_uuid as a single representative (closest to center) for code paths
+    # that still expect exactly one best_station_uuid.
+    if best_uuids:
+        def _dist_km(uuid_: str) -> float:
+            for ss in stations_for_map:
+                if _station_uuid(ss) == uuid_:
+                    d = _try_float((ss or {}).get("distance_km"))
+                    return float(d) if d is not None else 0.0
+            return 0.0
+
+        best_uuid = min(best_uuids, key=_dist_km)
+
+    # Assign marker categories (this is the only place where `continue` is used)
+    marker_category_by_uuid: Dict[str, str] = {}
+    for s in stations_for_map:
+        u = _station_uuid(s)
+        if not u:
+            continue
+
+        if u in best_uuids:
+            marker_category_by_uuid[u] = "best"
+            continue
+
+        is_open = (s.get("is_open") is True)
+        if is_open and _has_price(s):
+            marker_category_by_uuid[u] = "better"
+        else:
+            marker_category_by_uuid[u] = "other"
+
+
+    # Build kwargs (and add popup_variant only if the installed maps.py supports it)
+    map_kwargs = dict(
+        route_coords=[],                 # Explorer mode: no route
+        stations=stations_for_map,
+        best_station_uuid=best_uuid,
+        via_full_coords=None,            # Explorer mode: no via route
+        use_satellite=use_satellite,
+        selected_station_uuid=st.session_state.get("selected_station_uuid"),
+        marker_category_by_uuid=marker_category_by_uuid,
+        height_px=560,
+        fuel_code=fuel_code,             # enables "current price" in hover popup
+    )
+
+    sig = inspect.signature(maps_mod.create_mapbox_gl_html)
+    if "popup_variant" in sig.parameters:
+        map_kwargs["popup_variant"] = "explorer"
+
+    map_html = maps_mod.create_mapbox_gl_html(**map_kwargs)
+
+    components.html(map_html, height=560, scrolling=False)
+
+    # Legend (Explorer-specific)
+    if bool(only_open):
+        st.markdown(
+            """
+            <div class="map-legend">
+              <div class="legend-item"><span class="legend-dot best"></span><span>Cheapest station(s)</span></div>
+              <div class="legend-item"><span class="legend-dot better"></span><span>Other open stations (with current price)</span></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            """
+            <div class="map-legend">
+              <div class="legend-item"><span class="legend-dot best"></span><span>Cheapest station(s)</span></div>
+              <div class="legend-item"><span class="legend-dot better"></span><span>Open stations (with current price)</span></div>
+              <div class="legend-item"><span class="legend-dot other"></span><span>Closed or missing current price</span></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
     # ------------------------------------------------------------------
     # Stations dropdown (ranked) — placed between Cheapest block and Map
     # ------------------------------------------------------------------
-    st.markdown(f"### Stations in {int(round(radius_km))} km Radius")
-    st.caption("Choose station and find out more in Station Explorer.")
+    st.markdown(f"#### Stations Selector")
+    st.markdown(
+        "<div class='explorer-selector-subtitle'>Choose station and find out more in Station Explorer.</div>",
+        unsafe_allow_html=True,
+    )
 
-    def _station_display_name(s: Dict[str, Any]) -> str:
-        return str(s.get("tk_name") or s.get("osm_name") or s.get("name") or "Unknown").strip()
+    def _station_primary_name(s: Dict[str, Any]) -> str:
+        """Brand preferred; fallback to station name."""
+        station_name = (s.get("tk_name") or s.get("osm_name") or s.get("name") or "Unknown")
+        brand = s.get("brand")
+        return str(brand).strip() if (brand and str(brand).strip()) else str(station_name).strip()
+
+    def _station_address_line(s: Dict[str, Any]) -> str:
+        """
+        Build a compact address string. If structured fields are missing, fall back to a
+        'postcode city' style string (or city only as last resort).
+        """
+        def _first(*keys: str) -> str:
+            for k in keys:
+                v = s.get(k)
+                if v is None:
+                    continue
+                t = str(v).strip()
+                if t:
+                    return t
+            return ""
+
+        street = _first("street", "addr_street", "addr:street")
+        house = _first("houseNumber", "house_number", "housenumber", "addr_housenumber", "addr:housenumber")
+        postcode = _first("postCode", "postcode", "zip", "postal_code", "postalCode", "addr_postcode", "addr:postcode")
+        city = _first("city", "place", "town", "village")
+
+        line1 = " ".join([p for p in [street, house] if p]).strip()
+        line2 = " ".join([p for p in [postcode, city] if p]).strip()
+
+        # prefer full street line; otherwise show postcode+city; otherwise city
+        if line1 and line2:
+            return f"{line1}, {line2}"
+        if line1:
+            return line1
+        if line2:
+            return line2
+        return city or ""
 
     def _station_price_value(s: Dict[str, Any]) -> float:
         v = _try_float(s.get(f"price_current_{fuel_code}"))
@@ -397,7 +700,9 @@ def main() -> None:
         u = _station_uuid(s)
         if not u:
             continue
-        labels.append(f"{i}. {_station_display_name(s)}")
+        primary = _station_primary_name(s)
+        addr = _station_address_line(s)
+        labels.append(f"{i}. {primary} — {addr}" if addr else f"{i}. {primary}")
         options.append(s)
 
     if not options:
@@ -425,9 +730,13 @@ def main() -> None:
         chosen_uuid = _station_uuid(chosen_station)
 
         # Optional: show a compact line under the dropdown (remove if you want it cleaner)
-        st.caption(f"Current {fuel_code.upper()}: {_format_price(chosen_station.get(f'price_current_{fuel_code}'))}")
+        st.markdown(
+            f"<div class='explorer-selector-price'>Current {fuel_code.upper()}: "
+            f"{_safe_text(_format_price(chosen_station.get(f'price_current_{fuel_code}')))}</div>",
+            unsafe_allow_html=True,
+        )
 
-        if st.button("Open in Station Details", key=f"open_station_details_{chosen_uuid}", use_container_width=True):
+        if st.button("Open in Station Details", key="explorer_open_station_details_btn", use_container_width=True):
             st.session_state["selected_station_uuid"] = chosen_uuid
             st.session_state["selected_station_data"] = chosen_station
             try:
@@ -436,122 +745,17 @@ def main() -> None:
                 pass
             st.switch_page("pages/03_station_details.py")
 
-    # Map (Explorer mode: empty route coords, map auto-fits to station bounds)
-    st.markdown("### Map")
-    deck = _create_map_visualization(
-        route_coords=[],
-        stations=stations,
-        best_station_uuid=best_uuid,
-        via_full_coords=None,
-        zoom_level=7.5,
-        fuel_code=fuel_code,
-        selected_station_uuid=st.session_state.get("selected_station_uuid"),
-    )
-
-    st.caption("Hover for quick info. Click a marker to select a station.")
-
-    selected_uuid_from_event: Optional[str] = None
-    if _supports_pydeck_selections():
-        event = st.pydeck_chart(
-            deck,
-            on_select="rerun",
-            selection_mode="single-object",
-            key="explorer_map",
-            use_container_width=True,
-            height=560,
-        )
-
-        try:
-            selection = event.selection
-            objects = getattr(selection, "objects", None)
-            if objects is None and isinstance(selection, dict):
-                objects = selection.get("objects")
-
-            if objects and "stations" in objects and objects["stations"]:
-                selected_obj = objects["stations"][0]
-                selected_uuid_from_event = selected_obj.get("station_uuid") or None
-        except Exception:
-            selected_uuid_from_event = None
-    else:
-        st.pydeck_chart(deck, use_container_width=True, height=560)
-        st.caption("Note: Your Streamlit version does not expose pydeck click selections.")
-
-    if selected_uuid_from_event:
-        st.session_state["selected_station_uuid"] = selected_uuid_from_event
-
-    # Results table + selection UX
-    st.markdown("---")
-    st.markdown("### Results")
+    # ------------------------------------------------------------------
+    # Results table (final section on this page)
+    # ------------------------------------------------------------------
+    st.markdown("#### Results")
 
     df = _build_results_table(stations, fuel_code=fuel_code)
     st.dataframe(df, hide_index=True, use_container_width=True)
 
-    # Select station by dropdown (reliable across Streamlit versions)
-    uuid_list = df["UUID"].tolist()
-    label_list = [
-        f"{row['Station']} ({row['Brand']}) · {row[f'Current {fuel_code.upper()}']} · {row['Distance (km)']} km"
-        for _, row in df.iterrows()
-    ]
-
-    # Default selection: clicked UUID, else best UUID, else first
-    default_uuid = st.session_state.get("selected_station_uuid") or best_uuid or (uuid_list[0] if uuid_list else "")
-    try:
-        default_idx = uuid_list.index(default_uuid) if default_uuid in uuid_list else 0
-    except Exception:
-        default_idx = 0
-
-    chosen_label = st.selectbox("Select a station", options=label_list, index=default_idx)
-    chosen_idx = label_list.index(chosen_label)
-    chosen_uuid = uuid_list[chosen_idx]
-
-    # Resolve chosen station dict
-    uuid_to_station: Dict[str, Dict[str, Any]] = {}
-    for s in stations:
-        u = _station_uuid(s)
-        if u:
-            uuid_to_station[u] = s
-    chosen_station = uuid_to_station.get(chosen_uuid)
-
-    col_a, col_b, col_c = st.columns([1, 1, 2])
-    with col_a:
-        if st.button("Set selection", use_container_width=True):
-            st.session_state["selected_station_uuid"] = chosen_uuid
-            st.session_state["selected_station_data"] = chosen_station
-            st.success("Selected station saved for Station Details.")
-    with col_b:
-        if st.button("Open Station Details", use_container_width=True):
-            st.session_state["selected_station_uuid"] = chosen_uuid
-            st.session_state["selected_station_data"] = chosen_station
-            st.switch_page("pages/03_station_details.py")
-    with col_c:
-        st.caption("Station Details provides the full deep dive (history, hourly pattern, comparisons).")
-
-    # Lightweight selected summary
-    st.markdown("---")
-    st.markdown("### Selected station")
-    if chosen_station:
-        price_key = f"price_current_{fuel_code}"
-        st.write(
-            f"**{chosen_station.get('tk_name') or chosen_station.get('osm_name') or 'Unknown'}**"
-            + (f" ({chosen_station.get('brand')})" if chosen_station.get("brand") else "")
-        )
-        st.write(
-            {
-                "UUID": chosen_uuid,
-                "Current price": _format_price(chosen_station.get(price_key)),
-                "Distance (km)": round(float(chosen_station.get("distance_km", 0.0)), 2),
-                "Open": chosen_station.get("is_open"),
-            }
-        )
-    else:
-        st.info("No station object resolved. Try selecting another station from the list.")
-
-    if debug_mode:
-        st.markdown("---")
-        st.markdown("DEBUG: explorer_center / counts")
-        st.json({"center": center, "stations_returned": len(stations), "best_uuid": best_uuid})
-
+    # Persist state (best-effort) and stop rendering here as requested
     maybe_persist_state()
+    return
 
 
 if __name__ == "__main__":

@@ -1037,3 +1037,33 @@ div[data-testid="stCaptionContainer"] {
     margin-top: 1rem !important;
   }
 }
+
+
+/* ======================================================================
+   PAGE 04 — Stations Selector spacing (scoped)
+   Only affects elements we mark with custom classes or specific widget keys.
+   ====================================================================== */
+
+/* Reduce distance between the "Stations Selector" heading and the subtitle */
+.explorer-selector-subtitle {
+  margin-top: -1rem !important;   /* pulls subtitle closer to heading */
+  margin-bottom: 0.8rem !important; /* keeps it tight above the dropdown */
+  opacity: 0.80;
+}
+
+/* Reduce distance ABOVE the selector (tighten the selectbox container) */
+section[data-testid="stMain"] div.st-key-explorer_station_dropdown {
+  margin-top: -0.1rem !important;
+}
+
+/* Increase distance BETWEEN selector and price line */
+.explorer-selector-price {
+  margin-top: -1rem !important;    /* pushes price further down from selectbox */
+  margin-bottom: 0.3rem !important; /* keeps it close to the button */
+  opacity: 0.85;
+}
+
+/* Decrease distance between price line and "Open in Station Details" button */
+section[data-testid="stMain"] div.st-key-explorer_open_station_details_btn {
+  margin-top: -0.25rem !important;
+}

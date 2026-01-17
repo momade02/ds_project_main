@@ -119,10 +119,11 @@ PERSISTED_STATE_FIELDS: Iterable[SessionStateField] = (
     SessionStateField("explorer_radius_km", 10.0),
     SessionStateField("explorer_only_open", False),
     SessionStateField("explorer_use_realtime", True),
-    SessionStateField("explorer_limit", 200),
+    SessionStateField("explorer_limit", 50),
     SessionStateField("explorer_fuel_label", "E5"),
     SessionStateField("explorer_center", None),
     SessionStateField("explorer_results", []),
+    SessionStateField("explorer_params_hash", None),
 
     # Cached run results
     SessionStateField("last_run", None),

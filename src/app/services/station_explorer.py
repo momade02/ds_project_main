@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import math
 
+import requests
+
 from app_errors import ConfigError, ExternalServiceError, DataAccessError
 
 # Reuse your existing integration utilities (stations cache + realtime price batching).
@@ -18,10 +20,11 @@ class StationExplorerInputs:
     location_query: str
     fuel_code: str = "e5"              # "e5" | "e10" | "diesel"
     radius_km: float = 10.0
-    limit: int = 200                   # cap results for UI
+    limit: int = 50                    # cap results for UI (Page 04 default)
     country: str = "Germany"
     use_realtime: bool = True
     only_open: bool = False
+    brand_filter_selected: Optional[List[str]] = None
 
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -155,24 +158,219 @@ def search_stations_nearby(inputs: StationExplorerInputs) -> Dict[str, Any]:
             s["price_current_diesel"] = info.get("diesel")
             s["is_open"] = info.get("is_open")
 
-    # Optional open-only filter
-    if inputs.only_open:
-        stations = [s for s in stations if s.get("is_open") is True]
-
     # Sorting policy:
     # - If we have current prices for chosen fuel_code, sort by price then distance.
     # - Otherwise sort by distance.
     price_key = f"price_current_{inputs.fuel_code}"
-    def _sort_key(s: Dict[str, Any]) -> Tuple[int, float, float]:
-        p = s.get(price_key)
-        if p is None:
-            return (1, 0.0, s["distance_km"])  # missing price goes last
+
+    def _has_current_price(st: Dict[str, Any]) -> bool:
+        v = (st or {}).get(price_key)
+        if v is None:
+            return False
         try:
-            return (0, float(p), s["distance_km"])
-        except Exception:
-            return (1, 0.0, s["distance_km"])
+            return float(v) > 0
+        except (TypeError, ValueError):
+            return False
+
+    # Optional filter (Page 04 semantics):
+    # "Only show open stations & stations with realtime data"
+    # => must be open AND have a current price for the selected fuel.
+    if inputs.only_open:
+        stations = [
+            s for s in stations
+            if (s.get("is_open") is True) and _has_current_price(s)
+        ]
+
+    def _sort_key(s: Dict[str, Any]) -> Tuple[int, float, float]:
+        p = (s or {}).get(price_key)
+        if p is None:
+            return (1, 0.0, float(s.get("distance_km") or 0.0))  # missing price goes last
+        try:
+            return (0, float(p), float(s.get("distance_km") or 0.0))
+        except (TypeError, ValueError):
+            return (1, 0.0, float(s.get("distance_km") or 0.0))
 
     stations.sort(key=_sort_key)
+
+    return {
+        "center": {"lat": lat0, "lon": lon0, "label": label, "radius_km": float(inputs.radius_km)},
+        "stations": stations,
+    }
+
+
+def search_stations_nearby_list_api(inputs: StationExplorerInputs) -> Dict[str, Any]:
+    """
+    Page-04-optimized station explorer search using Tankerkönig API Method 1 (list.php).
+
+    Behavior:
+      - Geocode the center (same as the rest of your app).
+      - Call Tankerkönig list.php once to fetch stations + realtime prices + isOpen.
+      - Apply filtering/sorting in Python (so "limit" is enforced AFTER filtering/sorting).
+      - Return the same payload shape as search_stations_nearby() so Page 04 session state remains stable.
+
+    Notes:
+      - list.php supports a maximum radius of 25 km. If the user exceeds this, we fall back to the
+        Supabase-based implementation (search_stations_nearby), which already supports larger radii.
+      - If inputs.use_realtime is False, we also fall back to search_stations_nearby(inputs) to preserve
+        the existing "no realtime" behavior (prices and open state remain None).
+    """
+    # Preserve existing behavior when realtime is disabled
+    if not inputs.use_realtime:
+        return search_stations_nearby(inputs)
+
+    if inputs.radius_km <= 0:
+        raise DataAccessError("Invalid radius.", details=f"radius_km={inputs.radius_km}")
+
+    # list.php hard limit (official): max 25 km. Page 04 UI already enforces this, but keep it defensive.
+    if float(inputs.radius_km) > 25.0:
+        return search_stations_nearby(inputs)
+
+    lat0, lon0, label = _geocode_location(inputs.location_query, inputs.country)
+
+    api_key = getattr(tkint, "TANKERKOENIG_API_KEY", None)
+    if not api_key:
+        raise ConfigError(
+            "Tankerkönig API key missing.",
+            details="Set TANKERKOENIG_API_KEY in your environment (.env / hosting settings).",
+        )
+
+    url = "https://creativecommons.tankerkoenig.de/json/list.php"
+    params = {
+        "lat": float(lat0),
+        "lng": float(lon0),
+        "rad": float(inputs.radius_km),
+        "type": "all",
+        # For type=all, Tankerkönig sorts by distance anyway; keep it explicit.
+        "sort": "dist",
+        "apikey": api_key,
+    }
+
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        raise ExternalServiceError("Tankerkönig request failed.", details=str(e))
+
+    if not data.get("ok"):
+        raise ExternalServiceError("Tankerkönig request returned ok=false.", details=str(data.get("message") or data))
+
+    raw_stations = data.get("stations") or []
+    if not isinstance(raw_stations, list):
+        raise ExternalServiceError("Unexpected Tankerkönig response shape.", details="'stations' is not a list.")
+
+    def _norm_price(v: Any) -> Optional[float]:
+        """Normalize Tankerkönig price fields: False/None/non-numeric/<=0 -> None."""
+        if v is None or v is False:
+            return None
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(fv) or fv <= 0:
+            return None
+        return fv
+
+    stations: List[Dict[str, Any]] = []
+    for stn in raw_stations:
+        if not isinstance(stn, dict):
+            continue
+
+        # Coordinates
+        try:
+            lat = float(stn.get("lat"))
+            lon = float(stn.get("lng"))
+        except (TypeError, ValueError):
+            continue
+
+        # Required id
+        uid = str(stn.get("id") or "").strip()
+        if not uid:
+            continue
+
+        # Distance returned by list.php (km)
+        dist_v = stn.get("dist")
+        try:
+            distance_km = float(dist_v) if dist_v is not None else float(_haversine_km(lat0, lon0, lat, lon))
+        except (TypeError, ValueError):
+            distance_km = float(_haversine_km(lat0, lon0, lat, lon))
+
+        is_open_v = stn.get("isOpen")
+        is_open: Optional[bool]
+        if isinstance(is_open_v, bool):
+            is_open = is_open_v
+        else:
+            is_open = None
+
+        # Build station record compatible with your UI/map stack
+        stations.append(
+            {
+                "station_uuid": uid,
+                "tk_name": stn.get("name"),
+                "brand": stn.get("brand"),
+                "city": stn.get("place") or "",
+                "place": stn.get("place") or "",
+                # Address parts for popups/tooltips
+                "street": stn.get("street"),
+                "houseNumber": stn.get("houseNumber"),
+                "postCode": stn.get("postCode"),
+                "lat": lat,
+                "lon": lon,
+                "distance_km": float(distance_km),
+                "price_current_e5": _norm_price(stn.get("e5")),
+                "price_current_e10": _norm_price(stn.get("e10")),
+                "price_current_diesel": _norm_price(stn.get("diesel")),
+                "is_open": is_open,
+            }
+        )
+
+    # Page 04 semantics (Option A):
+    # If only_open is enabled => station must be open AND have a current price for selected fuel.
+    price_key = f"price_current_{inputs.fuel_code}"
+
+    def _has_current_price(st: Dict[str, Any]) -> bool:
+        v = (st or {}).get(price_key)
+        if v is None:
+            return False
+        try:
+            return float(v) > 0
+        except (TypeError, ValueError):
+            return False
+
+    if inputs.only_open:
+        stations = [
+            s for s in stations
+            if (s.get("is_open") is True) and _has_current_price(s)
+        ]
+
+    # Optional brand filter (Page 04): if selected, keep only matching brands
+    if inputs.brand_filter_selected:
+        wanted = {
+            str(b).strip().lower()
+            for b in (inputs.brand_filter_selected or [])
+            if str(b).strip()
+        }
+        if wanted:
+            stations = [
+                s for s in stations
+                if str(s.get("brand") or "").strip().lower() in wanted
+            ]
+
+    # Sort by selected fuel price (if available), then distance; missing prices go last
+    def _sort_key(s: Dict[str, Any]) -> Tuple[int, float, float]:
+        p = (s or {}).get(price_key)
+        if p is None:
+            return (1, 0.0, float(s.get("distance_km") or 0.0))
+        try:
+            return (0, float(p), float(s.get("distance_km") or 0.0))
+        except (TypeError, ValueError):
+            return (1, 0.0, float(s.get("distance_km") or 0.0))
+
+    stations.sort(key=_sort_key)
+
+    # Enforce limit AFTER filtering/sorting (as requested)
+    if inputs.limit is not None:
+        stations = stations[: max(1, int(inputs.limit))]
 
     return {
         "center": {"lat": lat0, "lon": lon0, "label": label, "radius_km": float(inputs.radius_km)},
