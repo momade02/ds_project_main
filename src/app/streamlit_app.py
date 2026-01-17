@@ -1024,13 +1024,16 @@ def main() -> None:
             "**Need help?**"
             "\n- Hover over the $\\text{\\textcircled ?}$ info buttons in the sidebar to learn more about the system."
             "\n- You can also open the $\\text{\\textcircled ?}$ section at the top of the sidebar for even more guidance.\n\n"
-            "**What you will see:**"
+            "\n- An **introduction video** is available below ↓.\n\n"
+            "**What you will see as an output:**"
             "\n- Your **maximum potential savings**."
             "\n- The recommended station with key details (current/predicted price, distance along the route and expected detour)."
             "\n- A map showing your planned route and the stations found along it."
         )
 
         # --- YouTube intro video shown only before first run ---
+        st.markdown("### Introduction video",
+                    help="Watch this short introduction video to understand how to use the Fuel Station Recommender.")
         st.video("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 
     # -----------------------------
@@ -1119,6 +1122,7 @@ def main() -> None:
                 try:
                     with status_ph.status("Calculating route and recommendations...", expanded = True) as status:
                         status.write("Convert addresses to coordinates")
+                        time.sleep(0.5)
                         status.write(f"Compute route from {start_locality} to {end_locality}")
                         time.sleep(0.5)
                         status.write("Find stations along route")
