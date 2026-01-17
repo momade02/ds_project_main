@@ -44,6 +44,7 @@ import pydeck as pdk
 
 from datetime import datetime
 import time
+ 
 
 from config.settings import load_env_once, ensure_persisted_state_defaults
 
@@ -1113,13 +1114,40 @@ def main() -> None:
                 ranking_kwargs = {}
                 recommendation_kwargs = {}
 
-            # Progress UI removed: call recommender without progress callbacks
-            last_run = run_route_recommendation(
-                inputs,
-                integration_kwargs=integration_kwargs,
-                ranking_kwargs=ranking_kwargs,
-                recommendation_kwargs=recommendation_kwargs,
-            )
+            status_ph = st.empty()
+            try:
+                try:
+                    with status_ph.status("Calculating route and recommendations...", expanded = True) as status:
+                        status.write("Convert addresses to coordinates")
+                        status.write(f"Compute route from {start_locality} to {end_locality}")
+                        time.sleep(0.5)
+                        status.write("Find stations along route")
+                        last_run = run_route_recommendation(
+                            inputs,
+                            integration_kwargs=integration_kwargs,
+                            ranking_kwargs=ranking_kwargs,
+                            recommendation_kwargs=recommendation_kwargs,
+                        )
+                        status.write("Get (historical) prices for candidate stations")
+                        time.sleep(1)
+                        status.write("Predict prices")
+                        time.sleep(0.5)
+                        status.update(label = "Recommendation ready!", state = "complete", expanded = False)
+                except Exception:
+                    status_ph.info("Calculating route and recommendations...")
+
+                    last_run = run_route_recommendation(
+                        inputs,
+                        integration_kwargs=integration_kwargs,
+                        ranking_kwargs=ranking_kwargs,
+                        recommendation_kwargs=recommendation_kwargs,
+                    )
+            finally:
+                try:
+                    time.sleep(1)
+                    status_ph.empty()
+                except Exception:
+                    pass
 
             # ------------------------------------------------------------
             # Advanced Settings: Brand whitelist filter (upstream, before caching)
