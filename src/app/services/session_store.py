@@ -21,6 +21,21 @@ try:
 except Exception:  # pragma: no cover
     redis = None  # type: ignore
 
+try:
+    # Preferred (current docs)
+    from redis_entraid import ManagedIdentityType, create_from_managed_identity  # type: ignore
+except Exception:  # pragma: no cover
+    try:
+        # Fallback for alternate API shapes (some versions rename symbols)
+        from redis_entraid import ManagedIdentityType as _ManagedIdentityType  # type: ignore
+        from redis_entraid import create_from_managed_identity as _create_from_managed_identity  # type: ignore
+
+        ManagedIdentityType = _ManagedIdentityType  # type: ignore
+        create_from_managed_identity = _create_from_managed_identity  # type: ignore
+    except Exception:
+        ManagedIdentityType = None  # type: ignore
+        create_from_managed_identity = None  # type: ignore
+        
 
 # ---------------------------------------------------------------------
 # Configuration + contract import (best-effort, to avoid hard coupling)
@@ -205,7 +220,10 @@ def _normalized_prefix(prefix: str) -> str:
 def _redis_client():
     """
     Creates a cached Redis client if Redis is configured; otherwise returns None.
-    Safe for local runs: if REDIS_HOST/REDIS_PASSWORD are missing, config returns None.
+
+    Supports:
+      - access_key mode (password-based)
+      - entra mode (Microsoft Entra ID via Managed Identity, using redis-entraid)
     """
     cfg = _redis_config()
     if cfg is None:
@@ -224,11 +242,45 @@ def _redis_client():
     skip_verify = str(_get_setting("REDIS_SKIP_TLS_VERIFY", "false")).strip().lower() in {"1", "true", "yes", "on"}
     ssl_ca_certs = certifi.where() if (certifi is not None) else None
 
+    auth_mode = str(getattr(cfg, "auth_mode", "access_key") or "access_key").strip().lower()
+
+    # -----------------------------
+    # Entra ID auth (Managed Identity)
+    # -----------------------------
+    if auth_mode == "entra":
+        if create_from_managed_identity is None or ManagedIdentityType is None:
+            # redis-entraid not installed / import failed
+            return None
+
+        try:
+            credential_provider = create_from_managed_identity(
+                identity_type=ManagedIdentityType.SYSTEM_ASSIGNED,
+                resource="https://redis.azure.com/",
+            )
+
+            return redis.Redis(
+                host=str(cfg.host),
+                port=int(cfg.port),
+                ssl=bool(cfg.ssl),
+                db=int(cfg.db),
+                ssl_ca_certs=None if skip_verify else ssl_ca_certs,
+                ssl_cert_reqs=None if skip_verify else "required",
+                socket_timeout=socket_timeout,
+                socket_connect_timeout=connect_timeout,
+                decode_responses=False,
+                credential_provider=credential_provider,
+            )
+        except Exception:
+            return None
+
+    # -----------------------------
+    # Access-key auth (current)
+    # -----------------------------
     try:
         return redis.Redis(
             host=str(cfg.host),
             port=int(cfg.port),
-            password=str(cfg.password),
+            password=str(getattr(cfg, "password", "") or ""),
             ssl=bool(cfg.ssl),
             db=int(cfg.db),
             ssl_ca_certs=None if skip_verify else ssl_ca_certs,

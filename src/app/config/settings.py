@@ -159,11 +159,23 @@ from dataclasses import dataclass
 class RedisConfig:
     host: str
     port: int
-    password: str
     ssl: bool
     db: int
     ttl_seconds: int
     key_prefix: str
+
+    # Auth
+    auth_mode: str  # "access_key" | "entra"
+    password: str | None = None  # only used for auth_mode="access_key"
+
+
+def _normalize_redis_auth_mode(val: object, default: str = "access_key") -> str:
+    s = str(val or "").strip().lower()
+    if s in {"entra", "entraid", "aad", "azuread"}:
+        return "entra"
+    if s in {"access_key", "accesskey", "key", "password"}:
+        return "access_key"
+    return default
 
 
 def _to_bool(val: object, default: bool = False) -> bool:
@@ -188,33 +200,36 @@ def get_redis_config() -> RedisConfig | None:
     """
     Returns RedisConfig if Redis is configured; otherwise None.
 
-    This enables:
-    - Local runs without Redis (falls back to in-memory session_state)
-    - Production runs with Azure Cache for Redis using TLS (port 6380)
+    Supports two auth modes:
+      - access_key: uses REDIS_PASSWORD (current behavior)
+      - entra: uses Microsoft Entra ID (Managed Identity / SPN). No password required.
     """
     host = get_setting("REDIS_HOST", default=None)
-    password = get_setting("REDIS_PASSWORD", default=None)
-
-    # If either is missing, treat Redis as "not configured".
-    if not host or not password:
+    if not host:
         return None
+
+    auth_mode = _normalize_redis_auth_mode(get_setting("REDIS_AUTH_MODE", default="access_key"))
+
+    password = get_setting("REDIS_PASSWORD", default=None)
+    if auth_mode == "access_key":
+        # In access_key mode, password is mandatory.
+        if not password:
+            return None
 
     port = _to_int(get_setting("REDIS_PORT", default="6380"), default=6380)
     ssl = _to_bool(get_setting("REDIS_SSL", default="true"), default=True)
     db = _to_int(get_setting("REDIS_DB", default="0"), default=0)
 
-    # For session snapshots, a 6–24h TTL is a sensible starting point.
     ttl_seconds = _to_int(get_setting("REDIS_TTL_SECONDS", default="43200"), default=43200)
-
-    # Namespace keys so you can safely share Redis with other apps later.
     key_prefix = str(get_setting("REDIS_KEY_PREFIX", default="tsf:session")).strip() or "tsf:session"
 
     return RedisConfig(
         host=str(host).strip(),
         port=port,
-        password=str(password).strip(),
         ssl=ssl,
         db=db,
         ttl_seconds=ttl_seconds,
         key_prefix=key_prefix,
+        auth_mode=auth_mode,
+        password=str(password).strip() if (password is not None and str(password).strip() != "") else None,
     )
