@@ -1012,15 +1012,21 @@ def main() -> None:
     if not st.session_state.get("has_run_once", False):
         st.info(
             "**Welcome to the Fuel Station Recommender!**\n\n"
-            "This tool helps you find the best-value gas station along your driving route. "
-            "To use it:"
-            "\n\n- Enter a **starting point** and a **destination** (city or full address)."
-            "\n- Choose the **fuel type** and **how many litres** you plan to buy."
-            "\n- Click **Run Recommender** to search stations along the route and get a recommendation."
-            "\n\nWhat you will see:"
-            "\n- The maximum amount of money you can save."
-            "\n- Information for the best gas station, such as the current fuel price, the predicted price, the distance from the start point to the station, and the expected detour distance."
-            "\n- A map with the planned route, on which the gas stations along the route are marked."
+            "This application helps you find the **best-value fuel stop** along your driving route. It predicts prices ahead and factors in detours to save you money without wasting time.\n\n"
+            "**To get started:** Set your parameter preferences in the **sidebar**."
+            "\n\n"
+            "\n- Enter a :gray-badge[**starting point**] and a :gray-badge[**destination**] (city or full address)."
+            "\n- Select your :gray-badge[**fuel type**] from the dropdown."
+            "\n- Click :green-badge[**Run recommender**] to calculate your route and get a recommendation.\n\n"
+            "\n- You can further customize the recommendation by adjusting the other parameters in the sidebar."
+            "\n\n"
+            "**Need help?**"
+            "\n- Hover over the $\\text{\\textcircled ?}$ info buttons in the sidebar to learn more about the system."
+            "\n- You can also open the $\\text{\\textcircled ?}$ section at the top of the sidebar for even more guidance.\n\n"
+            "**What you will see:**"
+            "\n- Your **maximum potential savings**."
+            "\n- The recommended station with key details (current/predicted price, distance along the route and expected detour)."
+            "\n- A map showing your planned route and the stations found along it."
         )
 
         # --- YouTube intro video shown only before first run ---
