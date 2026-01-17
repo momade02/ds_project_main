@@ -1113,63 +1113,13 @@ def main() -> None:
                 ranking_kwargs = {}
                 recommendation_kwargs = {}
 
-            # UI progress: simple step-based progress updates (non-blocking)
-            progress_bar = st.progress(0)
-            status = st.empty()
-
-            def _progress_cb(step_name: str, step_idx: int) -> None:
-                """
-                Map discrete steps to a weighted progress percentage and show
-                only a human-readable label.
-                """
-                try:
-                    # UI weights for the four major steps (provided as absolute fractions summing to 1.0).
-                    weights = [0.01, 0.01, 0.68, 0.28]
-
-                    # Cumulative mapping (step index is 1-based)
-                    cum = []
-                    s = 0.0
-                    for w in weights:
-                        s += w
-                        cum.append(s)
-
-                    idx = max(1, min(int(step_idx), len(cum)))
-                    pct = int(round(cum[idx - 1] * 100))
-                except Exception:
-                    pct = 0
-
-                try:
-                    progress_bar.progress(max(0, min(100, pct)))
-                except Exception:
-                    pass
-                try:
-                    status.text(step_name)
-                except Exception:
-                    pass
-
+            # Progress UI removed: call recommender without progress callbacks
             last_run = run_route_recommendation(
                 inputs,
                 integration_kwargs=integration_kwargs,
                 ranking_kwargs=ranking_kwargs,
                 recommendation_kwargs=recommendation_kwargs,
-                progress_callback=_progress_cb,
             )
-
-            try:
-                progress_bar.progress(100)
-                status.text("Completed (done)")
-                # small pause so user sees the completed state before widgets are removed
-                time.sleep(1.5)
-                try:
-                    progress_bar.empty()
-                except Exception:
-                    pass
-                try:
-                    status.empty()
-                except Exception:
-                    pass
-            except Exception:
-                pass
 
             # ------------------------------------------------------------
             # Advanced Settings: Brand whitelist filter (upstream, before caching)
