@@ -217,7 +217,14 @@ def _render_trip_planner_action() -> SidebarState:
         unsafe_allow_html=True,
     )
 
-    st.sidebar.markdown("### Route")
+    st.sidebar.markdown(
+        "### Route",
+        help=(
+            "Specify your trip's starting point and destination. "
+            "You can enter either a city name or a full address. "
+            "If you use a foreign address, please add the country name for better results."
+        ),
+    )
 
     start_locality = st.sidebar.text_input(
         "Start",
@@ -249,7 +256,12 @@ def _render_trip_planner_action() -> SidebarState:
     start_address = ""
     end_address = ""
 
-    st.sidebar.subheader("Fuel type")
+    st.sidebar.markdown(
+        "### Fuel type",
+        help=(
+            "Select the type of fuel your vehicle uses. E5, E10 and Diesel are supported."
+        ),
+    )
 
     fuel_options = ["E5", "E10", "Diesel"]
     fuel_label_default = str(_canonical("fuel_label", "E5"))
