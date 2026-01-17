@@ -291,8 +291,10 @@ def _redis_client():
                 decode_responses=False,
                 credential_provider=credential_provider,
             )
-        except Exception:
+        except Exception as e:
+            st.session_state["_redis_last_error"] = f"Entra redis client init failed: {type(e).__name__}: {e}"
             return None
+
 
     # -----------------------------
     # Access-key auth (current)
@@ -310,7 +312,8 @@ def _redis_client():
             socket_connect_timeout=connect_timeout,
             decode_responses=False,
         )
-    except Exception:
+    except Exception as e:
+        st.session_state["_redis_last_error"] = f"Access-key redis client init failed: {type(e).__name__}: {e}"
         return None
 
 

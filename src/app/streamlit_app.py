@@ -85,7 +85,7 @@ from ui.formatting import (
 
 from services.route_recommender import RouteRunInputs, run_route_recommendation
 
-from services.session_store import init_session_context, restore_persisted_state, maybe_persist_state
+from services.session_store import _redis_client, init_session_context, restore_persisted_state, maybe_persist_state
 
 from ui.styles import apply_app_css
 
@@ -923,6 +923,9 @@ def main() -> None:
     init_session_context()
     ensure_persisted_state_defaults(st.session_state)
 
+    if st.session_state.get("debug_mode", False):
+        _redis_client.cache_clear()
+
     # Keep refresh persistence working:
     # - overwrite_existing=True restores persisted values on a cold start / hard refresh
     # - then we re-apply widget keys if the user interaction already set them for this rerun
@@ -934,6 +937,12 @@ def main() -> None:
         st.session_state["sidebar_view"] = _preserve_sidebar_view
     if _preserve_map_style_mode is not None:
         st.session_state["map_style_mode"] = _preserve_map_style_mode  # <-- ADD THIS
+
+    # --- Redis debug (temporary) ---
+    if st.session_state.get("debug_mode", False):
+        err = st.session_state.get("_redis_last_error")
+        if err:
+            st.warning(f"Redis error: {err}")
 
     # Apply custom CSS styles
     apply_app_css()
