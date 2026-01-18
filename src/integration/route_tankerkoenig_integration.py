@@ -1,5 +1,5 @@
 """
-Module: Route ↔ Fuel Price Integration Pipeline.
+Module: Route â†” Fuel Price Integration Pipeline.
 
 Description:
     This module bridges the Geospatial domain (Google Maps Routes) with the
@@ -7,15 +7,15 @@ Description:
 
     It performs the following high-level transformation:
     [Route Coordinates & ETAs]
-           ↓
+           ↔
     [Match to Tankerkönig Stations (Spatial KD-Tree)]
-           ↓
+           ↔
     [Enrich with Historical Prices (Supabase Batch Queries)]
-           ↓
+           ↔
     [Enrich with Real-time Prices (Optional API Call)]
-           ↓
+           ↔
     [Feature Engineering (Time Cells, Lags)]
-           ↓
+           ↔
     [Model-Ready Feature Vectors]
 
 Usage:
@@ -222,9 +222,13 @@ def match_coordinates_progressive(
                 "station_uuid": closest_station["uuid"],
                 "tk_name": closest_station["name"],
                 "brand": closest_station["brand"],
+                "street": closest_station.get("street"),
+                "house_number": closest_station.get("house_number"),
+                "post_code": closest_station.get("post_code"),
                 "city": closest_station["city"],
                 "latitude": closest_station["latitude"],
                 "longitude": closest_station["longitude"],
+                "openingtimes_json": closest_station.get("openingtimes_json"),
                 "match_distance_m": round(dist_meters, 2),
             }
 
@@ -248,7 +252,7 @@ def load_all_stations_from_supabase() -> pd.DataFrame:
         and _CACHE_TIMESTAMP
         and (time.time() - _CACHE_TIMESTAMP < CACHE_DURATION_SEC)
     ):
-        print(f"✓ Using cached stations ({len(_CACHED_STATIONS_DF):,} records)")
+        print(f"âœ“ Using cached stations ({len(_CACHED_STATIONS_DF):,} records)")
         return _CACHED_STATIONS_DF
 
     # Load from DB
@@ -290,7 +294,7 @@ def load_all_stations_from_supabase() -> pd.DataFrame:
     # Update Cache
     _CACHED_STATIONS_DF = df
     _CACHE_TIMESTAMP = time.time()
-    print(f"✓ Loaded {len(df):,} valid stations.")
+    print(f"âœ“ Loaded {len(df):,} valid stations.")
     return df
 
 
@@ -654,8 +658,8 @@ if __name__ == "__main__":
             stations, meta = get_fuel_prices_for_route(
                 start_locality="Tübingen",
                 end_locality="Reutlingen",
-                start_address="Wilhelmstraße 7",
-                end_address="Charlottenstraße 45",
+                start_address="WilhelmstraÃŸe 7",
+                end_address="CharlottenstraÃŸe 45",
             )
             print(f"\nSuccess! Found {len(stations)} valid stations.")
             if stations:
