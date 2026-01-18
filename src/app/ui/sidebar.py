@@ -558,7 +558,7 @@ def render_sidebar_shell(
     *,
     action_renderer: Optional[Callable[[], None]] = None,
     action_placeholder: str = "Placeholder: Action",
-    help_placeholder: str = "Placeholder: Help (will be added later).",
+    help_renderer: Optional[Callable[[], None]] = None ,
     settings_placeholder: str = "Placeholder: Settings (will be added later).",
     profile_placeholder: str = "Placeholder: Profile (will be added later).",
 ) -> str:
@@ -594,12 +594,15 @@ def render_sidebar_shell(
             else:
                 st.info(action_placeholder)
         elif view == "Help":
-            st.info(help_placeholder)
+            if help_renderer is not None:
+                help_renderer()
+            else:
+                st.info("Placeholder: Help (content will be added later).")
         elif view == "Settings":
             st.info(settings_placeholder)
         else:
             st.info(profile_placeholder)
-    
+
     return st.session_state.get("sidebar_view", "Action")
 
 
