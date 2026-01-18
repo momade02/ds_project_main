@@ -237,49 +237,49 @@ def _normalized_prefix(prefix: str) -> str:
     return p[:-1] if p.endswith(":") else p
 
 
-@lru_cache(maxsize=1)
+_REDIS_CLIENT_SINGLETON = None  # cache only successful clients
 def _redis_client():
     """
-    Creates a cached Redis client if Redis is configured; otherwise returns None.
+    Creates a Redis client if Redis is configured; otherwise returns None.
 
-    Supports:
-      - access_key mode (password-based)
-      - entra mode (Microsoft Entra ID via Managed Identity, using redis-entraid)
+    Important behavior:
+    - Cache only SUCCESSFUL clients (do not cache failures forever).
+    - Validate the connection with PING so we do not cache a broken client.
     """
+    global _REDIS_CLIENT_SINGLETON
+
+    if _REDIS_CLIENT_SINGLETON is not None:
+        return _REDIS_CLIENT_SINGLETON
+
     cfg = _redis_config()
     if cfg is None:
         return None
 
     try:
         import redis  # type: ignore
-    except Exception:
+    except Exception as e:
+        st.session_state["_redis_last_error"] = f"redis import failed: {type(e).__name__}: {e}"
         return None
 
-    # Optional tuning knobs (do not belong in RedisConfig)
     socket_timeout = float(_get_setting("REDIS_SOCKET_TIMEOUT", 3.0))
     connect_timeout = float(_get_setting("REDIS_CONNECT_TIMEOUT", 3.0))
 
-    # TLS verification (recommended for Azure). Can be explicitly disabled if needed.
     skip_verify = str(_get_setting("REDIS_SKIP_TLS_VERIFY", "false")).strip().lower() in {"1", "true", "yes", "on"}
     ssl_ca_certs = certifi.where() if (certifi is not None) else None
 
     auth_mode = str(getattr(cfg, "auth_mode", "access_key") or "access_key").strip().lower()
 
-    # -----------------------------
-    # Entra ID auth (Managed Identity)
-    # -----------------------------
-    if auth_mode == "entra":
-        if create_from_managed_identity is None or ManagedIdentityType is None:
-            # redis-entraid not installed / import failed
-            return None
+    try:
+        if auth_mode == "entra":
+            if create_from_managed_identity is None or ManagedIdentityType is None:
+                raise RuntimeError("redis-entraid unavailable (missing dependency or incompatible redis-py)")
 
-        try:
             credential_provider = create_from_managed_identity(
                 identity_type=ManagedIdentityType.SYSTEM_ASSIGNED,
                 resource="https://redis.azure.com/",
             )
 
-            return redis.Redis(
+            client = redis.Redis(
                 host=str(cfg.host),
                 port=int(cfg.port),
                 ssl=bool(cfg.ssl),
@@ -291,9 +291,29 @@ def _redis_client():
                 decode_responses=False,
                 credential_provider=credential_provider,
             )
-        except Exception as e:
-            st.session_state["_redis_last_error"] = f"Entra redis client init failed: {type(e).__name__}: {e}"
-            return None
+        else:
+            client = redis.Redis(
+                host=str(cfg.host),
+                port=int(cfg.port),
+                password=str(getattr(cfg, "password", "") or ""),
+                ssl=bool(cfg.ssl),
+                db=int(cfg.db),
+                ssl_ca_certs=None if skip_verify else ssl_ca_certs,
+                ssl_cert_reqs=None if skip_verify else "required",
+                socket_timeout=socket_timeout,
+                socket_connect_timeout=connect_timeout,
+                decode_responses=False,
+            )
+
+        # Validate now; if it fails, do NOT cache a bad client
+        client.ping()
+
+        _REDIS_CLIENT_SINGLETON = client
+        return client
+
+    except Exception as e:
+        st.session_state["_redis_last_error"] = f"redis client init failed ({auth_mode}): {type(e).__name__}: {e}"
+        return None
 
 
     # -----------------------------
@@ -420,7 +440,8 @@ def restore_persisted_state(*, overwrite_existing: bool = True) -> bool:
         st.session_state[_REDIS_RESTORE_SID_KEY] = str(sid)
 
         return True
-    except Exception:
+    except Exception as e:
+        st.session_state["_redis_last_error"] = f"restore failed: {type(e).__name__}: {e}"
         return False
 
 
@@ -473,5 +494,6 @@ def maybe_persist_state(*, force: bool = False) -> bool:
         r.setex(_redis_key(sid), _ttl_seconds(), data)
         st.session_state["_redis_snapshot_hash"] = current_hash
         return True
-    except Exception:
+    except Exception as e:
+        st.session_state["_redis_last_error"] = f"persist failed: {type(e).__name__}: {e}"
         return False

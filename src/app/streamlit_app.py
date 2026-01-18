@@ -923,6 +923,11 @@ def main() -> None:
 
     restored = restore_persisted_state(overwrite_existing=True)
 
+    if st.session_state.get("debug_mode", False):
+        err = st.session_state.get("_redis_last_error")
+        if err:
+            st.warning(f"Redis/restore debug: {err}")
+
     # Only if no restore happened (e.g., Redis unavailable / no snapshot) do we keep any current values.
     # (Usually this is a no-op, but it is safe and rollback-friendly.)
     if not restored:
