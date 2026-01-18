@@ -1347,15 +1347,20 @@ def main() -> None:
         render_card_grid(items, cols=2)
 
 
-        # [CHANGE 3] Increase space above "Key visualization:"
-        # Set margin-top to a larger value (3.0rem)
+        # [CHANGE 3] Increase space above + Add Help Tooltip
+        # We use a manual spacer div to create the margin, then use standard
+        # st.markdown with help="..." to generate the "?" hover button.
+        st.markdown("<div style='margin-top: -1px;'></div>", unsafe_allow_html=True)
+        
         st.markdown(
-            """
-            <h4 style="margin-top: 0.5rem; margin-bottom: 0.2rem;">
-                Key Visualization:
-            </h4>
-            """,
-            unsafe_allow_html=True
+            "#### Key Visualization:",
+            help=(
+                "Visual comparison of the route options:\n\n"
+                "• **Blue line**: Your original Google Maps route (Baseline).\n\n"
+                "• **Purple line**: The alternative route that includes the detour to the station.\n\n"
+                "• **Red dot**: The recommended station's exact location along the trip.\n\n"
+                "The bar lengths are proportional to the total trip distance."
+            )
         )
 
         best_station: Optional[Dict[str, Any]] = cached.get("best_station")
