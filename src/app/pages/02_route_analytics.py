@@ -1353,7 +1353,7 @@ def main() -> None:
         st.markdown("<div style='margin-top: -1px;'></div>", unsafe_allow_html=True)
         
         st.markdown(
-            "#### Key Visualization:",
+            "#### Key route visualization:",
             help=(
                 "Visual comparison of the route options:\n\n"
                 "• **Blue line**: Your original Google Maps route (Baseline).\n\n"
@@ -1369,6 +1369,537 @@ def main() -> None:
 
         maybe_persist_state()
         return
+
+
+    # ------------------------------------------------------------------
+    # 2. Recommended Stations
+    # ------------------------------------------------------------------
+
+    if analysis_view == "Recommended Stations":
+        st.markdown("### **2. Recommended Stations**")
+
+        # Force cards to sit higher, counteracting st.columns padding
+        st.markdown(
+            """
+            <style>
+            /* Page 2 specific override for cards */
+            .p02-card {
+                margin-top: -1rem !important; 
+                margin-bottom: 1.3rem !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+
+        # -----------------------------
+        # Per-element spacing controls (REM)
+        # Adjust these values to tune spacing between specific elements.
+        # -----------------------------
+        P02_S = {
+            # Heading -> cards
+            "after_h_selected": 0,
+            "after_cards_selected": 0,
+
+            # Chart 1 block
+            "before_chart_selected": 0,
+            "after_chart_selected": 0,
+
+            # Heading 2
+            "before_h_discarded": 0,
+            "after_h_discarded": 0,
+
+            # Chart 2 block
+            "before_chart_discarded": 0.10,
+            "after_chart_discarded": 0.5,
+        }
+
+        def _gap(rem: float) -> None:
+            """Deterministic vertical spacing. Supports negative values to pull elements up."""
+            try:
+                r = float(rem)
+            except Exception:
+                return
+            
+            if r == 0:
+                return
+            
+            if r > 0:
+                # Positive gap: creates empty vertical space
+                st.markdown(f"<div style='height:{r}rem;'></div>", unsafe_allow_html=True)
+            else:
+                # Negative gap: pulls the next element up using negative margin
+                st.markdown(f"<div style='margin-top:{r}rem;'></div>", unsafe_allow_html=True)
+
+        st.markdown(
+            """
+            <style>
+            .tsf-chart-block {
+                margin-top: 0rem;     /* space ABOVE the chart block */
+                margin-bottom: -1rem;  /* space BELOW the chart block */
+                padding-left: 0.1rem;   /* left "margin" via padding */
+                padding-right: 0.00rem;  /* right "margin" via padding */
+            }
+
+            /* Optional: reduce plot container padding (Streamlit default is sometimes roomy) */
+            .tsf-chart-block [data-testid="stVegaLiteChart"] {
+                padding-top: 0rem !important;
+                padding-bottom: 0rem !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # -----------------------------
+        # Local helpers (scoped to this view)
+        # -----------------------------
+        def _as_int(x: Any) -> int:
+            try:
+                return int(x or 0)
+            except Exception:
+                return 0
+
+        def _donut_chart(
+            title: str,
+            counts: Dict[str, int],
+            *,
+            center_text: Optional[str] = None,
+            height: int = 320,
+            min_label_share: float = 0.0,
+            space_top: float = 0.0,
+            space_bottom: float = 0.0,
+            pad_top: int = 10,
+            pad_bottom: int = 0,
+        ) -> None:
+            """
+            Responsive donut chart with:
+            - Legend always below the chart (no overlap on mobile)
+            - Legend includes ALL categories, even when Count == 0
+            - Slice labels placed inside the ring to avoid boundary artifacts
+            """
+            # Preserve input order for stable legend/category mapping
+            domain = list(counts.keys())
+
+            df_all = pd.DataFrame(
+                [{"Category": k, "Count": int(max(0, v))} for k, v in counts.items()]
+            )
+
+            # Stable ordering: map the input key order to a numeric index
+            order_map = {k: i for i, k in enumerate(domain)}
+            df_all["sort_idx"] = df_all["Category"].map(order_map).astype(int)
+
+            total = int(df_all["Count"].sum())
+            if total <= 0:
+                st.caption("No data available for this chart.")
+                return
+
+            df_all["Share"] = df_all["Count"] / float(total)
+            df_all["Label"] = df_all["Share"].apply(
+                lambda x: f"{x:.0%}" if (float(x) >= float(min_label_share) and float(x) > 0) else ""
+            )
+
+            # Separate view for arcs (Count > 0), but keep a hidden layer for legend completeness
+            df_pos = df_all[df_all["Count"] > 0].copy()
+
+            df_pos["sort_idx"] = df_pos["Category"].map(order_map).astype(int)
+
+            legend = alt.Legend(
+                orient="bottom",
+                direction="vertical",
+                title=None,
+                labelLimit=240,
+                symbolSize=120,
+            )
+
+            color_enc = alt.Color(
+                "Category:N",
+                legend=legend,
+                scale=alt.Scale(domain=domain),  # stable category -> color assignment
+            )
+
+            # Hidden layer that "forces" the legend to include ALL categories (including zeros)
+            legend_layer = (
+                alt.Chart(df_all)
+                .mark_point(opacity=0)
+                .encode(color=color_enc)
+            )
+
+            arcs = (
+                alt.Chart(df_pos)
+                .mark_arc(innerRadius=70, outerRadius=125)
+                .encode(
+                    theta=alt.Theta("Count:Q", stack=True),
+                    color=color_enc,
+                    tooltip=[
+                        alt.Tooltip("Category:N", title="Category"),
+                        alt.Tooltip("Count:Q", title="Count", format=",.0f"),
+                        alt.Tooltip("Share:Q", title="Share", format=".0%"),
+                    ],
+                    # Explicit ordering prevents rare "flip" effects across reruns
+                    order=alt.Order("sort_idx:Q"),
+                )
+            )
+
+            # Place percentage labels inside the ring to avoid boundary placement on small screens
+            labels = (
+                alt.Chart(df_pos)
+                .mark_text(radius=98, size=12, fontWeight="bold")
+                .encode(
+                    theta=alt.Theta("Count:Q", stack=True),
+                    text="Label:N",
+                    order=alt.Order("sort_idx:Q"),
+                )
+            )
+
+            center = (
+                alt.Chart(pd.DataFrame({"text": [center_text or f"{total}"]}))
+                .mark_text(size=26, fontWeight="bold")
+                .encode(text="text:N")
+            )
+
+            chart = (
+                (legend_layer + arcs + labels + center)
+                .properties(
+                    height=height,
+                    title=title,
+                    padding={"left": 10, "right": 10, "top": pad_top, "bottom": pad_bottom},
+                )
+                .configure_view(stroke=None)
+                .configure_title(offset=12)
+                .configure_legend(
+                    orient="bottom",
+                    direction="vertical",
+                    titleFontSize=12,
+                    labelFontSize=12,
+                    padding=0,
+                )
+            )
+
+            _gap(space_top)
+
+            st.altair_chart(chart, use_container_width=True)
+
+            _gap(space_bottom)
+
+
+        # -----------------------------
+        # Pull required cached data
+        # -----------------------------
+        ranked: List[Dict[str, Any]] = cached.get("ranked") or []
+        constraints = run_summary.get("constraints") or {}
+        cap_km = constraints.get("max_detour_km")
+        cap_min = constraints.get("max_detour_min")
+        min_net_saving_eur = constraints.get("min_net_saving_eur") if use_economics else None
+
+        pred_key = f"pred_price_{fuel_code}"
+        econ_net_key = f"econ_net_saving_eur_{fuel_code}"
+
+        # Upstream filters (already parsed above this view)
+        eta_upstream_n = _as_int(closed_at_eta_filtered_n) if filter_closed_at_eta_enabled else 0
+        brand_upstream_n = _as_int(brand_filtered_out_n) if (isinstance(brand_filter_selected, list) and len(brand_filter_selected) > 0) else 0
+
+        # "Stations" in cache are AFTER upstream removals (if those are applied upstream).
+        candidates_in_cache_n = len(stations)
+        ranked_n = len(ranked)
+
+        # Reconstruct "total found" for accuracy (includes upstream removals)
+        total_found_n = max(0, candidates_in_cache_n + eta_upstream_n + brand_upstream_n)
+        discarded_total_n = max(0, total_found_n - ranked_n)
+
+        # Build excluded list based on UUIDs, so we can reason about observable exclusions
+        ranked_uuid_set = {_station_uuid(s) for s in ranked}
+        excluded_in_cache: List[Dict[str, Any]] = [s for s in stations if _station_uuid(s) not in ranked_uuid_set]
+
+        # Optional: compute on-route "worst" predicted price (used only for interpretability)
+        onroute_worst_price = _compute_onroute_worst_price(ranked, fuel_code=fuel_code)
+
+        # -----------------------------
+        # SECTION: Selected vs Discarded
+        # -----------------------------
+        st.markdown(
+            """
+            <h4 style="margin-top: -2.5rem; margin-bottom: 0rem;">
+                Stations selected/discarded:
+            </h4>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        _gap(P02_S["after_h_selected"])
+
+        render_card_grid(
+            [
+                ("Stations found", f"{total_found_n:,}"),
+                ("Stations ranked", f"{ranked_n:,}"),
+                ("Stations discarded", f"{discarded_total_n:,}"),
+            ],
+            cols=3,
+        )
+
+        _gap(P02_S["after_cards_selected"])
+
+        _donut_chart(
+            "",
+            {"Selected": ranked_n, "Discarded": discarded_total_n},
+            center_text=f"{total_found_n}",
+            height=340,
+            space_top=P02_S["before_chart_selected"],
+            space_bottom=P02_S["after_chart_selected"],
+        )
+
+        # -----------------------------
+        # SECTION: Discarded reasons
+        # -----------------------------
+        _gap(P02_S["before_h_discarded"])
+
+        st.markdown(
+            "<h4 style='margin-top: 0rem; margin-bottom: -2rem;'>Stations discarded:</h4>",
+            unsafe_allow_html=True,
+        )
+
+        _gap(P02_S["after_h_discarded"])
+
+
+        # Reason bucketing (mutually exclusive; priority order avoids double-counting)
+        reasons: Dict[str, int] = {
+            "Brand filter": 0,
+            "Closed at ETA": 0,
+            "Missing prediction": 0,
+            "Failed economics (< worst on-route)": 0,
+            "Failed detour caps (time/distance)": 0,
+            "Other / unclassified": 0,
+        }
+
+        # 1) Upstream brand-filtered stations
+        reasons["Brand filter"] += max(0, brand_upstream_n)
+
+        # 2) Observable excluded reasons among cached stations
+        closed_in_cache_n = 0
+        missing_pred_n = 0
+        cap_failed_n = 0
+        econ_failed_n = 0
+        other_n = 0
+
+        for s in excluded_in_cache:
+            # (a) Missing prediction
+            p = s.get(pred_key)
+            if _is_missing_number(p):
+                missing_pred_n += 1
+                continue
+
+            # (b) Closed at ETA (only meaningful if enabled)
+            if filter_closed_at_eta_enabled and _is_closed_at_eta(s):
+                closed_in_cache_n += 1
+                continue
+
+            # (c) Detour caps (hard constraints)
+            km, mins = _detour_metrics(s)
+            cap_fail = False
+            try:
+                if cap_km is not None and km is not None and float(km) > float(cap_km):
+                    cap_fail = True
+            except Exception:
+                pass
+            try:
+                if cap_min is not None and mins is not None and float(mins) > float(cap_min):
+                    cap_fail = True
+            except Exception:
+                pass
+            if cap_fail:
+                cap_failed_n += 1
+                continue
+
+            # (d) Economics failure
+            # In economics mode, prefer the actual net-saving threshold if present.
+            # Additionally, for interpretability, classify as "failed economics" when a station
+            # is not cheaper than the worst on-route option (if that reference exists).
+            econ_fail = False
+            if use_economics:
+                if min_net_saving_eur is not None:
+                    net = s.get(econ_net_key)
+                    if not _is_missing_number(net):
+                        try:
+                            if float(net) < float(min_net_saving_eur):
+                                econ_fail = True
+                        except Exception:
+                            pass
+            # "Value view" style reference: not better than worst on-route price (optional)
+            if (not econ_fail) and (onroute_worst_price is not None):
+                try:
+                    if (not _is_missing_number(p)) and float(p) >= float(onroute_worst_price):
+                        econ_fail = True
+                except Exception:
+                    pass
+
+            if econ_fail:
+                econ_failed_n += 1
+                continue
+
+            other_n += 1
+
+        # Closed at ETA total includes upstream removals + in-cache flags
+        reasons["Closed at ETA"] += max(0, eta_upstream_n) + max(0, closed_in_cache_n)
+        reasons["Missing prediction"] += max(0, missing_pred_n)
+        reasons["Failed detour caps (time/distance)"] += max(0, cap_failed_n)
+        reasons["Failed economics (< worst on-route)"] += max(0, econ_failed_n)
+        reasons["Other / unclassified"] += max(0, other_n)
+
+        # Ensure the reasons sum to the discarded total (important for auditability)
+        known_sum = sum(int(v) for v in reasons.values())
+        if known_sum != discarded_total_n:
+            # Reconcile safely: adjust "Other / unclassified"
+            delta = int(discarded_total_n - known_sum)
+            reasons["Other / unclassified"] = max(0, int(reasons["Other / unclassified"]) + delta)
+
+        _donut_chart(
+            "",
+            reasons,
+            center_text=f"{discarded_total_n}",
+            height=380,
+            space_top=P02_S["before_chart_discarded"],
+            space_bottom=P02_S["after_chart_discarded"],
+            pad_top=30,
+            pad_bottom=22,
+        )
+
+        if filter_closed_at_eta_enabled and (eta_upstream_n > 0) and (closed_in_cache_n == 0):
+            st.caption(
+                "Note: “Closed at ETA” can be applied upstream (stations removed before caching). "
+                "Those are still counted here for accuracy."
+            )
+
+        if (isinstance(brand_filter_selected, list) and len(brand_filter_selected) > 0) and (brand_upstream_n > 0):
+            st.caption(
+                "Note: Brand filtering is applied upstream; stations filtered out by the brand selector "
+                "are included in the counts even though they are not cached as candidates."
+            )
+
+    # -----------------------------
+    # SECTION: Important results (lightweight summary, no logic changes)
+    # -----------------------------
+    st.markdown(
+        """
+        <h4 style="margin-top: -2.5rem; margin-bottom: 0.25rem;">
+            Important results:
+        </h4>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # --- Pull best-station + benchmark prices (display-only computations) ---
+    best_station: Optional[Dict[str, Any]] = cached.get("best_station")
+    pred_key = f"pred_price_{fuel_code}"
+    curr_key = f"price_current_{fuel_code}"
+    detour_cost_key = f"econ_detour_fuel_cost_eur_{fuel_code}"
+    time_cost_key = f"econ_time_cost_eur_{fuel_code}"
+
+    def _fmt_price_or_dash(x: Any) -> str:
+        v = _as_float(x)
+        if v is None or v < MIN_VALID_PRICE_EUR_L:
+            return "—"
+        return _fmt_price(v)
+
+    def _fmt_eur_or_dash(x: Any) -> str:
+        v = _as_float(x)
+        if v is None:
+            return "—"
+        return _fmt_eur(v)
+
+    def _onroute_price_stats() -> Tuple[Optional[float], Optional[float], Optional[float]]:
+        """Return (best, median, worst) predicted price among on-route stations."""
+        vals: List[float] = []
+        for s in ranked:
+            p = _as_float(s.get(pred_key))
+            if p is None or p < MIN_VALID_PRICE_EUR_L:
+                continue
+            km, mins = _detour_metrics(s)
+            # Keep definition consistent with other Page-02 computations.
+            if km <= 1.0 and mins <= 5.0:
+                vals.append(float(p))
+
+        if not vals:
+            return None, None, None
+
+        ser = pd.Series(vals, dtype="float")
+        best = float(ser.min())
+        median = float(ser.median())
+        worst = float(ser.max())
+        return best, median, worst
+
+    on_best, on_median, on_worst = _onroute_price_stats()
+
+    chosen_pred = _as_float(best_station.get(pred_key)) if isinstance(best_station, dict) else None
+    chosen_curr = _as_float(best_station.get(curr_key)) if isinstance(best_station, dict) else None
+
+    detour_fuel_cost = _as_float(best_station.get(detour_cost_key)) if isinstance(best_station, dict) else None
+    time_cost = _as_float(best_station.get(time_cost_key)) if isinstance(best_station, dict) else None
+
+    litres = _as_float(litres_to_refuel)
+
+    def _gross_saving(ref_price: Optional[float]) -> Optional[float]:
+        if ref_price is None or chosen_pred is None or litres is None:
+            return None
+        return (float(ref_price) - float(chosen_pred)) * float(litres)
+
+    def _net_saving(ref_price: Optional[float]) -> Optional[float]:
+        g = _gross_saving(ref_price)
+        if g is None or detour_fuel_cost is None or time_cost is None:
+            return None
+        return float(g) - float(detour_fuel_cost) - float(time_cost)
+
+    # Primary KPIs
+    primary_cards: List[Tuple[str, str]] = [
+        ("Best (pred)", _fmt_price_or_dash(chosen_pred)),
+        ("Best (current)", _fmt_price_or_dash(chosen_curr)),
+        ("Detour fuel", _fmt_eur_or_dash(detour_fuel_cost)),
+        ("Time cost", _fmt_eur_or_dash(time_cost)),
+        ("Net vs median", _fmt_eur_or_dash(_net_saving(on_median))),
+        ("Net vs worst", _fmt_eur_or_dash(_net_saving(on_worst))),
+    ]
+    render_card_grid(primary_cards, cols=3)
+
+    # Benchmarks
+    st.markdown(
+        """
+        <h5 style="margin-top: 0.25rem; margin-bottom: 0.25rem;">
+            Benchmarks (on-route, predicted):
+        </h5>
+        """,
+        unsafe_allow_html=True,
+    )
+    benchmark_cards: List[Tuple[str, str]] = [
+        ("On-route best", _fmt_price_or_dash(on_best)),
+        ("On-route median", _fmt_price_or_dash(on_median)),
+        ("On-route worst", _fmt_price_or_dash(on_worst)),
+    ]
+    render_card_grid(benchmark_cards, cols=3)
+
+    # Savings breakdown (collapsed)
+    with st.expander("**Savings breakdown**", expanded=False):
+
+        gross_cards: List[Tuple[str, str]] = [
+            ("Gross vs best", _fmt_eur_or_dash(_gross_saving(on_best))),
+            ("Gross vs median", _fmt_eur_or_dash(_gross_saving(on_median))),
+            ("Gross vs worst", _fmt_eur_or_dash(_gross_saving(on_worst))),
+        ]
+        net_cards: List[Tuple[str, str]] = [
+            ("Net vs best", _fmt_eur_or_dash(_net_saving(on_best))),
+            ("Net vs median", _fmt_eur_or_dash(_net_saving(on_median))),
+            ("Net vs worst", _fmt_eur_or_dash(_net_saving(on_worst))),
+        ]
+
+        render_card_grid(gross_cards, cols=3)
+        render_card_grid(net_cards, cols=3)
+
+
+
+
+
+
+
+
+
 
     # Keep other views empty for now (header + top nav remain visible)
     if analysis_view != "Full Result Tables":
