@@ -437,6 +437,112 @@ def _format_eta_local_for_display(eta_any: Any, tz_name: str = "Europe/Berlin") 
         return _safe_text(eta_any)
 
 
+def _parse_any_dt_to_berlin(dt_any: Any, tz_name: str = "Europe/Berlin") -> Optional[datetime]:
+    """
+    Parse a datetime-like value (ISO string / datetime / common formats) and convert to Europe/Berlin.
+    Returns None on failure.
+    """
+    if dt_any is None:
+        return None
+
+    dt: Optional[datetime] = None
+
+    try:
+        if isinstance(dt_any, datetime):
+            dt = dt_any
+        else:
+            s = str(dt_any).strip()
+            if not s:
+                return None
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            # ISO first
+            try:
+                dt = datetime.fromisoformat(s)
+            except Exception:
+                # common "computed_at" format from Page 01: "YYYY-mm-dd HH:MM:SS"
+                try:
+                    dt = datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    return None
+    except Exception:
+        return None
+
+    # If naive, assume it is already local (computed_at is written as local time on Page 01)
+    if dt is not None and dt.tzinfo is None:
+        if ZoneInfo is not None:
+            try:
+                dt = dt.replace(tzinfo=ZoneInfo(tz_name))
+            except Exception:
+                dt = dt.replace(tzinfo=timezone.utc)
+
+    if dt is None:
+        return None
+
+    # Convert to Europe/Berlin if possible
+    if ZoneInfo is not None:
+        try:
+            return dt.astimezone(ZoneInfo(tz_name))
+        except Exception:
+            return dt
+    return dt
+
+
+def _time_cell_48(dt_local: Optional[datetime]) -> Optional[int]:
+    """
+    Map a local datetime to a 48-cell day grid (30-minute buckets):
+      cell = hour*2 + (minute >= 30)
+    Returns None if dt_local is None.
+    """
+    if dt_local is None:
+        return None
+    try:
+        return int(dt_local.hour) * 2 + (1 if int(dt_local.minute) >= 30 else 0)
+    except Exception:
+        return None
+
+
+def _station_google_address_best_effort(station: Dict[str, Any]) -> str:
+    """
+    Best-effort 'Address (Google)' WITHOUT calling external APIs on Page 02.
+    If Page 01 already filled st.session_state['reverse_geocode_cache'], reuse it.
+    Otherwise fall back to station fields (street/houseNumber/postCode/place/address).
+    """
+    try:
+        cache = st.session_state.get("reverse_geocode_cache") or {}
+    except Exception:
+        cache = {}
+
+    # Try to match Page-01 cache keying
+    u = _station_uuid(station) or f"{station.get('lat')}_{station.get('lon')}"
+    payload = cache.get(u) if isinstance(cache, dict) else None
+
+    if isinstance(payload, dict):
+        formatted = payload.get("formatted_address")
+        if formatted:
+            return str(formatted).strip()
+
+    # Fallback: build from station data
+    address = station.get("address")
+    if address:
+        return str(address).strip()
+
+    street = station.get("street")
+    house = station.get("houseNumber") or station.get("house_number")
+    postcode = station.get("postCode") or station.get("postcode") or station.get("zip")
+    place = station.get("place") or station.get("city")
+
+    parts = []
+    if street:
+        parts.append(str(street).strip())
+    if house:
+        parts[-1] = f"{parts[-1]} {str(house).strip()}" if parts else str(house).strip()
+    if postcode or place:
+        parts.append(" ".join([str(x).strip() for x in [postcode, place] if x]))
+
+    return ", ".join([p for p in parts if p]) if parts else "—"
+
+
 def _compute_baseline_price_for_display(
     stations: List[Dict[str, Any]],
     *,
@@ -1763,141 +1869,294 @@ def main() -> None:
             pad_bottom=22,
         )
 
-        if filter_closed_at_eta_enabled and (eta_upstream_n > 0) and (closed_in_cache_n == 0):
-            st.caption(
-                "Note: “Closed at ETA” can be applied upstream (stations removed before caching). "
-                "Those are still counted here for accuracy."
-            )
-
-        if (isinstance(brand_filter_selected, list) and len(brand_filter_selected) > 0) and (brand_upstream_n > 0):
-            st.caption(
-                "Note: Brand filtering is applied upstream; stations filtered out by the brand selector "
-                "are included in the counts even though they are not cached as candidates."
-            )
-
     # -----------------------------
     # SECTION: Important results (lightweight summary, no logic changes)
     # -----------------------------
-    st.markdown(
-        """
-        <h4 style="margin-top: -2.5rem; margin-bottom: 0.25rem;">
-            Important results:
-        </h4>
-        """,
-        unsafe_allow_html=True,
-    )
+        st.markdown(
+            """
+            <h4 style="margin-top: -2.5rem; margin-bottom: 0.25rem;">
+                Important results:
+            </h4>
+            """,
+            unsafe_allow_html=True,
+        )
 
-    # --- Pull best-station + benchmark prices (display-only computations) ---
-    best_station: Optional[Dict[str, Any]] = cached.get("best_station")
-    pred_key = f"pred_price_{fuel_code}"
-    curr_key = f"price_current_{fuel_code}"
-    detour_cost_key = f"econ_detour_fuel_cost_eur_{fuel_code}"
-    time_cost_key = f"econ_time_cost_eur_{fuel_code}"
+        # --- Pull best-station + benchmark prices (display-only computations) ---
+        best_station: Optional[Dict[str, Any]] = cached.get("best_station")
+        pred_key = f"pred_price_{fuel_code}"
+        curr_key = f"price_current_{fuel_code}"
+        detour_cost_key = f"econ_detour_fuel_cost_eur_{fuel_code}"
+        time_cost_key = f"econ_time_cost_eur_{fuel_code}"
 
-    def _fmt_price_or_dash(x: Any) -> str:
-        v = _as_float(x)
-        if v is None or v < MIN_VALID_PRICE_EUR_L:
-            return "—"
-        return _fmt_price(v)
+        def _fmt_price_or_dash(x: Any) -> str:
+            v = _as_float(x)
+            if v is None or v < MIN_VALID_PRICE_EUR_L:
+                return "—"
+            return _fmt_price(v)
 
-    def _fmt_eur_or_dash(x: Any) -> str:
-        v = _as_float(x)
-        if v is None:
-            return "—"
-        return _fmt_eur(v)
+        def _fmt_eur_or_dash(x: Any) -> str:
+            v = _as_float(x)
+            if v is None:
+                return "—"
+            return _fmt_eur(v)
 
-    def _onroute_price_stats() -> Tuple[Optional[float], Optional[float], Optional[float]]:
-        """Return (best, median, worst) predicted price among on-route stations."""
-        vals: List[float] = []
-        for s in ranked:
-            p = _as_float(s.get(pred_key))
-            if p is None or p < MIN_VALID_PRICE_EUR_L:
-                continue
-            km, mins = _detour_metrics(s)
-            # Keep definition consistent with other Page-02 computations.
-            if km <= 1.0 and mins <= 5.0:
-                vals.append(float(p))
+        def _onroute_price_stats() -> Tuple[Optional[float], Optional[float], Optional[float]]:
+            """Return (best, median, worst) predicted price among on-route stations."""
+            vals: List[float] = []
+            for s in ranked:
+                p = _as_float(s.get(pred_key))
+                if p is None or p < MIN_VALID_PRICE_EUR_L:
+                    continue
+                km, mins = _detour_metrics(s)
+                # Keep definition consistent with other Page-02 computations.
+                if km <= 1.0 and mins <= 5.0:
+                    vals.append(float(p))
 
-        if not vals:
-            return None, None, None
+            if not vals:
+                return None, None, None
 
-        ser = pd.Series(vals, dtype="float")
-        best = float(ser.min())
-        median = float(ser.median())
-        worst = float(ser.max())
-        return best, median, worst
+            ser = pd.Series(vals, dtype="float")
+            best = float(ser.min())
+            median = float(ser.median())
+            worst = float(ser.max())
+            return best, median, worst
 
-    on_best, on_median, on_worst = _onroute_price_stats()
+        on_best, on_median, on_worst = _onroute_price_stats()
 
-    chosen_pred = _as_float(best_station.get(pred_key)) if isinstance(best_station, dict) else None
-    chosen_curr = _as_float(best_station.get(curr_key)) if isinstance(best_station, dict) else None
+        chosen_pred = _as_float(best_station.get(pred_key)) if isinstance(best_station, dict) else None
+        chosen_curr = _as_float(best_station.get(curr_key)) if isinstance(best_station, dict) else None
 
-    detour_fuel_cost = _as_float(best_station.get(detour_cost_key)) if isinstance(best_station, dict) else None
-    time_cost = _as_float(best_station.get(time_cost_key)) if isinstance(best_station, dict) else None
+        detour_fuel_cost = _as_float(best_station.get(detour_cost_key)) if isinstance(best_station, dict) else None
+        time_cost = _as_float(best_station.get(time_cost_key)) if isinstance(best_station, dict) else None
 
-    litres = _as_float(litres_to_refuel)
+        litres = _as_float(litres_to_refuel)
 
-    def _gross_saving(ref_price: Optional[float]) -> Optional[float]:
-        if ref_price is None or chosen_pred is None or litres is None:
-            return None
-        return (float(ref_price) - float(chosen_pred)) * float(litres)
+        def _gross_saving(ref_price: Optional[float]) -> Optional[float]:
+            if ref_price is None or chosen_pred is None or litres is None:
+                return None
+            return (float(ref_price) - float(chosen_pred)) * float(litres)
 
-    def _net_saving(ref_price: Optional[float]) -> Optional[float]:
-        g = _gross_saving(ref_price)
-        if g is None or detour_fuel_cost is None or time_cost is None:
-            return None
-        return float(g) - float(detour_fuel_cost) - float(time_cost)
+        def _net_saving(ref_price: Optional[float]) -> Optional[float]:
+            g = _gross_saving(ref_price)
+            if g is None or detour_fuel_cost is None or time_cost is None:
+                return None
+            return float(g) - float(detour_fuel_cost) - float(time_cost)
 
-    # Primary KPIs
-    primary_cards: List[Tuple[str, str]] = [
-        ("Best (pred)", _fmt_price_or_dash(chosen_pred)),
-        ("Best (current)", _fmt_price_or_dash(chosen_curr)),
-        ("Detour fuel", _fmt_eur_or_dash(detour_fuel_cost)),
-        ("Time cost", _fmt_eur_or_dash(time_cost)),
-        ("Net vs median", _fmt_eur_or_dash(_net_saving(on_median))),
-        ("Net vs worst", _fmt_eur_or_dash(_net_saving(on_worst))),
-    ]
-    render_card_grid(primary_cards, cols=3)
-
-    # Benchmarks
-    st.markdown(
-        """
-        <h5 style="margin-top: 0.25rem; margin-bottom: 0.25rem;">
-            Benchmarks (on-route, predicted):
-        </h5>
-        """,
-        unsafe_allow_html=True,
-    )
-    benchmark_cards: List[Tuple[str, str]] = [
-        ("On-route best", _fmt_price_or_dash(on_best)),
-        ("On-route median", _fmt_price_or_dash(on_median)),
-        ("On-route worst", _fmt_price_or_dash(on_worst)),
-    ]
-    render_card_grid(benchmark_cards, cols=3)
-
-    # Savings breakdown (collapsed)
-    with st.expander("**Savings breakdown**", expanded=False):
-
-        gross_cards: List[Tuple[str, str]] = [
-            ("Gross vs best", _fmt_eur_or_dash(_gross_saving(on_best))),
-            ("Gross vs median", _fmt_eur_or_dash(_gross_saving(on_median))),
-            ("Gross vs worst", _fmt_eur_or_dash(_gross_saving(on_worst))),
-        ]
-        net_cards: List[Tuple[str, str]] = [
-            ("Net vs best", _fmt_eur_or_dash(_net_saving(on_best))),
+        # Primary KPIs
+        primary_cards: List[Tuple[str, str]] = [
+            ("Best (pred)", _fmt_price_or_dash(chosen_pred)),
+            ("Best (current)", _fmt_price_or_dash(chosen_curr)),
+            ("Detour fuel", _fmt_eur_or_dash(detour_fuel_cost)),
+            ("Time cost", _fmt_eur_or_dash(time_cost)),
             ("Net vs median", _fmt_eur_or_dash(_net_saving(on_median))),
             ("Net vs worst", _fmt_eur_or_dash(_net_saving(on_worst))),
         ]
+        render_card_grid(primary_cards, cols=3)
 
-        render_card_grid(gross_cards, cols=3)
-        render_card_grid(net_cards, cols=3)
+        # Benchmarks
+        st.markdown(
+            """
+            <h5 style="margin-top: 0.25rem; margin-bottom: 0.25rem;">
+                Benchmarks (on-route, predicted):
+            </h5>
+            """,
+            unsafe_allow_html=True,
+        )
+        benchmark_cards: List[Tuple[str, str]] = [
+            ("On-route best", _fmt_price_or_dash(on_best)),
+            ("On-route median", _fmt_price_or_dash(on_median)),
+            ("On-route worst", _fmt_price_or_dash(on_worst)),
+        ]
+        render_card_grid(benchmark_cards, cols=3)
+
+        # Savings breakdown (collapsed)
+        with st.expander("**Savings breakdown**", expanded=False):
+
+            gross_cards: List[Tuple[str, str]] = [
+                ("Gross vs best", _fmt_eur_or_dash(_gross_saving(on_best))),
+                ("Gross vs median", _fmt_eur_or_dash(_gross_saving(on_median))),
+                ("Gross vs worst", _fmt_eur_or_dash(_gross_saving(on_worst))),
+            ]
+            net_cards: List[Tuple[str, str]] = [
+                ("Net vs best", _fmt_eur_or_dash(_net_saving(on_best))),
+                ("Net vs median", _fmt_eur_or_dash(_net_saving(on_median))),
+                ("Net vs worst", _fmt_eur_or_dash(_net_saving(on_worst))),
+            ]
+
+            render_card_grid(gross_cards, cols=3)
+            render_card_grid(net_cards, cols=3)
 
 
 
 
+    # ------------------------------------------------------------------
+    # 3. Prediction Algorithm 
+    # ------------------------------------------------------------------
+
+    if analysis_view == "Prediction Algorithm":
+        # Headline in the same style as the other sections
+        st.markdown("### **3. Prediction Algorithm**")
+
+        # Use standard sub-headlines (same pattern as other pages)
+        st.markdown(
+            "#### Placeholder headline 1:",
+            help="Reserved for the first explanatory block of the prediction pipeline.",
+        )
+        st.info(
+            "Placeholder content. This section will explain the high-level prediction flow "
+            "(data inputs, model selection, and how predicted prices are produced)."
+        )
+
+        st.markdown(
+            "#### Placeholder headline 2:",
+            help="Reserved for the second explanatory block (e.g., horizon logic / ETA mapping / time cells).",
+        )
+        st.info(
+            "Placeholder content. This section will explain how the forecast horizon is chosen "
+            "based on your ETA and how time cells are mapped for prediction."
+        )
+
+        st.markdown(
+            "#### Placeholder headline 3:",
+            help="Reserved for the third explanatory block (e.g., current-price fallback logic and edge cases).",
+        )
+        st.info(
+            "Placeholder content. This section will explain when and why the system uses current prices "
+            "instead of a forecast (e.g., very short time-to-arrival)."
+        )
+
+        # Fourth headline 
+        st.markdown(
+            "#### Input/output values:",
+            help="Reserved for a compact overview of the key inputs and outputs used by the prediction layer.",
+        )
+
+        # -----------------------------
+        # Input/Output table (ALL stations found - no exclusions)
+        # -----------------------------
+        ft = str(fuel_code or "e5").lower()
+        ft_label = ft.upper()
+
+        # Try to identify "all found stations" from the cached run
+        stations_all: List[Dict[str, Any]] = []
+        for k in ("ranked", "stations", "stations_all", "all_stations", "candidates"):
+            v = cached.get(k)
+            if isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
+                stations_all = v
+                break
+
+        if not stations_all:
+            st.info("No stations found in the cached run (no station list available).")
+        else:
+            # ---- Times (best-effort, consistent with cached run) ----
+            now_local = _parse_any_dt_to_berlin(cached.get("computed_at")) or _parse_any_dt_to_berlin(datetime.now())
+            time_now_str = now_local.strftime("%Y-%m-%d %H:%M:%S") if now_local else "—"
+            cell_now = _time_cell_48(now_local)
+
+            rows: List[Dict[str, Any]] = []
+
+            for s in stations_all:
+                if not isinstance(s, dict):
+                    continue
+
+                # Station metadata
+                brand = s.get("brand") or s.get("station_name") or s.get("name") or "—"
+                addr_google = _station_google_address_best_effort(s)
+
+                # ETA parsing (multiple possible fields depending on run/version)
+                eta_raw = (
+                    s.get("eta")
+                    or s.get(f"debug_{ft}_eta_utc")
+                    or s.get("eta_utc")
+                )
+                eta_local_dt = _parse_any_dt_to_berlin(eta_raw)
+                time_eta_str = (
+                    eta_local_dt.strftime("%Y-%m-%d %H:%M:%S")
+                    if eta_local_dt
+                    else _format_eta_local_for_display(eta_raw)
+                )
+                cell_eta = _time_cell_48(eta_local_dt)
+
+                # Use pipeline-provided deltas when available; otherwise compute from cells (including day wrap)
+                minutes_to_arrival = (
+                    s.get(f"debug_{ft}_minutes_to_arrival")
+                    or s.get(f"debug_{ft}_minutes_ahead")
+                )
+                cells_ahead = (
+                    s.get(f"debug_{ft}_cells_ahead_raw")
+                    or s.get(f"debug_{ft}_cells_ahead")
+                )
+
+                if cells_ahead is None and (now_local is not None) and (eta_local_dt is not None) and (cell_now is not None) and (cell_eta is not None):
+                    try:
+                        day_now = now_local.date().toordinal()
+                        day_eta = eta_local_dt.date().toordinal()
+                        cells_ahead = (day_eta - day_now) * 48 + (cell_eta - cell_now)
+                    except Exception:
+                        cells_ahead = None
+
+                # Model/basis
+                used_current = _coerce_bool(s.get(f"debug_{ft}_used_current_price"))
+                horizon_used = s.get(f"debug_{ft}_horizon_used")
+
+                if used_current is True:
+                    price_basis = "Realtime (Tankerkönig) — no forecast"
+                elif used_current is False:
+                    price_basis = f"Forecast (ARDL) — lags: 1d/2d/3d/7d ({ft_label})"
+                else:
+                    price_basis = f"Forecast/Realtime (best-effort) — lags: 1d/2d/3d/7d ({ft_label})"
+
+                if horizon_used not in (None, "", 0):
+                    price_basis = f"{price_basis} — horizon={horizon_used}"
+
+                # Prices (+ fallbacks for older run variants)
+                curr_key = f"price_current_{ft}"
+                pred_key = f"pred_price_{ft}"
+
+                current_price = s.get(curr_key)
+                if current_price is None:
+                    current_price = s.get("price") or s.get(f"price_{ft}")
+
+                pred_price = s.get(pred_key)
+
+                lag1 = s.get(f"price_lag_1d_{ft}")
+                lag2 = s.get(f"price_lag_2d_{ft}")
+                lag3 = s.get(f"price_lag_3d_{ft}")
+                lag7 = s.get(f"price_lag_7d_{ft}")
+
+                rows.append({
+                    "Brand/Name": _safe_text(brand),
+                    "Address": _safe_text(addr_google),
+                    "UTC+1 (now)": _safe_text(time_now_str),
+                    "Time cell (now)": cell_now if cell_now is not None else "—",
+                    "Time at ETA": _safe_text(time_eta_str),
+                    "Minutes until arrival": minutes_to_arrival if minutes_to_arrival is not None else "—",
+                    "Time cells ahead": cells_ahead if cells_ahead is not None else "—",
+                    "Time cell at ETA": cell_eta if cell_eta is not None else "—",
+                    "Horizon": horizon_used if horizon_used is not None else "—",
+                    "Price basis (which model → lags)": _safe_text(price_basis),
+                    "Current price": _fmt_price(current_price),
+                    f"Lag1d ({ft_label})": _fmt_price(lag1),
+                    f"Lag2d ({ft_label})": _fmt_price(lag2),
+                    f"Lag3d ({ft_label})": _fmt_price(lag3),
+                    f"Lag7d ({ft_label})": _fmt_price(lag7),
+                    "Predicted price": _fmt_price(pred_price),
+                })
+
+            df_io = pd.DataFrame(rows)
+
+            # Normal Streamlit table (wide; horizontal scroll if needed)
+            st.dataframe(df_io, use_container_width=True, hide_index=True)
+
+        maybe_persist_state()
+        return
 
 
 
+
+    # ------------------------------------------------------------------
+    # 4. Full Result Tables 
+    # ------------------------------------------------------------------
 
 
 
@@ -1905,6 +2164,200 @@ def main() -> None:
     if analysis_view != "Full Result Tables":
         maybe_persist_state()
         return
+    
+    # ------------------------------------------------------------------
+    # NEW (prep grid): Headlines + selected/discarded full tables
+    # Insert this block AFTER `filter_thresholds` is defined and BEFORE SECTION A.
+    # ------------------------------------------------------------------
+
+    st.markdown("### **4. Full Table Results**")
+
+    # --- Sub-headline 1: short description (per screenshot) ---
+    st.markdown(
+        "#### What this page shows:",
+        help=(
+            "Audit view of the full station universe.\n\n"
+            "• Selected stations: passed hard constraints and the soft constraint.\n\n"
+            "• Discarded stations: failed a hard constraint and/or the soft constraint.\n\n"
+            "The tables below focus on the core routing + decision metrics."
+        ),
+    )
+
+    st.markdown(
+        "- **Table 1 (Selected)**: Selected (green/orange) stations\n"
+        "  - Passed hard constraints (detour distance/time, open at ETA, brand filter)\n"
+        "  - Passed soft constraint (not worse than the worst on-route station) -> >= net saving \n"
+        "- **Table 2 (Discarded)**: Discarded (red) stations\n"
+        "  - Failed hard constraints (detour distance/time, open at ETA, brand filter)\n"
+        "  - Failed soft constraint (worse than the worst on-route station) -> < net saving\n"
+    )
+
+    # -----------------------------
+    # Build selected vs discarded sets
+    # -----------------------------
+    pred_key__p4 = f"pred_price_{fuel_code}"
+
+    # Detour caps (derive locally so this block is safe wherever it is placed)
+    constraints__p4 = run_summary.get("constraints") or {}
+    cap_km__p4 = constraints__p4.get("max_detour_km")
+    cap_min__p4 = constraints__p4.get("max_detour_min")
+
+    cap_km_f__p4 = float(cap_km__p4) if cap_km__p4 is not None else None
+    cap_min_f__p4 = float(cap_min__p4) if cap_min__p4 is not None else None
+
+    hard_pass__p4: List[Dict[str, Any]] = []
+    hard_fail__p4: List[Dict[str, Any]] = []
+
+    for s in stations:
+        # Require a usable prediction
+        p_f = _as_float(s.get(pred_key__p4))
+        if p_f is None or p_f < MIN_VALID_PRICE_EUR_L:
+            hard_fail__p4.append(s)
+            continue
+
+        # Hard constraint: open at ETA (only if enabled + flag exists)
+        if filter_closed_at_eta_enabled and _is_closed_at_eta(s):
+            hard_fail__p4.append(s)
+            continue
+
+        # Hard constraint: detour caps (if set)
+        dk, dm = _detour_metrics(s)
+        if (cap_km_f__p4 is not None and dk > cap_km_f__p4) or (cap_min_f__p4 is not None and dm > cap_min_f__p4):
+            hard_fail__p4.append(s)
+            continue
+
+        hard_pass__p4.append(s)
+
+    # Soft constraint reference: "worst on-route station"
+    # Soft-constraint thresholds (derive locally so this block is safe wherever it is placed)
+    filter_log__p4: Dict[str, Any] = cached.get("filter_log") or {}
+    filter_thresholds__p4: Dict[str, Any] = filter_log__p4.get("thresholds") or {}
+
+    onroute_km__p4 = float(filter_thresholds__p4.get("onroute_max_detour_km", 1.0) or 1.0)
+    onroute_min__p4 = float(filter_thresholds__p4.get("onroute_max_detour_min", 5.0) or 5.0)
+
+    onroute_worst_price__p4 = _compute_onroute_worst_price(
+        hard_pass__p4,
+        fuel_code=fuel_code,
+        onroute_max_detour_km=onroute_km__p4,
+        onroute_max_detour_min=onroute_min__p4,
+    )
+
+    selected__p4: List[Dict[str, Any]] = []
+    soft_fail__p4: List[Dict[str, Any]] = []
+
+    if onroute_worst_price__p4 is None:
+        # If we cannot compute an on-route reference, keep the UI usable:
+        # treat all hard-pass candidates as "selected" for this preview table.
+        selected__p4 = list(hard_pass__p4)
+    else:
+        for s in hard_pass__p4:
+            p_f = _as_float(s.get(pred_key__p4))
+            if p_f is None:
+                continue
+            if float(p_f) <= float(onroute_worst_price__p4) + 1e-9:
+                selected__p4.append(s)
+            else:
+                soft_fail__p4.append(s)
+
+    discarded__p4: List[Dict[str, Any]] = list(hard_fail__p4) + list(soft_fail__p4)
+
+    # -----------------------------
+    # Backfill break-even liters for display (only if economics mode is on)
+    # -----------------------------
+    if use_economics:
+        _ensure_breakeven_liters_for_display(selected__p4, fuel_code=fuel_code)
+        _ensure_breakeven_liters_for_display(discarded__p4, fuel_code=fuel_code)
+
+    # -----------------------------
+    # Table row builder (exact columns per screenshot)
+    # -----------------------------
+    econ_be_key__p4 = f"econ_breakeven_liters_{fuel_code}"
+
+    def _fmt_fraction__p4(x: Any) -> str:
+        v = _as_float(x)
+        return "—" if v is None else f"{v:.3f}"
+
+    def _fmt_dist_to_station__p4(s: Dict[str, Any]) -> str:
+        # Use distance_along_m when available (already used elsewhere in this file)
+        d_m = _as_float(s.get("distance_along_m"))
+        if d_m is None:
+            return "—"
+        return _format_km(d_m / 1000.0)
+
+    def _fmt_eta_local__p4(s: Dict[str, Any]) -> str:
+        eta_raw = (
+            s.get("eta")
+            or s.get(f"debug_{fuel_code}_eta_utc")
+            or s.get("eta_utc")
+        )
+        dt = _parse_any_dt_to_berlin(eta_raw)
+        if dt is not None:
+            return dt.strftime("%Y-%m-%d %H:%M")
+        # fallback to robust formatter (never throws)
+        return _safe_text(_format_eta_local_for_display(eta_raw, tz_name="Europe/Berlin"))
+
+    def _fmt_minutes_until_arrival__p4(s: Dict[str, Any]) -> Any:
+        v = s.get(f"debug_{fuel_code}_minutes_to_arrival") or s.get(f"debug_{fuel_code}_minutes_ahead")
+        return v if v is not None else "—"
+
+    def _row__p4(s: Dict[str, Any]) -> Dict[str, Any]:
+        dk, dm = _detour_metrics(s)
+        brand = s.get("brand") or ""
+        name = s.get("tk_name") or s.get("osm_name") or s.get("name") or s.get("station_name") or ""
+        addr_google = _station_google_address_best_effort(s)
+
+        be_val = s.get(econ_be_key__p4) if use_economics else None
+
+        return {
+            "Brand": _safe_text(brand),
+            "Name": _safe_text(name),
+            "Address (Google)": _safe_text(addr_google),
+            "Distance to station": _fmt_dist_to_station__p4(s),
+            "Fraction of route": _fmt_fraction__p4(s.get("fraction_of_route")),
+            "Detour distance": _format_km(dk),
+            "Detour time": _format_min(dm),
+            "Time at ETA": _fmt_eta_local__p4(s),
+            "Minutes until arrival": _fmt_minutes_until_arrival__p4(s),
+            "Break-even liters": _format_liters(be_val) if use_economics else "—",
+        }
+
+    # --- Sub-headline 2: Selected table ---
+    st.markdown(
+        "#### Selected stations:",
+        help=(
+            "Stations that passed the hard constraints and the soft constraint.\n\n"
+            "Hard constraints include: detour caps and (if enabled) open-at-ETA filtering.\n"
+            "Soft constraint uses the 'worst on-route' reference computed from on-route stations."
+        ),
+    )
+
+    if selected__p4:
+        df_selected__p4 = pd.DataFrame([_row__p4(s) for s in selected__p4])
+        st.dataframe(df_selected__p4, use_container_width=True, hide_index=True)
+    else:
+        st.info("No selected stations to display for this cached run under the current criteria.")
+
+    # --- Sub-headline 3: Discarded table ---
+    st.markdown(
+        "#### Discarded stations:",
+        help=(
+            "Stations that failed a hard constraint and/or the soft constraint.\n\n"
+            "This includes stations missing a valid prediction, failing detour caps, "
+            "and (if enabled) being closed at ETA, as well as stations that are worse than the "
+            "worst on-route reference."
+        ),
+    )
+
+    if discarded__p4:
+        df_discarded__p4 = pd.DataFrame([_row__p4(s) for s in discarded__p4])
+        st.dataframe(df_discarded__p4, use_container_width=True, hide_index=True)
+    else:
+        st.caption("No discarded stations to display.")
+
+    # Keep the existing content below (A/B sections, existing tables) for now.
+    st.markdown("---")
+
 
     ranked: List[Dict[str, Any]] = cached.get("ranked") or []
     best_station: Optional[Dict[str, Any]] = cached.get("best_station")
