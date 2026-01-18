@@ -458,91 +458,43 @@ def _render_trip_planner_action() -> SidebarState:
 
 def _render_help_action() -> SidebarState:
     """
-    Built-in Help renderer that mirrors the Action style (internal widget keys,
-    optional dialog for expanded content) and returns a SidebarState so pages
-    using the returned state remain compatible.
+
     """
     state = _read_cached_values_for_non_action()
 
-    def _canonical(key: str, default: Any) -> Any:
-        return st.session_state.get(key, default)
+    st.sidebar.markdown("### Detailed Information")
+    st.sidebar.markdown("Click on the Topic in which you are interested in:")
 
-    st.sidebar.markdown("### Help")
-    st.sidebar.markdown(
-        "Below, the input fields from the **Action tab** are displayed, with a corresponding help text shown underneath."
-    )
+    with st.sidebar.popover("Data Sources"):
+        st.markdown("**Google Maps APIs**: " \
+        "\n- Geocoding: convert addresses into latitude/longitude coordinates" \
+        "\n- Directions: find best driving route" \
+        "\n- Places Text Search Enterprise: find fuel stations along the route" \
+        "\n\n**Tankerkönig**:" \
+        "\n- API for current fuel prices of 14000+ stations in Germany" \
+        "\n- Historical price data for model training.")
 
-    # Prepare fields: (label, value, help_text)
-    fields = [
-        (
-            "Start",
-            str(_canonical("start_locality", "Tübingen")),
-            "Specify your trip's starting point. You can enter either a city name or a full address. If you use a foreign address, please add the country name for better results."
-            "If your input is nonsensical (e.g., gibberish), the recommender sets the location to the center of Germany.",
-        ),
-        (
-            "Destination",
-            str(_canonical("end_locality", "Sindelfingen")),
-            "Specify your trip's destination. You can enter either a city name or a full address. If you use a foreign address, please add the country name for better results."
-            "If your input is nonsensical (e.g., gibberish), the recommender sets the location to the center of Germany.",
-        ),
-        (
-            "Fuel type",
-            str(_canonical("fuel_label", "E5")),
-            "Select the type of fuel your vehicle uses. E5, E10 and Diesel are supported.",
-        ),
-        (
-            "Economics-based decision",
-            str(bool(_canonical("use_economics", True))),
-            "When enabled, the recommender combines detour limits with detour costs and expected price advantage to compute a net saving.",
-        ),
-        (
-            "Litres to refuel",
-            str(float(_canonical("litres_to_refuel", 40.0))),
-            "Amount of fuel (in litres) you plan to refuel at the selected station. The more you refuel, the higher the potential savings from price differences.",
-        ),
-        (
-            "Car consumption (L/100 km)",
-            str(float(_canonical("consumption_l_per_100km", 7.0))),
-            "Your car's average fuel consumption in litres per 100 km. Used to estimate extra fuel costs for detours.",
-        ),
-        (
-            "Value of time (€/hour)",
-            str(float(_canonical("value_of_time_eur_per_hour", 0.0))),
-            "Monetary value you assign to your time (in euros per hour). Used to estimate the cost of extra travel time for detours.",
-        ),
-        (
-            "Maximum extra distance (km)",
-            str(float(_canonical("max_detour_km", 5.0))),
-            "The maximum additional distance you are willing to drive for a detour compared to the baseline route. Stations requiring more extra distance are excluded (hard constraint).",
-        ),
-        (
-            "Maximum extra time (min)",
-            str(float(_canonical("max_detour_min", 10.0))),
-            "The maximum additional travel time you are willing to accept for a detour compared to the baseline route. Stations requiring more extra time are excluded (hard constraint).",
-        ),
-        (
-            "Min net saving (€)",
-            str(float(_canonical("min_net_saving_eur", 0.0))),
-            "Minimum required net benefit for accepting a detour. Net saving = fuel price saving − detour fuel cost − optional time cost.",
-        ),
-        (
-            "Stations open at ETA",
-            str(bool(_canonical("filter_closed_at_eta", True))),
-            "If enabled, stations are filtered out when Google indicates they are closed at the estimated time of arrival (ETA) at the station. If opening hours are unavailable, the station is kept.",
-        ),
-        (
-            "Brand filter (selected)",
-            ", ".join(list(_canonical("brand_filter_selected", []))) or "(none)",
-            "10 most common brands in Germany. Only stations of selected brands are considered. When active, stations with unknown/missing brand are excluded.",
-        ),
-    ]
+    with st.sidebar.popover("Route finding process"):
+        st.markdown("First the user’s start and destination input is converted into exact latitude/longitude coordinates using the **Google Maps Geocoding API**. " \
+        "\n\n Next, the best driving route is calculated with the **Google Maps Directions API**. Besides total distance and travel time, we also extract the detailed route geometry, which is  later used to find stations along the route.")
 
-    # Render fields as markdown + plain help text
-    for label, value, help_text in fields:
-        with st.sidebar.expander(label, expanded=False):
-            st.markdown(f"**Current value:** {value}")
-            st.write(help_text)
+    with st.sidebar.popover("Finding Stations along the route"):
+        st.markdown("Fuel stations are retrieved along the calculated route using the **Places API Text Search Enterprise**. " \
+                    "\n\nFor each returned station, the detour time and distance caused by stopping there is calculated from the API’s routing summary output. Further an estimated arrival time is computed. Opening-hours information is then evaluated to determine whether the station is likely open at that ETA.")
+    
+    with st.sidebar.popover("Price prediction model"):
+        st.markdown("The price prediction is based on an **ARDL model (Autoregressive Distributed Lag)** that uses past fuel prices to estimate future prices. " \
+        "\n\nSeparate models are trained for each fuel type (E5, E10, Diesel) and for different prediction horizons (from “now” up to about two hours ahead). " \
+        "\n\nTo generate a prediction, it is first determined how far in the future the arrival at a station lies. If the arrival is very soon (within a few minutes) and a current price is available, the current price is used directly and no model is applied. " \
+        "Otherwise, the appropriate horizon model is selected: short-term horizons (h1–h4) are used for near-future arrivals, while a daily-only model (h0) is used when the arrival lies further ahead or when no current price is available. " \
+        "The model then receives a **feature vector** consisting of **daily lagged prices** (prices from previous days) and, for short horizons, an additional **intraday price feature**. " \
+        "Based on these inputs, the ARDL model predicts the expected fuel price at the estimated arrival time. ")
+
+    with st.sidebar.popover("Detour Economics Explained"):
+        st.markdown("The Detour Economics logic evaluates the cost-effectiveness of taking a detour to refuel. It combines the additional fuel costs (based on distance and car consumption) and time costs (using the user's value of time) with the potential savings from lower fuel prices at the detour station. " \
+        "The goal is to calculate the net savings and ensure that the detour is economically beneficial." \
+        "Formula: \n\n$$Net Saving = Fuel Price Saving − Detour Fuel Cost − Time Cost$$" \
+        )
 
     # Return a SidebarState compatible object (keep cached values, only change view)
     return SidebarState(**{**state.__dict__, "view": "Help"})
