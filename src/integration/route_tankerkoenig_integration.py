@@ -638,9 +638,14 @@ def get_fuel_prices_for_route(
         "departure_time": dept_time,
         "start_label": s_lbl,
         "end_label": e_lbl,
+
         # Advanced Settings diagnostics (for Page 2 funnel/explanations)
         "filter_closed_at_eta": bool(filter_closed_at_eta),
         "closed_at_eta_filtered_n": int(closed_at_eta_filtered_n),
+        
+        # Exact coordinates used (from geocoding) – authoritative for Page 02
+        "start_coord": {"lat": float(s_lat), "lon": float(s_lon)},
+        "end_coord": {"lat": float(e_lat), "lon": float(e_lon)},
     }
 
     return enriched_data, route_meta

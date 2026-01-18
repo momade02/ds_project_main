@@ -941,6 +941,11 @@ def main() -> None:
     st.title("Fuel Station Recommender")
     st.caption("##### Plan a route and identify the best-value refueling stops.")
 
+    # Apply cross-page navigation requests BEFORE instantiating widget-managed keys (top_nav)
+    requested_top_nav = st.session_state.pop("nav_request_top_nav", None)
+    if requested_top_nav is not None:
+        st.session_state["top_nav"] = requested_top_nav
+
     # --- Top navigation (nicer UI) ---
     NAV_TARGETS = {
         "Home": "streamlit_app.py",
