@@ -70,6 +70,272 @@ from services.session_store import init_session_context, restore_persisted_state
 # -----------------------------
 # Helpers
 # -----------------------------
+
+    # ---------------------------------------------------------------------
+    # Compatibility helpers (used by Page 02 constraint/summary blocks)
+    # Keep these thin wrappers so the section code stays readable.
+    # ---------------------------------------------------------------------
+def _format_km(x: Any) -> str:
+    return _fmt_km(x)
+
+
+def _format_min(x: Any) -> str:
+    return _fmt_min(x)
+
+
+def _format_eur(x: Any) -> str:
+    return _fmt_eur(x)
+
+
+def _format_liters(x: Any) -> str:
+    try:
+        if x is None or (isinstance(x, str) and not x.strip()):
+            return "—"
+        return f"{float(x):.2f} L"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def render_metric_grid(items: List[Tuple[str, str]], cols: int = 2) -> None:
+    """
+    Simple responsive metric grid:
+    - On desktop, shows `cols` columns.
+    - On mobile, Streamlit will naturally stack columns.
+    """
+    if not items:
+        return
+
+    cols = max(1, int(cols))
+    row = st.columns(cols)
+
+    for i, (label, value) in enumerate(items):
+        row[i % cols].metric(label, value)
+        if (i % cols) == (cols - 1) and i != (len(items) - 1):
+            row = st.columns(cols)
+
+
+def render_card_grid(items: List[Tuple[str, str]], cols: int = 2) -> None:
+    """
+    Responsive card grid (uses the same visual card language as the Start/Destination blocks).
+    - Desktop: `cols` columns
+    - Mobile: Streamlit stacks columns automatically
+    """
+    if not items:
+        return
+
+    cols = max(1, int(cols))
+
+    # CSS is injected once per run (safe); class names are page-local
+    st.markdown(
+        """
+        <style>
+          .p02-card {
+            width: 100%;
+            padding: 0.5rem 1.0rem;
+            border: 2px solid rgba(49, 51, 63, 0.3);
+            border-radius: 0.9rem;
+            text-align: center;
+            margin-bottom: 0.25rem;
+            margin-top: 0rem;
+          }
+          .p02-card-label {
+            font-size: 0.9rem;
+            opacity: 0.78;
+            margin: 0 0 0.25rem 0;
+            line-height: 1.15;
+          }
+          .p02-card-value {
+            font-size: 1.3rem;
+            font-weight: 750;
+            margin: 0;
+            line-height: 1.15;
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    row = st.columns(cols)
+    for i, (label, value) in enumerate(items):
+        with row[i % cols]:
+            st.markdown(
+                f"""
+                <div class="p02-card">
+                  <div class="p02-card-label">{label}</div>
+                  <div class="p02-card-value">{value}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        if (i % cols) == (cols - 1) and i != (len(items) - 1):
+            row = st.columns(cols)
+
+
+def render_key_visualization(
+    *,
+    route_info: Dict[str, Any],
+    best_station: Optional[Dict[str, Any]],
+) -> None:
+    """
+    Page 02 / Recommended Route:
+    Two proportional route bars (baseline vs alternative via best station),
+    with a station marker on the alternative bar.
+    """
+
+    # --- baseline route metrics (best-effort key fallbacks) ---
+    baseline_km = _as_float(route_info.get("route_km") or route_info.get("distance_km") or route_info.get("km"))
+    baseline_min = _as_float(route_info.get("route_min") or route_info.get("duration_min") or route_info.get("min"))
+
+    # --- alternative route metrics (baseline + detour deltas) ---
+    detour_km = None
+    detour_min = None
+    if isinstance(best_station, dict) and best_station:
+        dk, dm = _detour_metrics(best_station)
+        detour_km = dk
+        detour_min = dm
+
+    alt_km = (baseline_km + detour_km) if (baseline_km is not None and detour_km is not None) else None
+    alt_min = (baseline_min + detour_min) if (baseline_min is not None and detour_min is not None) else None
+
+    # --- station marker position on alternative line (prefer fraction_of_route) ---
+    station_frac = None
+    if isinstance(best_station, dict) and best_station:
+        station_frac = _as_float(best_station.get("fraction_of_route"))
+
+        # fallback: derive from distance_along_m if total route length is known
+        if station_frac is None:
+            dist_along_m = _as_float(best_station.get("distance_along_m"))
+            route_dist_m = _as_float(
+                route_info.get("route_distance_m")
+                or route_info.get("distance_m")
+                or route_info.get("route_m")
+            )
+            if dist_along_m is not None and route_dist_m not in (None, 0.0):
+                station_frac = dist_along_m / route_dist_m
+
+    # clamp to [0, 1]
+    if station_frac is not None:
+        station_frac = max(0.0, min(1.0, float(station_frac)))
+
+    # --- proportional widths: longest bar spans full container width ---
+    lengths = [x for x in [baseline_km, alt_km] if x is not None and x > 0]
+    denom = max(lengths) if lengths else 1.0
+
+    baseline_w = (baseline_km / denom) if (baseline_km is not None and baseline_km > 0) else 0.0
+    alt_w = (alt_km / denom) if (alt_km is not None and alt_km > 0) else 0.0
+
+    # if we do not have a best station, we still show the baseline bar and a placeholder alternative bar
+    has_alt = (alt_km is not None and alt_w > 0.0)
+
+    # --- display strings ---
+    baseline_text = f"Distance: {_format_km(baseline_km)} · Time: {_format_min(baseline_min)}"
+    alt_line1: str
+    alt_line2: Optional[str] = None
+
+    if has_alt:
+        alt_line1 = f"Distance: {_format_km(alt_km)} · Time: {_format_min(alt_min)}"
+
+        # Detour as % of baseline distance
+        detour_pct = None
+        if baseline_km not in (None, 0.0) and detour_km is not None:
+            detour_pct = (float(detour_km) / float(baseline_km)) * 100.0
+
+        if detour_pct is not None:
+            alt_line2 = f"Detour: {_format_km(detour_km)} / {detour_pct:.2f}% of baseline"
+        else:
+            alt_line2 = f"Detour: {_format_km(detour_km)} / —% of baseline"
+    else:
+        alt_line1 = "Alternative route is unavailable (no recommended station cached)."
+        alt_line2 = None
+
+    # station marker label (optional)
+    station_label = ""
+    if isinstance(best_station, dict) and best_station:
+        name = best_station.get("brand") or best_station.get("station_name") or best_station.get("name") or "Best station"
+        station_label = _safe_text(name)
+
+    # --- render (page-local CSS; uses your map colors) ---
+    st.markdown(
+        """
+        <style>
+          .p02-kv { width: 100%; margin-top: -2rem; }
+          .p02-kv-row { margin: 0.65rem 0 1.05rem 0; }
+          .p02-kv-subtitle { font-weight: 700; margin: 0 0 0.35rem 0; }
+          .p02-kv-track { width: 100%; }
+          .p02-kv-line {
+            position: relative;
+            height: 0;
+            border-top-width: 6px;
+            border-top-style: solid;
+            border-radius: 999px;
+            opacity: 0.95;
+          }
+          .p02-kv-line.baseline { border-top-color: rgba(30, 144, 255, 1.0); }
+          .p02-kv-line.alt { border-top-color: rgba(148, 0, 211, 1.0); border-top-style: dashed; }
+
+            .p02-kv-dot {
+            position: absolute;
+            top: -12px;
+            width: 18px;
+            height: 18px;
+            border-radius: 999px;
+            background: rgba(220, 20, 60, 1.0);  /* red dot */
+            border: 2px solid rgba(255, 255, 255, 0.96);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.20);
+            transform: translateX(-50%);
+            }
+
+            .p02-kv-detail { margin: 0.40rem 0 0 0; opacity: 0.85; line-height: 1.25; }
+            .p02-kv-detail.detour { opacity: 0.78; margin-top: 0.20rem; }
+
+          /* Mobile: slightly thicker separation, keep readability */
+          @media (max-width: 600px) {
+            .p02-kv-row { margin-bottom: 1.20rem; }
+            .p02-kv-line { border-top-width: 7px; }
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Build HTML without indentation to avoid Markdown "code block" behavior
+    baseline_bar = (
+        f"<div class='p02-kv-line baseline' style='width:{baseline_w*100:.1f}%;'></div>"
+        if baseline_w > 0
+        else "<div class='p02-kv-line baseline' style='width:0%;'></div>"
+    )
+
+    if has_alt:
+        dot_html = ""
+        if station_frac is not None:
+            dot_html = f"<span class='p02-kv-dot' style='left:{station_frac*100:.1f}%;'></span>"
+        alt_bar = f"<div class='p02-kv-line alt' style='width:{alt_w*100:.1f}%;'>{dot_html}</div>"
+    else:
+        alt_bar = "<div class='p02-kv-line alt' style='width:0%;'></div>"
+
+    html_block = (
+        "<div class='p02-kv'>" +
+        "<div class='p02-kv-row'>" +
+        "<div class='p02-kv-subtitle'>Baseline Google route:</div>" +
+        f"<div class='p02-kv-track'>{baseline_bar}</div>" +
+        f"<div class='p02-kv-detail'>{_safe_text(baseline_text)}</div>" +
+        "</div>" +
+        "<div class='p02-kv-row'>" +
+        "<div class='p02-kv-subtitle'>Alternative route with best station:</div>" +
+        f"<div class='p02-kv-track'>{alt_bar}</div>" +
+        f"<div class='p02-kv-detail'>{_safe_text(alt_line1)}</div>" +
+            (
+                f"<div class='p02-kv-detail detour'>{_safe_text(alt_line2)}</div>"
+                if alt_line2 else
+                ""
+            ) +
+        "</div>" +
+        "</div>"
+    )
+
+    st.markdown(html_block, unsafe_allow_html=True)
+
+
 def _get_last_run() -> Optional[Dict[str, Any]]:
     cached = st.session_state.get("last_run")
     if not isinstance(cached, dict):
@@ -606,12 +872,17 @@ def _render_page02_sidebar_action() -> None:
         type="primary",
         use_container_width=True,
         key="p02_back_to_trip_planner",
-        help="Return to the Trip Planner (Page 01).",
+        help="Return to the Home page.",
     ):
+        # Do NOT set st.session_state["top_nav"] here (top_nav widget already exists on this page).
+        # Instead, request Home navigation and let streamlit_app.py apply it before rendering its widget.
+        st.session_state["nav_request_top_nav"] = "Home"
+
         try:
             maybe_persist_state(force=True)
         except Exception:
             pass
+
         st.switch_page("streamlit_app.py")
 
     with st.sidebar.container(key="p02_analysis_type_block"):
@@ -641,30 +912,89 @@ def _render_page02_sidebar_action() -> None:
             "### Chose Analysis Type",
             help=(
                 "Select which analytics view to display on this page. "
-                "Currently, only 'Full Result Tables' is populated."
             ),
         )
 
         # Show current selection (or none) without using st.caption (your global CSS affects captions)
         current_view = str(st.session_state.get("route_analytics_view") or "").strip()
-        selected_label = current_view if current_view else "—"
+        selected_label = current_view if current_view else "None selected"
         st.markdown(
             f"<div class='p02-analysis-selected'>Selected: {selected_label}</div>",
             unsafe_allow_html=True,
         )
 
+    def _apply_view_and_rerun(view: str) -> None:
+        st.session_state["route_analytics_view"] = view
+        try:
+            maybe_persist_state(force=True)
+        except Exception:
+            pass
+
+        # Streamlit version compatibility
+        try:
+            st.rerun()
+        except Exception:
+            try:
+                st.experimental_rerun()
+            except Exception:
+                pass
+
+    st.sidebar.markdown(
+        """
+        <style>
+        /* Page 02 sidebar: left-align ONLY the 4 analysis buttons (scoped by keys) */
+        section[data-testid="stSidebar"] .st-key-p02_view_recommended_route button,
+        section[data-testid="stSidebar"] .st-key-p02_view_recommended_stations button,
+        section[data-testid="stSidebar"] .st-key-p02_view_prediction_algorithm button,
+        section[data-testid="stSidebar"] .st-key-p02_view_full_result_tables button {
+            width: 100%;
+            justify-content: flex-start !important;
+            text-align: left !important;
+        }
+
+        /* Streamlit typically wraps the label inside a button > div wrapper; reset that */
+        section[data-testid="stSidebar"] .st-key-p02_view_recommended_route button > div,
+        section[data-testid="stSidebar"] .st-key-p02_view_recommended_stations button > div,
+        section[data-testid="stSidebar"] .st-key-p02_view_prediction_algorithm button > div,
+        section[data-testid="stSidebar"] .st-key-p02_view_full_result_tables button > div {
+            width: 100% !important;
+            margin: 0 !important;
+            justify-content: flex-start !important;
+        }
+
+        /* Force every possible label container to full-width + left aligned */
+        section[data-testid="stSidebar"] .st-key-p02_view_recommended_route button * ,
+        section[data-testid="stSidebar"] .st-key-p02_view_recommended_stations button * ,
+        section[data-testid="stSidebar"] .st-key-p02_view_prediction_algorithm button * ,
+        section[data-testid="stSidebar"] .st-key-p02_view_full_result_tables button * {
+            text-align: left !important;
+            justify-content: flex-start !important;
+        }
+
+        /* Optional: small left padding so it reads as “left-bound” */
+        section[data-testid="stSidebar"] .st-key-p02_view_recommended_route button,
+        section[data-testid="stSidebar"] .st-key-p02_view_recommended_stations button,
+        section[data-testid="stSidebar"] .st-key-p02_view_prediction_algorithm button,
+        section[data-testid="stSidebar"] .st-key-p02_view_full_result_tables button {
+            padding-left: 1.0rem !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     # View buttons (stacked, full width)
-    if st.sidebar.button("Recommended Route", use_container_width=True, key="p02_view_recommended_route"):
-        st.session_state["route_analytics_view"] = "Recommended Route"
+    if st.sidebar.button("**1. Recommended Route**", use_container_width=True, key="p02_view_recommended_route"):
+        _apply_view_and_rerun("Recommended Route")
 
-    if st.sidebar.button("Recommended Stations", use_container_width=True, key="p02_view_recommended_stations"):
-        st.session_state["route_analytics_view"] = "Recommended Stations"
+    if st.sidebar.button("**2. Recommended Stations**", use_container_width=True, key="p02_view_recommended_stations"):
+        _apply_view_and_rerun("Recommended Stations")
 
-    if st.sidebar.button("Prediction Algorithm", use_container_width=True, key="p02_view_prediction_algorithm"):
-        st.session_state["route_analytics_view"] = "Prediction Algorithm"
+    if st.sidebar.button("**3. Prediction Algorithm**", use_container_width=True, key="p02_view_prediction_algorithm"):
+        _apply_view_and_rerun("Prediction Algorithm")
 
-    if st.sidebar.button("Full Result Tables", use_container_width=True, key="p02_view_full_result_tables"):
-        st.session_state["route_analytics_view"] = "Full Result Tables"
+    if st.sidebar.button("**4. Full Result Tables**", use_container_width=True, key="p02_view_full_result_tables"):
+        _apply_view_and_rerun("Full Result Tables")
 
 
 # -----------------------------
@@ -743,9 +1073,7 @@ def main() -> None:
 
     cached = _get_last_run()
     if not cached:
-        st.info("No cached run found. Run a route recommendation first on the main page.")
-        if st.button("Open main page"):
-            st.switch_page("streamlit_app.py")
+        st.info("No cached run found. Run a route recommendation first on the home page.")
         return
 
 
@@ -800,8 +1128,244 @@ def main() -> None:
         maybe_persist_state()
         return
 
-    # For now: only render the existing page content under "Full Result Tables".
-    # Other analysis views are intentionally empty (header + top nav remain visible).
+    # ------------------------------------------------------------
+    # View routing (Page 02 subviews)
+    # ------------------------------------------------------------
+
+    if analysis_view == "Recommended Route":
+        # Headline slightly smaller than the main title
+        st.markdown("### **1. Recommended Route**")
+
+        # [CHANGE 1] Decrease space above "Route settings:"
+        # used negative margin-top to pull it up, and small bottom margin
+        st.markdown(
+            """
+            <h4 style="margin-top: -1.0rem; margin-bottom: 0.25rem;">
+                Route settings:
+            </h4>
+            """,
+            unsafe_allow_html=True
+        )
+
+        # -----------------------------
+        # Route (Start -> Destination)
+        # -----------------------------
+        def _fmt_coord(pt: object) -> str:
+            """Format a coordinate point robustly across common shapes."""
+            if pt is None:
+                return "—"
+            try:
+                # tuple/list: (lat, lon)
+                if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                    lat, lon = float(pt[0]), float(pt[1])
+                    return f"{lat:.5f}, {lon:.5f}"
+                # dict: {"lat":..,"lng":..} or {"latitude":..,"longitude":..}
+                if isinstance(pt, dict):
+                    if "lat" in pt and ("lng" in pt or "lon" in pt):
+                        lat = float(pt["lat"])
+                        lon = float(pt.get("lng", pt.get("lon")))
+                        return f"{lat:.5f}, {lon:.5f}"
+                    if "latitude" in pt and "longitude" in pt:
+                        lat = float(pt["latitude"])
+                        lon = float(pt["longitude"])
+                        return f"{lat:.5f}, {lon:.5f}"
+            except Exception:
+                return "—"
+            return "—"
+
+
+        # Prefer the cached run inputs (stable even if user changed sidebar afterward)
+        params = cached.get("params") or {}
+        start_label = str(params.get("start_locality") or st.session_state.get("start_locality") or "").strip()
+        end_label = str(params.get("end_locality") or st.session_state.get("end_locality") or "").strip()
+        start_label = start_label if start_label else "—"
+        end_label = end_label if end_label else "—"
+
+        # Coordinates: use route endpoints from the cached route polyline
+        route_coords = None
+        # Always read route_info/route_coords from the cached last_run on Page 02.
+        route_info = cached.get("route_info") or {}
+
+        # 1) Preferred: exact geocoding coords used for routing (lat/lon)
+        start_coord = route_info.get("start_coord")
+        end_coord = route_info.get("end_coord")
+
+        # 2) Fallback: derive from route polyline endpoints (often [lon, lat])
+        route_coords = route_info.get("route_coords") or cached.get("route_coords") or []
+
+        def _coerce_latlon_from_route_point(pt: object):
+            """
+            Route polyline points in this project are typically [lon, lat].
+            Convert to (lat, lon) for display when we can infer it.
+            """
+            try:
+                if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                    a, b = float(pt[0]), float(pt[1])
+
+                    # Heuristic:
+                    # - latitude must be within [-90, 90]
+                    # - longitude within [-180, 180]
+                    # If (a,b) fits (lon,lat), swap to (lat,lon)
+                    if abs(a) <= 180 and abs(b) <= 90:
+                        return (b, a)  # (lat, lon)
+                    if abs(a) <= 90 and abs(b) <= 180:
+                        return (a, b)  # already (lat, lon)
+            except Exception:
+                pass
+            return None
+
+        if not start_coord or not end_coord:
+            if isinstance(route_coords, list) and len(route_coords) >= 1:
+                start_fallback = _coerce_latlon_from_route_point(route_coords[0])
+                end_fallback = _coerce_latlon_from_route_point(route_coords[-1])
+                start_coord = start_coord or start_fallback
+                end_coord = end_coord or end_fallback
+
+        # Page-02-only styling for these cards (scoped via unique class)
+        st.markdown(
+            """
+            <style>
+            .p02-route-cards {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                gap: 0.45rem;
+                margin-top: -1.4rem;
+                margin-bottom: 0.5rem;
+            }
+            .p02-route-card {
+                width: min(720px, 100%);
+                padding: 0.85rem 1.0rem;
+                border: 3px solid rgba(49, 51, 63, 0.3);
+                border-radius: 0.9rem;
+                text-align: center;
+            }
+            .p02-route-title {
+                font-size: 1.3rem;
+                font-weight: 750;
+                margin: 0 0 0.25rem 0;
+                line-height: 1.15;
+            }
+            .p02-route-sub {
+                font-size: 0.92rem;
+                opacity: 0.78;
+                margin: 0;
+                line-height: 1.2;
+            }
+            .p02-route-arrow {
+                font-size: 1.35rem;
+                font-weight: 800;
+                opacity: 0.85;
+                line-height: 1;
+                margin: 0.05rem 0;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            f"""
+            <div class="p02-route-cards">
+            <div class="p02-route-card">
+                <div class="p02-route-title">{start_label}</div>
+                <div class="p02-route-sub">Google coordinates: {_fmt_coord(start_coord)}</div>
+            </div>
+
+            <div class="p02-route-arrow" style="font-size: 40px; font-weight: bold;">↓</div>
+
+            <div class="p02-route-card">
+                <div class="p02-route-title">{end_label}</div>
+                <div class="p02-route-sub">Google coordinates: {_fmt_coord(end_coord)}</div>
+            </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # [CHANGE 2] Decrease space below "Recommender constraints:"
+        # Set margin-bottom to a very small value (0.1rem) so cards sit tight against it
+        st.markdown(
+            """
+            <h4 style="margin-top: 0.3rem; margin-bottom: -1.3rem;">
+                Recommender constraints:
+            </h4>
+            """,
+            unsafe_allow_html=True
+        )
+
+        # Read constraints exactly as used on Page 01 (cached in last_run["run_summary"])
+        constraints = run_summary.get("constraints") or {}
+
+        max_detour_km = constraints.get("max_detour_km")
+        max_detour_min = constraints.get("max_detour_min")
+
+        litres_to_refuel = constraints.get("litres_to_refuel")
+        consumption_l_per_100km = constraints.get("consumption_l_per_100km")
+        value_of_time_eur_per_hour = constraints.get("value_of_time_eur_per_hour")
+        min_net_saving_eur = constraints.get("min_net_saving_eur") if use_economics else None
+
+        # Advanced Settings (persisted by Page 01)
+        adv = (run_summary.get("advanced_settings") or cached.get("advanced_settings") or {})
+        open_at_eta = bool(
+            adv.get("filter_closed_at_eta")
+            or run_summary.get("filter_closed_at_eta")
+            or cached.get("filter_closed_at_eta")
+        )
+
+        brand_filter_selected = adv.get("brand_filter_selected") or []
+        if isinstance(brand_filter_selected, str):
+            brand_filter_selected = [brand_filter_selected]
+        brand_filter_selected = [str(x).strip() for x in brand_filter_selected if str(x).strip()]
+        brand_filtered_out_n = adv.get("brand_filtered_out_n")
+        try:
+            brand_filtered_out_n = int(brand_filtered_out_n) if brand_filtered_out_n is not None else 0
+        except (TypeError, ValueError):
+            brand_filtered_out_n = 0
+
+        # UI summary (responsive via your existing metric-grid CSS)
+        items = [
+            ("Fuel type", fuel_code.upper()),
+            ("Decision mode", "Economics-based" if use_economics else "Price-only"),
+            ("Max extra distance", _format_km(max_detour_km)),
+            ("Max extra time", _format_min(max_detour_min)),
+        ]
+
+        if use_economics:
+            items.extend(
+                [
+                    ("Litres to refuel", _format_liters(litres_to_refuel)),
+                    ("Consumption", f"{float(consumption_l_per_100km):.2f} L/100 km" if consumption_l_per_100km is not None else "—"),
+                    ("Value of time", _format_eur(value_of_time_eur_per_hour) + "/h" if value_of_time_eur_per_hour is not None else "—"),
+                    ("Min net saving", _format_eur(min_net_saving_eur)),
+                ]
+            )
+
+        items.append(("Stations open at ETA", "On" if open_at_eta else "Off"))
+        items.append(("Brand filter", "Any" if not brand_filter_selected else f"{len(brand_filter_selected)} selected"))
+
+        render_card_grid(items, cols=2)
+
+
+        # [CHANGE 3] Increase space above "Key visualization:"
+        # Set margin-top to a larger value (3.0rem)
+        st.markdown(
+            """
+            <h4 style="margin-top: 0.5rem; margin-bottom: 0.2rem;">
+                Key Visualization:
+            </h4>
+            """,
+            unsafe_allow_html=True
+        )
+
+        best_station: Optional[Dict[str, Any]] = cached.get("best_station")
+        route_info: Dict[str, Any] = cached.get("route_info") or {}
+        render_key_visualization(route_info=route_info, best_station=best_station)
+
+        maybe_persist_state()
+        return
+
+    # Keep other views empty for now (header + top nav remain visible)
     if analysis_view != "Full Result Tables":
         maybe_persist_state()
         return
