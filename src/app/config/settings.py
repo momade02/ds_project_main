@@ -106,6 +106,7 @@ PERSISTED_STATE_FIELDS: Iterable[SessionStateField] = (
     SessionStateField("map_style_mode", "Standard"),
     SessionStateField("debug_mode", True),
     SessionStateField("station_details_density", "Detailed"),
+    SessionStateField("route_analytics_view", ""),
 
     # Cross-page selection
     SessionStateField("selected_station_uuid", None),

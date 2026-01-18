@@ -593,6 +593,80 @@ def _station_label(s: Dict[str, Any], idx: Optional[int] = None, tag: str = "") 
     return _safe_text(f"{prefix}{title} ({city}){suffix}")
 
 
+def _render_page02_sidebar_action() -> None:
+    """
+    Page 02 (Route Analytics) Action tab:
+    - Back to Trip Planner button (primary styling)
+    - Analysis type selector (buttons)
+    """
+
+    # Top button: same "primary" style pattern as Page 04 ("Search Stations")
+    if st.sidebar.button(
+        "Back to Trip Planner",
+        type="primary",
+        use_container_width=True,
+        key="p02_back_to_trip_planner",
+        help="Return to the Trip Planner (Page 01).",
+    ):
+        try:
+            maybe_persist_state(force=True)
+        except Exception:
+            pass
+        st.switch_page("streamlit_app.py")
+
+    with st.sidebar.container(key="p02_analysis_type_block"):
+        # Page-02-only spacing fix (scoped to this container)
+        st.markdown(
+            """
+            <style>
+            /* Only affects content inside this specific sidebar container */
+            section[data-testid="stSidebar"] div[data-testid="stVerticalBlockBorderWrapper"]:has(div[data-testid="stVerticalBlock"] div.p02-analysis-type-block) h3 {
+                margin-bottom: 0.65rem !important;
+            }
+            section[data-testid="stSidebar"] div.p02-analysis-selected {
+                margin-top: 0rem !important;
+                margin-bottom: 1.2rem !important;
+                font-size: 1rem;
+                opacity: 0.78;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Add a marker div so the selector can scope reliably
+        st.markdown("<div class='p02-analysis-type-block'></div>", unsafe_allow_html=True)
+
+        st.markdown(
+            "### Chose Analysis Type",
+            help=(
+                "Select which analytics view to display on this page. "
+                "Currently, only 'Full Result Tables' is populated."
+            ),
+        )
+
+        # Show current selection (or none) without using st.caption (your global CSS affects captions)
+        current_view = str(st.session_state.get("route_analytics_view") or "").strip()
+        selected_label = current_view if current_view else "—"
+        st.markdown(
+            f"<div class='p02-analysis-selected'>Selected: {selected_label}</div>",
+            unsafe_allow_html=True,
+        )
+
+    # View buttons (stacked, full width)
+    if st.sidebar.button("Recommended Route", use_container_width=True, key="p02_view_recommended_route"):
+        st.session_state["route_analytics_view"] = "Recommended Route"
+
+    if st.sidebar.button("Recommended Stations", use_container_width=True, key="p02_view_recommended_stations"):
+        st.session_state["route_analytics_view"] = "Recommended Stations"
+
+    if st.sidebar.button("Prediction Algorithm", use_container_width=True, key="p02_view_prediction_algorithm"):
+        st.session_state["route_analytics_view"] = "Prediction Algorithm"
+
+    if st.sidebar.button("Full Result Tables", use_container_width=True, key="p02_view_full_result_tables"):
+        st.session_state["route_analytics_view"] = "Full Result Tables"
+
+
 # -----------------------------
 # Main
 # -----------------------------
@@ -624,7 +698,7 @@ def main() -> None:
 
     # Header (consistent across pages)
     st.title("Route Analytics")
-    st.caption("##### Understand the recommendation.")
+    st.caption("##### Understand station and route recommendations.")
 
     NAV_TARGETS = {
         "Home": "streamlit_app.py",
@@ -639,6 +713,8 @@ def main() -> None:
     if st.session_state.get("_active_page") != CURRENT:
         st.session_state["_active_page"] = CURRENT
         st.session_state["top_nav"] = CURRENT
+        # Default behavior for Page 02: no analysis section selected on entry
+        st.session_state["route_analytics_view"] = ""
 
     selected = st.segmented_control(
         label="",
@@ -658,23 +734,12 @@ def main() -> None:
             pass
         st.switch_page(target)
 
-    render_sidebar_shell(
-        action_placeholder="Placeholder: Action (nothing to configure on Route Analytics yet)."
-    )
 
-    # ------------------------------------------------------------------
-    # Sidebar (bottom): Debug mode toggle (controls st.session_state used by other pages)
-    # ------------------------------------------------------------------
-    if "debug_mode" not in st.session_state:
-        st.session_state["debug_mode"] = True
+    # Debug mode forced ON on Page 02
+    st.session_state["debug_mode"] = True
 
-    with st.sidebar:
-        st.markdown("---")
-        st.checkbox(
-            "Debug mode",
-            key="debug_mode",
-            help="When enabled, the UI shows additional raw/debug payloads on all pages.",
-        )
+    # Render standardized shell (Action/Help/Settings/Profile) with Page-02 Action content
+    render_sidebar_shell(action_renderer=_render_page02_sidebar_action)
 
     cached = _get_last_run()
     if not cached:
@@ -718,6 +783,29 @@ def main() -> None:
     st.session_state["last_run"] = cached
 
     stations: List[Dict[str, Any]] = cached.get("stations") or []
+
+    analysis_view = str(st.session_state.get("route_analytics_view") or "").strip()
+
+    # Default landing: no selection => show welcome info below the top nav
+    if not analysis_view:
+        st.info(
+            "Welcome to Route Analytics.\n\n"
+            "Use the sidebar to select an analysis view:\n"
+            "- Recommended Route\n"
+            "- Recommended Stations\n"
+            "- Prediction Algorithm\n"
+            "- Full Result Tables\n\n"
+            "Tip: Start on “Full Result Tables” to review the current end-to-end output."
+        )
+        maybe_persist_state()
+        return
+
+    # For now: only render the existing page content under "Full Result Tables".
+    # Other analysis views are intentionally empty (header + top nav remain visible).
+    if analysis_view != "Full Result Tables":
+        maybe_persist_state()
+        return
+
     ranked: List[Dict[str, Any]] = cached.get("ranked") or []
     best_station: Optional[Dict[str, Any]] = cached.get("best_station")
     route_info: Dict[str, Any] = cached.get("route_info") or {}
