@@ -463,7 +463,7 @@ def _render_help_action() -> SidebarState:
     state = _read_cached_values_for_non_action()
 
     st.sidebar.markdown("### Detailed Information")
-    st.sidebar.markdown("Click on the Topic in which you are interested in:")
+    st.sidebar.markdown("Click on the Topic in which you are interested in.")
 
     with st.sidebar.popover("Data Sources"):
         st.markdown("**Google Maps APIs**: " \
@@ -481,20 +481,20 @@ def _render_help_action() -> SidebarState:
     with st.sidebar.popover("Finding Stations along the route"):
         st.markdown("Fuel stations are retrieved along the calculated route using the **Places API Text Search Enterprise**. " \
                     "\n\nFor each returned station, the detour time and distance caused by stopping there is calculated from the API’s routing summary output. Further an estimated arrival time is computed. Opening-hours information is then evaluated to determine whether the station is likely open at that ETA.")
-    
-    with st.sidebar.popover("Price prediction model"):
-        st.markdown("The price prediction is based on an **ARDL model (Autoregressive Distributed Lag)** that uses past fuel prices to estimate future prices. " \
-        "\n\nSeparate models are trained for each fuel type (E5, E10, Diesel) and for different prediction horizons (from “now” up to about two hours ahead). " \
-        "\n\nTo generate a prediction, it is first determined how far in the future the arrival at a station lies. If the arrival is very soon (within a few minutes) and a current price is available, the current price is used directly and no model is applied. " \
-        "Otherwise, the appropriate horizon model is selected: short-term horizons (h1–h4) are used for near-future arrivals, while a daily-only model (h0) is used when the arrival lies further ahead or when no current price is available. " \
-        "The model then receives a **feature vector** consisting of **daily lagged prices** (prices from previous days) and, for short horizons, an additional **intraday price feature**. " \
-        "Based on these inputs, the ARDL model predicts the expected fuel price at the estimated arrival time. ")
 
     with st.sidebar.popover("Detour Economics Explained"):
         st.markdown("The Detour Economics logic evaluates the cost-effectiveness of taking a detour to refuel. It combines the additional fuel costs (based on distance and car consumption) and time costs (using the user's value of time) with the potential savings from lower fuel prices at the detour station. " \
         "The goal is to calculate the net savings and ensure that the detour is economically beneficial." \
         "Formula: \n\n$$Net Saving = Fuel Price Saving − Detour Fuel Cost − Time Cost$$" \
         )
+        
+    with st.sidebar.popover("Price prediction model"):
+        st.markdown("The price prediction is based on an **ARDL model (Autoregressive Distributed Lag)** that uses past fuel prices to estimate future prices. " \
+        "Separate models are trained for each fuel type (E5, E10, Diesel) and for different prediction horizons (from “now” up to about two hours ahead). " \
+        "\n\nTo generate a prediction, it is first determined how far in the future the arrival at a station lies. If the arrival is very soon (within a few minutes) and a current price is available, the current price is used directly and no model is applied. " \
+        "Otherwise, the appropriate horizon model is selected: short-term horizons (h1–h4) are used for near-future arrivals, while a daily-only model (h0) is used when the arrival lies further ahead or when no current price is available. " \
+        "The model then receives a **feature vector** consisting of **daily lagged prices** (prices from previous days) and, for short horizons, an additional **intraday price feature**. " \
+        "Based on these inputs, the ARDL model predicts the expected fuel price at the estimated arrival time. ")
 
     # Return a SidebarState compatible object (keep cached values, only change view)
     return SidebarState(**{**state.__dict__, "view": "Help"})
