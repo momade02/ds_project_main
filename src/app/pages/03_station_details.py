@@ -468,21 +468,22 @@ def main():
         initial_sidebar_state="expanded",
     )
     
-    # Redis-backed persistence
-    _preserve_top_nav = st.session_state.get("top_nav")
-    _preserve_sidebar_view = st.session_state.get("sidebar_view")
-    _preserve_map_style_mode = st.session_state.get("map_style_mode")
-    
+    # Redis-backed persistence (best-effort)
+    # Note: restore_persisted_state() already has a guard to prevent clobbering widget updates on reruns.
+    # Therefore we must NOT overwrite restored values with "preserved" widget keys on hard refresh.
+
     init_session_context()
     ensure_persisted_state_defaults(st.session_state)
-    restore_persisted_state(overwrite_existing=True)
-    
-    if _preserve_top_nav is not None:
-        st.session_state["top_nav"] = _preserve_top_nav
-    if _preserve_sidebar_view is not None:
-        st.session_state["sidebar_view"] = _preserve_sidebar_view
-    if _preserve_map_style_mode is not None:
-        st.session_state["map_style_mode"] = _preserve_map_style_mode
+
+    restored = restore_persisted_state(overwrite_existing=True)
+
+    # Only if no restore happened (e.g., Redis unavailable / no snapshot) do we keep any current values.
+    # (Usually this is a no-op, but it is safe and rollback-friendly.)
+    if not restored:
+        # keep current widget values if present
+        for k in ("top_nav", "sidebar_view", "map_style_mode"):
+            if k in st.session_state:
+                st.session_state[k] = st.session_state[k]
     
     apply_app_css()
     
