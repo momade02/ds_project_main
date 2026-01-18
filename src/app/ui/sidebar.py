@@ -456,9 +456,102 @@ def _render_trip_planner_action() -> SidebarState:
     )
 
 
+def _render_help_action() -> SidebarState:
+    """
+    Built-in Help renderer that mirrors the Action style (internal widget keys,
+    optional dialog for expanded content) and returns a SidebarState so pages
+    using the returned state remain compatible.
+    """
+    state = _read_cached_values_for_non_action()
+
+    def _canonical(key: str, default: Any) -> Any:
+        return st.session_state.get(key, default)
+
+    st.sidebar.markdown("### Help")
+    st.sidebar.markdown(
+        "Below, the input fields from the **Action tab** are displayed, with a corresponding help text shown underneath."
+    )
+
+    # Prepare fields: (label, value, help_text)
+    fields = [
+        (
+            "Start",
+            str(_canonical("start_locality", "Tübingen")),
+            "Specify your trip's starting point. You can enter either a city name or a full address. If you use a foreign address, please add the country name for better results."
+            "If your input is nonsensical (e.g., gibberish), the recommender sets the location to the center of Germany.",
+        ),
+        (
+            "Destination",
+            str(_canonical("end_locality", "Sindelfingen")),
+            "Specify your trip's destination. You can enter either a city name or a full address. If you use a foreign address, please add the country name for better results."
+            "If your input is nonsensical (e.g., gibberish), the recommender sets the location to the center of Germany.",
+        ),
+        (
+            "Fuel type",
+            str(_canonical("fuel_label", "E5")),
+            "Select the type of fuel your vehicle uses. E5, E10 and Diesel are supported.",
+        ),
+        (
+            "Economics-based decision",
+            str(bool(_canonical("use_economics", True))),
+            "When enabled, the recommender combines detour limits with detour costs and expected price advantage to compute a net saving.",
+        ),
+        (
+            "Litres to refuel",
+            str(float(_canonical("litres_to_refuel", 40.0))),
+            "Amount of fuel (in litres) you plan to refuel at the selected station. The more you refuel, the higher the potential savings from price differences.",
+        ),
+        (
+            "Car consumption (L/100 km)",
+            str(float(_canonical("consumption_l_per_100km", 7.0))),
+            "Your car's average fuel consumption in litres per 100 km. Used to estimate extra fuel costs for detours.",
+        ),
+        (
+            "Value of time (€/hour)",
+            str(float(_canonical("value_of_time_eur_per_hour", 0.0))),
+            "Monetary value you assign to your time (in euros per hour). Used to estimate the cost of extra travel time for detours.",
+        ),
+        (
+            "Maximum extra distance (km)",
+            str(float(_canonical("max_detour_km", 5.0))),
+            "The maximum additional distance you are willing to drive for a detour compared to the baseline route. Stations requiring more extra distance are excluded (hard constraint).",
+        ),
+        (
+            "Maximum extra time (min)",
+            str(float(_canonical("max_detour_min", 10.0))),
+            "The maximum additional travel time you are willing to accept for a detour compared to the baseline route. Stations requiring more extra time are excluded (hard constraint).",
+        ),
+        (
+            "Min net saving (€)",
+            str(float(_canonical("min_net_saving_eur", 0.0))),
+            "Minimum required net benefit for accepting a detour. Net saving = fuel price saving − detour fuel cost − optional time cost.",
+        ),
+        (
+            "Stations open at ETA",
+            str(bool(_canonical("filter_closed_at_eta", True))),
+            "If enabled, stations are filtered out when Google indicates they are closed at the estimated time of arrival (ETA) at the station. If opening hours are unavailable, the station is kept.",
+        ),
+        (
+            "Brand filter (selected)",
+            ", ".join(list(_canonical("brand_filter_selected", []))) or "(none)",
+            "10 most common brands in Germany. Only stations of selected brands are considered. When active, stations with unknown/missing brand are excluded.",
+        ),
+    ]
+
+    # Render fields as markdown + plain help text
+    for label, value, help_text in fields:
+        with st.sidebar.expander(label, expanded=False):
+            st.markdown(f"**Current value:** {value}")
+            st.write(help_text)
+
+    # Return a SidebarState compatible object (keep cached values, only change view)
+    return SidebarState(**{**state.__dict__, "view": "Help"})
+
+
 def render_sidebar(
     *,
     action_renderer: Optional[Callable[[], SidebarState]] = None,
+    help_renderer: Optional[Callable[[], SidebarState]] = None,
     help_placeholder: str = "Placeholder: Help (content will be added later).",
     settings_placeholder: str = "Placeholder: Settings (content will be added later).",
     profile_placeholder: str = "Placeholder: Profile (content will be added later).",
@@ -495,8 +588,8 @@ def render_sidebar(
     state = _read_cached_values_for_non_action()
 
     if view == "Help":
-        st.sidebar.info(help_placeholder)
-        return SidebarState(**{**state.__dict__, "view": "Help"})
+        renderer = help_renderer or _render_help_action
+        return renderer()
     if view == "Settings":
         st.sidebar.info(settings_placeholder)
         return SidebarState(**{**state.__dict__, "view": "Settings"})
