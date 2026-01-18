@@ -494,7 +494,7 @@ def render_sidebar(
 
 
 # =============================================================================
-# Shared sidebar shell (Pages 2–4)
+# Shared sidebar shell (Pages 2—4)
 # =============================================================================
 
 def render_sidebar_shell(
@@ -506,7 +506,7 @@ def render_sidebar_shell(
     profile_placeholder: str = "Placeholder: Profile (will be added later).",
 ) -> str:
     """
-    Shared 4-tab sidebar shell for Pages 2–4 (and optionally others):
+    Shared 4-tab sidebar shell for Pages 2—4 (and optionally others):
       - Action
       - Help
       - Settings
@@ -527,24 +527,23 @@ def render_sidebar_shell(
         width="stretch",
         key="sidebar_view",
     )
-
-    if view == "Action":
-        if action_renderer is not None:
-            action_renderer()
+    
+    # Render content based on selected tab
+    # Only Action tab renders the (potentially heavy) action_renderer
+    with st.sidebar.container():
+        if view == "Action":
+            if action_renderer is not None:
+                action_renderer()
+            else:
+                st.info(action_placeholder)
+        elif view == "Help":
+            st.info(help_placeholder)
+        elif view == "Settings":
+            st.info(settings_placeholder)
         else:
-            st.sidebar.info(action_placeholder)
-        return "Action"
-
-    if view == "Help":
-        st.sidebar.info(help_placeholder)
-        return "Help"
-
-    if view == "Settings":
-        st.sidebar.info(settings_placeholder)
-        return "Settings"
-
-    st.sidebar.info(profile_placeholder)
-    return "Profile"
+            st.info(profile_placeholder)
+    
+    return st.session_state.get("sidebar_view", "Action")
 
 
 # =============================================================================
@@ -602,7 +601,7 @@ def _build_station_label(
         parts.append(f"({brand})")
 
     if include_city and city:
-        parts.append(f"· {city.upper()}")
+        parts.append(f"· {city.title()}")
 
     parts.append(f"[{tag}]")
     return " ".join(parts).strip()
@@ -738,10 +737,15 @@ def render_station_selector(
             if uid:
                 options.append((uid, _build_station_label(s, tag="ranked", rank_index=i)))
 
+        # Add separator if there are both ranked and excluded
+        if ranked and excluded:
+            # Add a visual separator label (not selectable, but shown in dropdown)
+            pass  # Streamlit doesn't support separators, so we'll use label styling instead
+
         for s in excluded[:max_excluded]:
             uid = _station_uuid(s)
             if uid:
-                options.append((uid, _build_station_label(s, tag="excluded", rank_index=None)))
+                options.append((uid, _build_station_label(s, tag="not ranked", rank_index=None)))
 
     else:  # explorer
         for s in explorer_results[:max_explorer]:
@@ -787,12 +791,23 @@ def render_station_selector(
     except ValueError:
         default_idx = 0
 
+    # Count ranked vs not-ranked for caption
+    if source == "route":
+        ranked_uuids_set = {_station_uuid(s) for s in ranked if _station_uuid(s)}
+        excluded_list = [s for s in stations if (_station_uuid(s) and _station_uuid(s) not in ranked_uuids_set)]
+        ranked_count = min(len(ranked), max_ranked)
+        excluded_count = min(len(excluded_list), max_excluded)
+        caption_text = f"{ranked_count} ranked · {excluded_count} not ranked"
+    else:
+        caption_text = f"{len(options)} stations"
+
     chosen_uuid = st.sidebar.selectbox(
         "Select station",
         options=option_uuids,
         index=default_idx,
         format_func=lambda u: uuid_to_label.get(u, u),
         key=f"{widget_key_prefix}_station_select",
+        help=caption_text,
     )
 
     chosen_station = uuid_to_station.get(chosen_uuid)
@@ -814,3 +829,143 @@ def render_station_selector(
         source=source,
         label=chosen_label,
     )
+
+# =============================================================================
+# Comparison Station Selector (for Station Details page)
+# =============================================================================
+
+def _station_name_for_comparison(station: Dict[str, Any]) -> str:
+    """Extract station name for comparison selector."""
+    name = station.get("tk_name") or station.get("osm_name") or station.get("name")
+    brand = station.get("brand")
+    
+    if name:
+        return _safe_text(name)
+    elif brand:
+        return _safe_text(brand)
+    else:
+        return "Unknown Station"
+
+
+def _station_brand_for_comparison(station: Dict[str, Any]) -> str:
+    """Extract station brand."""
+    return _safe_text(station.get("brand", ""))
+
+
+def render_comparison_selector(
+    ranked: List[Dict[str, Any]],
+    stations: List[Dict[str, Any]],
+    current_station_uuid: str,
+    max_ranked: int = 10,
+    max_excluded: int = 50,
+) -> Optional[str]:
+    """
+    Render a comparison station selector in the sidebar.
+    Uses the same list structure as render_station_selector for consistency.
+    
+    Args:
+        ranked: Ranked stations list from last_run
+        stations: Full stations list from last_run
+        current_station_uuid: UUID of the currently selected station (to exclude)
+        max_ranked: Maximum number of ranked stations to show
+        max_excluded: Maximum number of excluded stations to show
+    
+    Returns:
+        UUID of the selected comparison station, or None if none selected
+    """
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**Compare stations**")
+    
+    if not ranked and not stations:
+        st.sidebar.caption("Run Trip Planner to enable comparison.")
+        return None
+    
+    # Build UUID to label mapping - same structure as render_station_selector
+    uuid_labels: Dict[str, str] = {}
+    
+    # First: ranked stations with #1, #2, etc.
+    ranked_uuids = set()
+    for i, s in enumerate(ranked[:max_ranked], start=1):
+        u = _station_uuid(s)
+        if not u:
+            continue
+        ranked_uuids.add(u)
+        nm = _station_name_for_comparison(s)
+        br = _station_brand_for_comparison(s)
+        city = _safe_text(s.get("city", ""))
+        
+        label = f"#{i} {nm}"
+        if br and br != nm:
+            label += f" ({br})"
+        if city:
+            label += f" · {city}"
+        label += " [ranked]"
+        
+        uuid_labels[u] = label
+    
+    # Second: excluded stations (in stations but not in ranked)
+    excluded = [s for s in stations if (_station_uuid(s) and _station_uuid(s) not in ranked_uuids)]
+    for s in excluded[:max_excluded]:
+        u = _station_uuid(s)
+        if not u or u in uuid_labels:
+            continue
+        nm = _station_name_for_comparison(s)
+        br = _station_brand_for_comparison(s)
+        city = _safe_text(s.get("city", ""))
+        
+        label = f"{nm}"
+        if br and br != nm:
+            label += f" ({br})"
+        if city:
+            label += f" · {city}"
+        label += " [excluded]"
+        
+        uuid_labels[u] = label
+    
+    # Filter out the current station
+    candidates = [u for u in uuid_labels.keys() if u and u != current_station_uuid]
+    
+    if not candidates:
+        st.sidebar.caption("No other stations to compare.")
+        return None
+    
+    # Add "None" option at the beginning
+    options_with_none = [""] + candidates
+    labels_with_none = {"": "— Select a station —"}
+    labels_with_none.update(uuid_labels)
+    
+    # Get current selection from session state
+    current_comparison = st.session_state.get("comparison_station_uuid", "")
+    
+    # If current comparison is the same as selected station, reset it
+    if current_comparison == current_station_uuid:
+        current_comparison = ""
+    
+    # Ensure current comparison is valid
+    if current_comparison and current_comparison not in candidates:
+        current_comparison = ""
+    
+    # Find index for default
+    try:
+        default_idx = options_with_none.index(current_comparison) if current_comparison in options_with_none else 0
+    except ValueError:
+        default_idx = 0
+    
+    chosen = st.sidebar.selectbox(
+        "Compare against",
+        options=options_with_none,
+        index=default_idx,
+        format_func=lambda u: labels_with_none.get(u, uuid_labels.get(u, u)),
+        key="comparison_station_selectbox",
+        help="Select a station to compare historical prices.",
+    )
+    
+    # Store selection in session state
+    if chosen:
+        st.session_state["comparison_station_uuids"] = [chosen]
+        st.session_state["comparison_station_uuid"] = chosen
+        return chosen
+    else:
+        st.session_state["comparison_station_uuids"] = []
+        st.session_state["comparison_station_uuid"] = ""
+        return None

@@ -174,23 +174,75 @@ def calculate_traffic_light_status(
     station_price: Optional[float],
     ranked_stations: List[Dict[str, Any]],
     fuel_code: str,
+    station_net_saving: Optional[float] = None,
+    use_net_savings: bool = True,
 ) -> Tuple[str, str, str]:
     """
     Determine traffic light indicator (green/yellow/red) for a station.
     
-    Logic: Compare station price to all ranked stations
-    - Green: Top 33% (cheapest)
-    - Yellow: Middle 33%
-    - Red: Bottom 33% (most expensive)
+    Logic (when use_net_savings=True and economics available):
+        Compare station's net saving to all ranked stations' net savings.
+        - Green: Top 33% (best net savings / best value)
+        - Yellow: Middle 33%
+        - Red: Bottom 33% (worst value)
+    
+    Fallback (when use_net_savings=False or no economics):
+        Compare station price to all ranked stations' prices.
+        - Green: Top 33% (cheapest)
+        - Yellow: Middle 33%
+        - Red: Bottom 33% (most expensive)
+    
+    Args:
+        station_price: Current station's predicted price
+        ranked_stations: List of ranked station dicts
+        fuel_code: Fuel type ('e5', 'e10', 'diesel')
+        station_net_saving: Current station's net saving (optional)
+        use_net_savings: Whether to use net savings ranking (default True)
     
     Returns:
         Tuple of (status_color, status_text, css_classes)
-        Example: ("green", "Excellent Deal", "active inactive inactive")
+        Example: ("green", "Excellent Value", "active inactive inactive")
     """
+    net_key = f"econ_net_saving_eur_{fuel_code}"
+    pred_key = f"pred_price_{fuel_code}"
+    
+    # Try net savings first if enabled
+    if use_net_savings and station_net_saving is not None:
+        # Extract all valid net savings from ranked stations
+        net_savings = []
+        for s in ranked_stations:
+            ns = s.get(net_key)
+            if ns is not None:
+                try:
+                    net_savings.append(float(ns))
+                except (TypeError, ValueError):
+                    pass
+        
+        if net_savings and len(net_savings) >= 3:
+            # Sort descending - higher net saving is better
+            net_savings_sorted = sorted(net_savings, reverse=True)
+            n = len(net_savings_sorted)
+            
+            # Calculate percentile thresholds (higher is better)
+            p33 = net_savings_sorted[n // 3]       # Top 33% threshold
+            p66 = net_savings_sorted[2 * n // 3]   # Top 66% threshold
+            
+            net_saving = float(station_net_saving)
+            
+            # Determine status based on net savings
+            if net_saving >= p33:
+                # Top 33% - Best value
+                return ("green", "Excellent Value", "active inactive inactive")
+            elif net_saving >= p66:
+                # Middle 33% - Fair value
+                return ("yellow", "Fair Value", "inactive active inactive")
+            else:
+                # Bottom 33% - Poor value
+                return ("red", "Poor Value", "inactive inactive active")
+    
+    # Fallback to price-based logic
     if not station_price or not ranked_stations:
         return ("yellow", "Unknown", "inactive inactive active")
-    
-    pred_key = f"pred_price_{fuel_code}"
     
     # Extract all valid prices
     prices = []
@@ -208,22 +260,22 @@ def calculate_traffic_light_status(
     prices_sorted = sorted(prices)
     n = len(prices_sorted)
     
-    # Calculate percentile thresholds
+    # Calculate percentile thresholds (lower price is better)
     p33 = prices_sorted[n // 3]
     p66 = prices_sorted[2 * n // 3]
     
     price = float(station_price)
     
-    # Determine status
+    # Determine status based on price
     if price <= p33:
-        # Top 33% - Excellent
+        # Top 33% - Cheapest
         status_color = "green"
         status_text = "Excellent Deal"
         css_classes = "active inactive inactive"
     elif price <= p66:
-        # Middle 33% - Good
+        # Middle 33% - Average
         status_color = "yellow"
-        status_text = "Good Price"
+        status_text = "Fair Price"
         css_classes = "inactive active inactive"
     else:
         # Bottom 33% - Expensive
