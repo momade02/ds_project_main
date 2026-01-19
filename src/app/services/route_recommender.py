@@ -31,6 +31,8 @@ class RouteRunInputs:
     max_detour_time_min: Optional[float] = None
     max_detour_distance_km: Optional[float] = None
     min_net_saving_eur: Optional[float] = None
+    min_distance_km: Optional[float] = None
+    max_distance_km: Optional[float] = None
 
 
 def run_route_recommendation(
@@ -89,6 +91,10 @@ def run_route_recommendation(
             ranking_kwargs.setdefault("max_detour_km", inputs.max_detour_distance_km)
             ranking_kwargs.setdefault("max_detour_min", inputs.max_detour_time_min)
             ranking_kwargs.setdefault("min_net_saving_eur", float(inputs.min_net_saving_eur or 0.0))
+
+        # Pass distance filters to ranking_kwargs
+        ranking_kwargs.setdefault("min_distance_km", inputs.min_distance_km)
+        ranking_kwargs.setdefault("max_distance_km", inputs.max_distance_km)
 
         ranked = rank_stations_by_predicted_price(
             stations,
