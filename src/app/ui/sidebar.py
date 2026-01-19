@@ -1219,3 +1219,4 @@ def render_comparison_selector(
         st.session_state["comparison_station_uuids"] = []
         st.session_state["comparison_station_uuid"] = ""
         return None
+        return None

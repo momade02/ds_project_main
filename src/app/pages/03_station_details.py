@@ -40,7 +40,7 @@ try:
 except Exception:
     ZoneInfo = None
 
-from ui.sidebar import render_sidebar_shell, render_station_selector, render_comparison_selector, render_station_help
+from ui.sidebar import render_sidebar_shell, render_station_selector, render_comparison_selector, render_station_help, _render_help_action
 
 # Path setup
 APP_ROOT = Path(__file__).resolve().parents[1]
