@@ -292,6 +292,18 @@ def _compute_value_view_stations(
     except (TypeError, ValueError):
         cap_min_f = float("inf")
 
+    # New: distance window (hard constraints)
+    min_distance_km = constraints.get("min_distance_km")
+    max_distance_km = constraints.get("max_distance_km")
+    try:
+        min_distance_km_f = float(min_distance_km) if min_distance_km is not None else 0.0
+    except (TypeError, ValueError):
+        min_distance_km_f = 0.0
+    try:
+        max_distance_km_f = float(max_distance_km) if max_distance_km is not None else float("inf")
+    except (TypeError, ValueError):
+        max_distance_km_f = float("inf")
+
     # On-route thresholds (prefer decision-layer thresholds if present; else reuse constants).
     onroute_km = filter_thresholds.get("onroute_max_detour_km", None)
     onroute_min = filter_thresholds.get("onroute_max_detour_min", None)
@@ -321,7 +333,7 @@ def _compute_value_view_stations(
         except (TypeError, ValueError):
             continue
 
-        # must be within caps
+        # must be within caps (detour)
         try:
             km = float((s or {}).get("detour_distance_km") or 0.0)
         except (TypeError, ValueError):
@@ -334,8 +346,38 @@ def _compute_value_view_stations(
         km = max(km, 0.0)
         mins = max(mins, 0.0)
 
-        if km <= cap_km_f and mins <= cap_min_f:
-            hard_pass.append(s)
+        if km > cap_km_f or mins > cap_min_f:
+            continue
+
+        # --- NEW: enforce min/max distance constraints ---
+        # Try multiple possible distance keys (km or meters)
+        dist_km = None
+        if (s or {}).get("distance_to_station_km") is not None:
+            try:
+                dist_km = float((s or {}).get("distance_to_station_km"))
+            except (TypeError, ValueError):
+                dist_km = None
+        if dist_km is None and (s or {}).get("distance_km") is not None:
+            try:
+                dist_km = float((s or {}).get("distance_km"))
+            except (TypeError, ValueError):
+                dist_km = None
+        # fallback to meter-based fields
+        if dist_km is None:
+            for mkey in ("distance_along_m", "distance_to_station_m", "distance_m", "dist_m"):
+                if (s or {}).get(mkey) is not None:
+                    try:
+                        dist_km = float((s or {}).get(mkey)) / 1000.0
+                        break
+                    except (TypeError, ValueError):
+                        dist_km = None
+        # If distance is unknown, skip the min/max distance filtering
+        # (we cannot conclude it breaks the constraints).
+        if dist_km is not None:
+            if dist_km < min_distance_km_f or dist_km > max_distance_km_f:
+                continue
+
+        hard_pass.append(s)
 
     # Worst on-route price among hard-pass
     onroute_prices: List[float] = []
@@ -374,6 +416,8 @@ def _compute_value_view_stations(
         "pred_key": pred_key,
         "cap_km": cap_km_f,
         "cap_min": cap_min_f,
+        "min_distance_km": float(min_distance_km_f),
+        "max_distance_km": float(max_distance_km_f),
         "onroute_km_th": float(onroute_km_th),
         "onroute_min_th": float(onroute_min_th),
         "hard_pass_n": int(len(hard_pass)),
