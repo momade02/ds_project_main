@@ -733,12 +733,6 @@ def create_mapbox_gl_html(
           stroke = "#FFFFFF";
         }}
 
-        // Selection override (blue)
-        if (isSelected) {{
-          fill = "#1E90FF";
-          stroke = "#FFFFFF";
-        }}
-
         const el = document.createElement("div");
 
         // ---- Marker sizing (use width/height; do NOT use transform) ----
