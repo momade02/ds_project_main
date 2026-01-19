@@ -466,7 +466,7 @@ def _display_best_station(
     econ_baseline_key = f"econ_baseline_price_{fuel_code}"
 
     if not best_station:
-        st.info("No station could be recommended (no valid predictions).")
+        st.info("No station could be recommended (no valid predictions or constraints can't be satisfied).")
         return
 
     station_name = best_station.get("tk_name") or best_station.get("osm_name") or best_station.get("name")
