@@ -700,7 +700,7 @@ def _display_best_station(
                 with col7:
                     st.metric("Gross saving vs on-route median", _format_eur(gross_vs_median))
                 with col8:
-                    st.metric("Net saving vs on-route median", _format_eur(net_vs_median))
+                    st.metric("Net saving vs onroute median", _format_eur(net_vs_median))
                 with col9:
                     st.metric("Net saving vs on-route best", _format_eur(net_vs_best))
 
@@ -1005,7 +1005,8 @@ def main() -> None:
     min_net_saving_eur = sidebar.min_net_saving_eur
     filter_closed_at_eta = sidebar.filter_closed_at_eta
     brand_filter_selected = list(getattr(sidebar, "brand_filter_selected", []) or [])
-
+    min_distance_km = sidebar.min_distance_km  
+    max_distance_km = sidebar.max_distance_km 
 
     debug_mode = bool(st.session_state.get("debug_mode", False))
 
@@ -1059,6 +1060,8 @@ def main() -> None:
         "max_detour_min": max_detour_min,
         "min_net_saving_eur": min_net_saving_eur,
         "filter_closed_at_eta": bool(filter_closed_at_eta),
+        "min_distance_km": min_distance_km,
+        "max_distance_km": max_distance_km,
     }
     params_hash = hashlib.sha256(
         json.dumps(params, sort_keys=True, default=str).encode("utf-8")
@@ -1097,6 +1100,8 @@ def main() -> None:
                 max_detour_time_min=max_detour_min,
                 max_detour_distance_km=max_detour_km,
                 min_net_saving_eur=min_net_saving_eur,
+                min_distance_km=min_distance_km,  # Added min_distance_km
+                max_distance_km=max_distance_km   # Added max_distance_km
             )
 
             integration_kwargs = {
@@ -1279,6 +1284,8 @@ def main() -> None:
                 "litres_to_refuel": float(litres_to_refuel),
                 "consumption_l_per_100km": float(consumption_l_per_100km),
                 "value_of_time_eur_per_hour": float(value_of_time_eur_per_hour),
+                "min_distance_km": float(min_distance_km),
+                "max_distance_km": float(max_distance_km),
             "brand_filter_selected": list(brand_filter_selected),
             "brand_filter_aliases": dict(brand_filter_aliases_used),
             "brand_filtered_out_n": int(brand_filtered_out_n),
