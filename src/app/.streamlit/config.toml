@@ -35,3 +35,6 @@ codeFont = "JetBrains Mono:https://fonts.googleapis.com/css2?family=JetBrains+Mo
 [theme.sidebar]
 backgroundColor = "#F1F4EF"
 secondaryBackgroundColor = "#EEF1EC"
+
+[client]
+showSidebarNavigation = false
