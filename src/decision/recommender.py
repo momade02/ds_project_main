@@ -341,6 +341,11 @@ def rank_stations_by_predicted_price(
         priority = [
             "Detour distance above cap",
             "Detour time above cap",
+
+            # NEW hard constraints (distance window)
+            "Below minimum distance",
+            "Above maximum distance",
+            
             f"Invalid predicted price (< {MIN_VALID_PRICE_EUR_L:.2f} €/L)",
             "Missing predicted price",
             "Below minimum net saving",

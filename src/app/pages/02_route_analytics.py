@@ -368,6 +368,44 @@ def _detour_metrics(station: Dict[str, Any]) -> Tuple[float, float]:
     return max(0.0, km), max(0.0, mins)
 
 
+def _distance_along_km(station: Dict[str, Any]) -> float:
+    """
+    Distance along the route in km (used for min/max distance hard constraints).
+
+    Matches decision-layer semantics in recommender.py:
+    - Primary source: distance_along_m (meters) -> km
+    - Best-effort fallbacks to other common fields
+    - Missing/invalid distance returns 0.0 (so min_distance_km can exclude it, as in recommender.py)
+    """
+    if not isinstance(station, dict):
+        return 0.0
+
+    # (key, multiplier_to_km)
+    candidates = [
+        ("distance_along_m", 1.0 / 1000.0),
+        ("distance_to_station_m", 1.0 / 1000.0),
+        ("distance_m", 1.0 / 1000.0),
+        ("dist_m", 1.0 / 1000.0),
+        ("distance_along_km", 1.0),
+        ("distance_to_station_km", 1.0),
+        ("distance_km", 1.0),
+    ]
+
+    for key, mul in candidates:
+        v = station.get(key)
+        if v is None:
+            continue
+        try:
+            km = float(v) * float(mul)
+        except (TypeError, ValueError):
+            continue
+        if km != km:  # NaN
+            continue
+        return max(0.0, km)
+
+    return 0.0
+
+
 def _is_missing_number(x: Any) -> bool:
     if x is None:
         return True
@@ -676,6 +714,8 @@ def _compute_funnel_counts(
     use_economics: bool,
     cap_detour_km: Optional[float],
     cap_detour_min: Optional[float],
+    min_distance_km: Optional[float],
+    max_distance_km: Optional[float],
     min_net_saving_eur: Optional[float],
     *,
     filter_closed_at_eta_enabled: bool,
@@ -701,6 +741,7 @@ def _compute_funnel_counts(
     cap_failed = 0
     econ_failed = 0
     other = 0
+    distance_failed = 0
 
     # Count only among excluded stations we can still observe.
     for s in excluded:
@@ -723,6 +764,15 @@ def _compute_funnel_counts(
             cap_fail = True
         if cap_fail:
             cap_failed += 1
+            continue
+
+        # 4) distance window (hard constraints)
+        dist_km = _distance_along_km(s)
+        if min_distance_km is not None and dist_km < float(min_distance_km):
+            distance_failed += 1
+            continue
+        if max_distance_km is not None and dist_km > float(max_distance_km):
+            distance_failed += 1
             continue
 
         # 4) economics threshold
@@ -749,6 +799,7 @@ def _compute_funnel_counts(
         "excluded": len(excluded),
         "missing_prediction": missing_pred,
         "closed_at_eta": closed_at_eta_total,
+        "failed_distance_window": distance_failed,
         "closed_at_eta_in_cache": closed_at_eta,
         "closed_at_eta_upstream": max(0, upstream_closed),
         "failed_detour_caps": cap_failed,
@@ -844,26 +895,38 @@ def _exclusion_reason(
     use_economics: bool,
     cap_km: Optional[float],
     cap_min: Optional[float],
+    min_distance_km: Optional[float],
+    max_distance_km: Optional[float],
     min_net_saving: Optional[float],
     filter_closed_at_eta_enabled: bool,
 ) -> str:
-    """Best-effort reason label for excluded stations."""
+    """Best-effort reason label for excluded stations (fallback when filter_log is missing)."""
     pred_key = f"pred_price_{fuel_code}"
     econ_net_key = f"econ_net_saving_eur_{fuel_code}"
 
+    # 1) Prediction presence/validity (hard)
     if s.get(pred_key) is None:
         return "Missing predicted price"
 
+    # 2) Closed-at-ETA (hard, if enabled)
     if filter_closed_at_eta_enabled and _is_closed_at_eta(s):
         return "Closed at ETA (Google)"
 
+    # 3) Detour caps (hard)
     km, mins = _detour_metrics(s)
-
     if cap_km is not None and km > cap_km:
         return "Detour distance above cap"
     if cap_min is not None and mins > cap_min:
         return "Detour time above cap"
 
+    # 4) Distance window (hard) — NEW
+    dist_km = _distance_along_km(s)
+    if min_distance_km is not None and dist_km < float(min_distance_km):
+        return "Below minimum distance"
+    if max_distance_km is not None and dist_km > float(max_distance_km):
+        return "Above maximum distance"
+
+    # 5) Economics threshold (soft stage in your UI narrative; keep as-is)
     if use_economics and (min_net_saving is not None):
         net = s.get(econ_net_key)
         if net is None:
@@ -1523,8 +1586,15 @@ def main() -> None:
                 return
 
             df_all["Share"] = df_all["Count"] / float(total)
-            df_all["Label"] = df_all["Share"].apply(
-                lambda x: f"{x:.0%}" if (float(x) >= float(min_label_share) and float(x) > 0) else ""
+
+            # Slice label: absolute counts (keep min_label_share as the visibility threshold)
+            df_all["Label"] = df_all.apply(
+                lambda r: (
+                    f"{int(r['Count']):,}"
+                    if (float(r["Share"]) >= float(min_label_share) and int(r["Count"]) > 0)
+                    else ""
+                ),
+                axis=1,
             )
 
             # Separate view for arcs (Count > 0), but keep a hidden layer for legend completeness
@@ -1601,6 +1671,9 @@ def main() -> None:
                     titleFontSize=12,
                     labelFontSize=12,
                     padding=0,
+                    offset=20,
+                    labelColor="black",
+                    titleColor="black",
                 )
             )
 
@@ -1618,6 +1691,9 @@ def main() -> None:
         constraints = run_summary.get("constraints") or {}
         cap_km = constraints.get("max_detour_km")
         cap_min = constraints.get("max_detour_min")
+
+        min_distance_km = constraints.get("min_distance_km")
+        max_distance_km = constraints.get("max_distance_km")
 
         pred_key = f"pred_price_{fuel_code}"
         econ_net_key = f"econ_net_saving_eur_{fuel_code}"
@@ -1716,18 +1792,18 @@ def main() -> None:
         should_cap = (cap_km_eff is not None) or (cap_min_eff is not None)
         cap_failed_n = 0
 
-        hard_feasible: List[Dict[str, Any]] = []
+        cap_pass: List[Dict[str, Any]] = []
         if should_cap:
             for s in deduped:
                 km, mins = _detour_metrics(s)
                 cap_fail = False
                 try:
-                    if cap_km_eff is not None and km is not None and float(km) > float(cap_km_eff):
+                    if cap_km_eff is not None and float(km) > float(cap_km_eff):
                         cap_fail = True
                 except Exception:
                     pass
                 try:
-                    if cap_min_eff is not None and mins is not None and float(mins) > float(cap_min_eff):
+                    if cap_min_eff is not None and float(mins) > float(cap_min_eff):
                         cap_fail = True
                 except Exception:
                     pass
@@ -1735,9 +1811,33 @@ def main() -> None:
                 if cap_fail:
                     cap_failed_n += 1
                 else:
-                    hard_feasible.append(s)
+                    cap_pass.append(s)
         else:
-            hard_feasible = list(deduped)
+            cap_pass = list(deduped)
+
+        # 4) Apply distance window (min/max distance to station) — NEW hard constraints
+        min_distance_km_eff = _as_float(min_distance_km)
+        max_distance_km_eff = _as_float(max_distance_km)
+
+        below_min_failed_n = 0
+        above_max_failed_n = 0
+
+        hard_feasible: List[Dict[str, Any]] = []
+        if (min_distance_km_eff is not None) or (max_distance_km_eff is not None):
+            for s in cap_pass:
+                dist_km = _distance_along_km(s)
+
+                if min_distance_km_eff is not None and dist_km < float(min_distance_km_eff):
+                    below_min_failed_n += 1
+                    continue
+
+                if max_distance_km_eff is not None and dist_km > float(max_distance_km_eff):
+                    above_max_failed_n += 1
+                    continue
+
+                hard_feasible.append(s)
+        else:
+            hard_feasible = list(cap_pass)
 
         hard_feasible_n = len(hard_feasible)
 
@@ -1863,10 +1963,12 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
         reasons: Dict[str, int] = {
             "Brand filter": 0,
             "Closed at ETA": 0,
-            "Missing/invalid prediction": 0,
+            "Missing prediction": 0,
+            "Below minimum distance": 0,
+            "Above maximum distance": 0,
             "Duplicate station removed": 0,
             "Failed detour caps (time/distance)": 0,
-            "Economically rejected (below worst on-route)": 0,
+            "Economically rejected": 0,
             "Other / unclassified": 0,
         }
 
@@ -1875,13 +1977,15 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
         reasons["Closed at ETA"] += max(0, eta_upstream_n)
 
         # 2) In-cache hard discards (derived)
-        reasons["Missing/invalid prediction"] += max(0, int(invalid_or_missing_pred_n))
+        reasons["Missing prediction"] += max(0, int(invalid_or_missing_pred_n))
         reasons["Duplicate station removed"] += max(0, int(duplicates_removed_n))
         reasons["Failed detour caps (time/distance)"] += max(0, int(cap_failed_n))
+        reasons["Below minimum distance"] += max(0, int(below_min_failed_n))
+        reasons["Above maximum distance"] += max(0, int(above_max_failed_n))
 
         # 3) Economics rejections (benchmark-based)
         if econ_benchmark_available:
-            reasons["Economically rejected (below worst on-route)"] += max(0, int(econ_rejected_n))
+            reasons["Economically rejected"] += max(0, int(econ_rejected_n))
 
         # Reconcile totals (important for auditability)
         known_sum = sum(int(v) for v in reasons.values())
@@ -1896,8 +2000,8 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
             height=380,
             space_top=P02_S["before_chart_discarded"],
             space_bottom=P02_S["after_chart_discarded"],
-            pad_top=30,
-            pad_bottom=22,
+            pad_top=40,
+            pad_bottom=40,
         )
 
     # -----------------------------
@@ -2172,6 +2276,23 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
             else:
                 hard_feasible = list(deduped)
 
+            # 4) Distance window (min/max distance) — NEW hard constraints
+            min_distance_km = _as_float(constraints.get("min_distance_km"))
+            max_distance_km = _as_float(constraints.get("max_distance_km"))
+
+            if hard_feasible and ((min_distance_km is not None) or (max_distance_km is not None)):
+                tmp: List[Dict[str, Any]] = []
+                for s in hard_feasible:
+                    dist_km = _distance_along_km(s)
+
+                    if min_distance_km is not None and dist_km < float(min_distance_km):
+                        continue
+                    if max_distance_km is not None and dist_km > float(max_distance_km):
+                        continue
+
+                    tmp.append(s)
+                hard_feasible = tmp
+
             if not hard_feasible:
                 st.info("No hard-feasible stations available for the prediction audit table (all candidates failed hard/data constraints).")
             else:
@@ -2335,6 +2456,8 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
     constraints__p4 = run_summary.get("constraints") or {}
     cap_km_f__p4 = _as_float(constraints__p4.get("max_detour_km"))
     cap_min_f__p4 = _as_float(constraints__p4.get("max_detour_min"))
+    min_distance_km__p4 = _as_float(constraints__p4.get("min_distance_km"))
+    max_distance_km__p4 = _as_float(constraints__p4.get("max_distance_km"))
 
     if bool(use_economics):
         if cap_km_f__p4 is None:
@@ -2431,6 +2554,27 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
     else:
         hard_feasible__p4 = list(deduped__p4)
 
+    # 5) Hard: distance window (min/max distance) — NEW
+    hard_distance_failed__p4: List[Dict[str, Any]] = []
+    if (min_distance_km__p4 is not None) or (max_distance_km__p4 is not None):
+        tmp_ok: List[Dict[str, Any]] = []
+        for s in hard_feasible__p4:
+            dist_km = _distance_along_km(s)
+
+            if min_distance_km__p4 is not None and dist_km < float(min_distance_km__p4):
+                hard_distance_failed__p4.append(s)
+                continue
+
+            if max_distance_km__p4 is not None and dist_km > float(max_distance_km__p4):
+                hard_distance_failed__p4.append(s)
+                continue
+
+            tmp_ok.append(s)
+
+        hard_feasible__p4 = tmp_ok
+    else:
+        hard_distance_failed__p4 = []
+
     # Economic benchmark: worst on-route net saving (Case 1 handled as N/A)
     econ_benchmark_available__p4 = False
     worst_onroute_net__p4: Optional[float] = None
@@ -2474,6 +2618,7 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
         + list(hard_closed_eta__p4)
         + list(hard_duplicates_removed__p4)
         + list(hard_cap_failed__p4)
+        + list(hard_distance_failed__p4)  # NEW
         + list(econ_rejected__p4)
     )
 
@@ -2558,7 +2703,7 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
         help=(
             "Discarded stations include everything that is not selected.\n\n"
             "Hard-discarded examples:\n"
-            "- Missing/invalid prediction\n"
+            "- Missing prediction\n"
             "- Closed at ETA (if enabled)\n"
             "- Failed detour caps\n"
             "- Duplicate station variants removed during deduplication\n\n"
@@ -2777,6 +2922,8 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
         min_net_saving_eur=min_net_saving,
         filter_closed_at_eta_enabled=filter_closed_at_eta_enabled,
         closed_at_eta_filtered_n=closed_at_eta_filtered_n,
+        min_distance_km=_as_float((constraints or {}).get("min_distance_km")),
+        max_distance_km=_as_float((constraints or {}).get("max_distance_km")),
     )
 
     st.markdown("#### Filtering funnel (high-level)")
@@ -2819,6 +2966,8 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
                     cap_min=float(cap_min) if cap_min is not None else None,
                     min_net_saving=float(min_net_saving) if min_net_saving is not None else None,
                     filter_closed_at_eta_enabled=filter_closed_at_eta_enabled,
+                    min_distance_km=_as_float((constraints or {}).get("min_distance_km")),
+                    max_distance_km=_as_float((constraints or {}).get("max_distance_km")),
                 )
                 for s in excluded
             ]
@@ -2864,6 +3013,8 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
     # Reconstruct the "hard-pass" candidate set (what the decision layer would consider before the min-net-saving soft filter).
     cap_km_f = float(cap_km) if cap_km is not None else None
     cap_min_f = float(cap_min) if cap_min is not None else None
+    min_distance_km_f = _as_float((constraints or {}).get("min_distance_km"))
+    max_distance_km_f = _as_float((constraints or {}).get("max_distance_km"))
 
     hard_pass: List[Dict[str, Any]] = []
     for s in stations:
@@ -2879,6 +3030,13 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
         # Require passing detour caps (hard constraints).
         km, mins = _detour_metrics(s)
         if (cap_km_f is not None and km > cap_km_f) or (cap_min_f is not None and mins > cap_min_f):
+            continue
+
+        # Enforce distance window (hard constraints)
+        dist_km = _distance_along_km(s)
+        if (min_distance_km_f is not None) and (dist_km < float(min_distance_km_f)):
+            continue
+        if (max_distance_km_f is not None) and (dist_km > float(max_distance_km_f)):
             continue
 
         hard_pass.append(s)

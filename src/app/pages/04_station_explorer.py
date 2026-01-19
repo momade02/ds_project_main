@@ -455,7 +455,32 @@ def main() -> None:
     stations: List[Dict[str, Any]] = st.session_state.get("explorer_results") or []
 
     if not center:
-        st.info("Enter a location and click **Search stations**.")
+        st.markdown("### Welcome to **Station Explorer**")
+
+        st.markdown(
+            """
+    Use this page to **browse fuel stations around any location** and quickly compare **realtime prices**.
+
+    **What you can do**
+    - Search stations around a **city, ZIP, or full address**
+    - Adjust the **search radius**, choose the **fuel type**, and optionally filter by **brand** / **open stations**
+    - Inspect results on an interactive **map** and in a **sortable table**
+
+    **How it works (high level)**
+    - Your location input is **geocoded** to a center point.
+    - The app queries **Tankerkönig** for stations within the selected radius (including **current prices** and **open/closed**).
+    - Filters (e.g., *Only open stations*) and sorting (price-first, then distance) are applied before rendering.
+
+    **What you will see after running a search**
+    - A map with all stations in the result set
+    - A highlighted “cheapest & closest” station (based on the selected fuel)
+    - A results table with address, distance, current price, and open status
+            """
+        )
+
+        st.info(
+            "**Get started:** Open the sidebar, set your search location and filters, then click **Search Stations**."
+        )
         return
 
     if not stations:
