@@ -814,7 +814,7 @@ def create_mapbox_gl_html(
                             ${{addrHtml}}
                             <div><b>Current</b>: ${{esc(curP)}} &nbsp; <b>Pred</b>: ${{esc(predP)}}</div>
                             <div><b>Detour</b>: ${{esc(detKm)}} &nbsp; (${{esc(detMin)}})</div>
-                            <div><b>Distance along route</b>: ${{esc(props.distance_along_km || "-")}} km</div>
+                            <div><b>Distance to station</b>: ${{esc(props.distance_along_km || "-")}} km</div>
                             <div><b>Safe up to</b>: ${{esc(save)}}</div>
                         </div>`;
                 }}
