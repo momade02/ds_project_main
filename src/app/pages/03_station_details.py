@@ -11,7 +11,7 @@ FINAL VERSION
 Selection sources supported (cross-page navigation):
 1) st.session_state["selected_station_data"] (preferred)
 2) st.session_state["selected_station_uuid"] resolved from last_run["ranked"]/["stations"]
-3) st.session_state["explorer_results"] (Page 04 → Page 03 handoff)
+3) st.session_state["explorer_results"] (Page 04 -> Page 03 handoff)
 """
 
 from __future__ import annotations
@@ -70,13 +70,8 @@ from src.integration.historical_data import (
 
 from ui.formatting import (
     _station_uuid,
-    _fmt_price,
-    _fmt_eur,
-    _fmt_km,
-    _fmt_min,
     _safe_text,
     calculate_traffic_light_status,
-    calculate_trip_fuel_info,
     check_smart_price_alert,
 )
 
@@ -302,7 +297,7 @@ def _parse_opening_hours(station: Dict[str, Any], eta_datetime: Optional[datetim
                 else:
                     try:
                         check_time = datetime.now(tz=ZoneInfo("Europe/Berlin") if ZoneInfo else None)
-                    except:
+                    except Exception:
                         check_time = datetime.now()
                 
                 current_time = check_time.time()
@@ -543,6 +538,30 @@ def create_price_trend_chart(df: pd.DataFrame, fuel_type: str) -> Tuple[go.Figur
         )
         return fig, ""
 
+    # Sort by date and ensure datetime
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date")
+    
+    # Calculate X-axis range: always show 7 days ending at "now"
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    x_max = now + timedelta(hours=1)  # Small buffer after "now"
+    x_min = now - timedelta(days=7)
+    
+    # Forward-fill to extend the line to "now" if data ends before today
+    # This is correct because fuel prices stay constant until changed
+    last_date = df["date"].max()
+    last_price = df["price"].iloc[-1]
+    
+    if last_date < now - timedelta(hours=1):
+        # Add a point at "now" with the last known price
+        now_row = pd.DataFrame({
+            "date": [now],
+            "price": [last_price]
+        })
+        df = pd.concat([df, now_row], ignore_index=True)
+
     # For mobile: Sample every 3rd point if we have many data points
     df_sampled = df.iloc[::3] if len(df) > 30 else df
 
@@ -554,7 +573,7 @@ def create_price_trend_chart(df: pd.DataFrame, fuel_type: str) -> Tuple[go.Figur
         mode="lines",
         name="Price",
         line=dict(color="#1f77b4", width=3, shape="hv"),  # hv = step graph
-        hovertemplate="%{x|%b %d}<br>€%{y:.3f}/L<extra></extra>",
+        hovertemplate="%{x|%b %d %H:%M}<br>€%{y:.3f}/L<extra></extra>",
     ))
 
     avg_price = float(df["price"].mean())
@@ -574,7 +593,10 @@ def create_price_trend_chart(df: pd.DataFrame, fuel_type: str) -> Tuple[go.Figur
         height=250,  # More compact
         showlegend=False,
         margin=dict(l=35, r=10, t=20, b=35),  # Less left margin
-        xaxis=dict(fixedrange=True),
+        xaxis=dict(
+            fixedrange=True,
+            range=[x_min, x_max],  # Always show full 7-day window
+        ),
         yaxis=dict(fixedrange=True, range=[y_min, y_max]),  # Don't start from 0
     )
     
@@ -621,50 +643,81 @@ def create_hourly_pattern_chart(hourly_df: pd.DataFrame, fuel_type: str) -> go.F
         )
         return fig
 
+    # Count hours with actual data
+    hours_with_data = hourly_df["avg_price"].notna().sum()
+    total_records = hourly_df["count"].sum() if "count" in hourly_df.columns else hours_with_data
+    
     # MOBILE: Show every 2 hours (12 bars instead of 24)
     hourly_df_mobile = hourly_df[hourly_df["hour"] % 2 == 0].copy()
-
-    optimal = get_cheapest_and_most_expensive_hours(hourly_df)
+    
+    # For display, track which hours have real data
+    hourly_df_mobile["has_data"] = hourly_df_mobile["avg_price"].notna()
+    
+    # Get optimal hours from DISPLAYED hours only (not full 24h)
+    # This ensures the green/red bar actually appears on screen
+    optimal = get_cheapest_and_most_expensive_hours(hourly_df_mobile)
     cheapest_hour = optimal.get("cheapest_hour")
     most_expensive_hour = optimal.get("most_expensive_hour")
 
-    # Color bars
+    # Color bars - gray for no data, colors only for hours WITH data
     colors = []
     for _, row in hourly_df_mobile.iterrows():
-        if pd.isna(row["avg_price"]):
-            colors.append("#e0e0e0")
+        if not row["has_data"]:
+            colors.append("#e5e5e5")  # Light gray for no data
         elif cheapest_hour is not None and int(row["hour"]) == int(cheapest_hour):
-            colors.append("#4caf50")
+            colors.append("#4caf50")  # Green
         elif most_expensive_hour is not None and int(row["hour"]) == int(most_expensive_hour):
-            colors.append("#f44336")
+            colors.append("#f44336")  # Red
         else:
-            colors.append("#ffc107")
+            colors.append("#ffc107")  # Yellow/Orange
+
+    # For bars, replace NaN with the minimum valid value (so gray bars show at minimum height)
+    min_valid = hourly_df_mobile.loc[hourly_df_mobile["has_data"], "avg_price"].min()
+    max_valid = hourly_df_mobile.loc[hourly_df_mobile["has_data"], "avg_price"].max()
+    
+    # If no valid data at all, show empty chart
+    if pd.isna(min_valid):
+        fig = go.Figure()
+        fig.add_annotation(
+            text="Not enough data for hourly pattern",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=14, color="gray"),
+        )
+        fig.update_layout(title="", height=250)
+        return fig
+    
+    # Fill NaN with a value below min so gray bars are shorter
+    placeholder_val = min_valid - (max_valid - min_valid) * 0.5 if max_valid > min_valid else min_valid * 0.95
+    hourly_df_mobile["display_price"] = hourly_df_mobile["avg_price"].fillna(placeholder_val)
 
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=hourly_df_mobile["hour"],
-        y=hourly_df_mobile["avg_price"],
+        y=hourly_df_mobile["display_price"],
         marker_color=colors,
-        hovertemplate="Hour %{x}:00<br>€%{y:.3f}/L<extra></extra>",
+        hovertemplate=[
+            f"Hour {int(row['hour'])}:00<br>€{row['avg_price']:.3f}/L<extra></extra>" 
+            if row["has_data"] else f"Hour {int(row['hour'])}:00<br>No data<extra></extra>"
+            for _, row in hourly_df_mobile.iterrows()
+        ],
         showlegend=False,
         width=1.5,
     ))
 
-    # Calculate sensible y-axis range (not starting from 0)
-    min_val = hourly_df_mobile["avg_price"].min()
-    max_val = hourly_df_mobile["avg_price"].max()
-    y_padding = (max_val - min_val) * 0.15 if max_val > min_val else 0.05
-    y_min = max(0, min_val - y_padding)
-    y_max = max_val + y_padding
+    # Calculate sensible y-axis range
+    y_padding = (max_valid - min_valid) * 0.15 if max_valid > min_valid else 0.05
+    y_min = max(0, placeholder_val - y_padding * 0.5)
+    y_max = max_valid + y_padding
 
     fig.update_layout(
-        title="",  # Empty - we have markdown heading
+        title="",
         xaxis_title="Hour",
-        yaxis_title=None,  # Remove rotated label - use annotation
-        height=250,  # More compact
-        margin=dict(l=35, r=10, t=20, b=35),  # Less left margin
+        yaxis_title=None,
+        height=250,
+        margin=dict(l=35, r=10, t=20, b=35),
         xaxis=dict(fixedrange=True),
-        yaxis=dict(fixedrange=True, range=[y_min, y_max]),  # Don't start from 0
+        yaxis=dict(fixedrange=True, range=[y_min, y_max]),
     )
     
     # Add €/L as small annotation at top-left
@@ -690,6 +743,9 @@ def create_weekday_hour_heatmap(df: pd.DataFrame, fuel_type: str) -> Optional[go
     Y-axis: Weekday (Mon-Sun)
     X-axis: Hour (0-23)
     Color: Price (green=cheap, red=expensive)
+    
+    Uses forward-fill to show the EFFECTIVE price at each hour,
+    not just when prices changed.
     """
     if df is None or df.empty:
         return None
@@ -701,6 +757,30 @@ def create_weekday_hour_heatmap(df: pd.DataFrame, fuel_type: str) -> Optional[go
     try:
         df_work = df.copy()
         df_work["date"] = pd.to_datetime(df_work["date"])
+        df_work = df_work.sort_values("date").reset_index(drop=True)
+        
+        # Forward-fill to create complete hourly time series
+        if len(df_work) >= 2:
+            try:
+                min_date = df_work["date"].min()
+                max_date = df_work["date"].max()
+                
+                # Set date as index for resampling
+                df_work = df_work.set_index("date")
+                
+                # Resample to hourly and forward-fill
+                hourly_prices = df_work["price"].resample('H').last().ffill()
+                
+                # Convert back to DataFrame
+                df_work = pd.DataFrame({
+                    "date": hourly_prices.index,
+                    "price": hourly_prices.values
+                })
+            except Exception:
+                # Fall back to original data
+                df_work = df.copy()
+                df_work["date"] = pd.to_datetime(df_work["date"])
+        
         df_work["weekday"] = df_work["date"].dt.dayofweek  # 0=Mon, 6=Sun
         df_work["hour"] = df_work["date"].dt.hour
         
@@ -714,21 +794,24 @@ def create_weekday_hour_heatmap(df: pd.DataFrame, fuel_type: str) -> Optional[go
         # Create pivot table for heatmap
         heatmap_data = pivot.pivot(index="weekday", columns="hour", values="price")
         
+        # Reindex to ensure all 24 hours are shown (0-23), even if some are missing
+        heatmap_data = heatmap_data.reindex(columns=range(24))
+        
         # Weekday labels - only for weekdays we have data for
         weekday_labels_full = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
         weekdays_present = sorted(heatmap_data.index.tolist())
         weekday_labels = [weekday_labels_full[i] for i in weekdays_present]
         
-        # Get actual hours present in data
-        hours_present = sorted(heatmap_data.columns.tolist())
+        # Always show all 24 hours on x-axis
+        all_hours = list(range(24))
         
-        # Create heatmap with only the data we have
-        z_data = heatmap_data.loc[weekdays_present, hours_present].values
+        # Create heatmap with full hour coverage
+        z_data = heatmap_data.loc[weekdays_present, all_hours].values
         
         # Create heatmap
         fig = go.Figure(data=go.Heatmap(
             z=z_data,
-            x=hours_present,
+            x=all_hours,
             y=weekday_labels,
             colorscale=[
                 [0, "#4caf50"],      # Green = cheapest
@@ -742,6 +825,8 @@ def create_weekday_hour_heatmap(df: pd.DataFrame, fuel_type: str) -> Optional[go
                 len=0.9,
             ),
             showscale=True,
+            # Show white/blank for NaN values
+            zauto=True,
         ))
         
         fig.update_layout(
@@ -792,9 +877,30 @@ def create_comparison_chart(
     current_full_name = ""
     comparison_full_name = ""
     
+    # Calculate time range for forward-fill and X-axis
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    x_max = now + timedelta(hours=1)
+    x_min = now - timedelta(days=7)
+    
     for idx, (station_name, df) in enumerate(stations_data.items()):
         if df is None or df.empty:
             continue
+        
+        # Forward-fill: extend line to "now" with last known price
+        df = df.copy()
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.sort_values("date")
+        
+        last_date = df["date"].max()
+        last_price = df["price"].iloc[-1]
+        
+        if last_date < now - timedelta(hours=1):
+            now_row = pd.DataFrame({
+                "date": [now],
+                "price": [last_price]
+            })
+            df = pd.concat([df, now_row], ignore_index=True)
 
         is_current = ("(Current)" in station_name) or (current_station_name and station_name.startswith(current_station_name))
         
@@ -856,7 +962,10 @@ def create_comparison_chart(
             font=dict(size=12),
         ),
         margin=dict(l=35, r=10, t=10, b=70),  # More bottom margin (was 55)
-        xaxis=dict(fixedrange=True),
+        xaxis=dict(
+            fixedrange=True,
+            range=[x_min, x_max],  # Always show full 7-day window
+        ),
         yaxis=dict(
             fixedrange=True, 
             range=[y_min - y_padding, y_max + y_padding],
@@ -884,14 +993,111 @@ def create_comparison_chart(
 def _render_trip_settings():
     """
     Render trip settings in the sidebar Action tab.
-    Replaces "Placeholder: Action" with actual trip info.
-    Also renders station selectors (only in Action tab for performance).
+    Adapts content based on whether user came from Trip Planner or Explorer.
     """
     last_run = st.session_state.get("last_run") or {}
+    explorer_results = list(st.session_state.get("explorer_results") or [])
     
-    if not last_run:
-        st.sidebar.info("No trip data available. Run Trip Planner first.")
+    # If no data at all, show info message
+    if not last_run and not explorer_results:
+        st.sidebar.info("No station data available. Use Trip Planner or Station Explorer to find stations.")
         return
+    
+    # Detect source context - check BOTH session state AND radio widget state
+    source = st.session_state.get("selected_station_source", "")
+    
+    # Also check the radio widget directly (if it exists)
+    radio_key = "station_details_source_radio"
+    if radio_key in st.session_state:
+        radio_label = st.session_state.get(radio_key, "")
+        if "explorer" in radio_label.lower():
+            source = "explorer"
+        elif "route" in radio_label.lower():
+            source = "route"
+    
+    # AUTO-DETECT: If no explicit source, infer from available data
+    if source not in {"route", "explorer"}:
+        if explorer_results and not last_run:
+            # Only explorer data available → use explorer mode
+            source = "explorer"
+        elif last_run and not explorer_results:
+            # Only route data available → use route mode
+            source = "route"
+        else:
+            # Both available → default to route (Trip Planner)
+            source = "route"
+    
+    # EDGE CASE: User selected "route" but no route data exists
+    if source == "route" and not last_run:
+        if explorer_results:
+            # Fall back to explorer mode
+            source = "explorer"
+        else:
+            st.sidebar.info("No Trip Planner data. Run Trip Planner on the Home page first.")
+            return
+    
+    is_explorer_mode = (source == "explorer")
+    
+    # -------------------------------------------------------------------------
+    # EXPLORER MODE
+    # -------------------------------------------------------------------------
+    if is_explorer_mode:
+        st.sidebar.markdown(
+            "**Explorer Mode**",
+            help="You selected a station from the Station Explorer. Trip Planner settings (detour costs, economics) don't apply here."
+        )
+        
+        # Show fuel type - note it comes from session/last Trip settings
+        fuel_code = str(last_run.get("fuel_code") or st.session_state.get("fuel_label") or "e5")
+        fuel_label = fuel_code.upper()
+        st.sidebar.markdown(
+            f"**Fuel:** {fuel_label}",
+            help="Fuel type from your last Trip Planner run or Explorer search. Change it on the Home page or in Explorer."
+        )
+        
+        # Show explorer station count
+        st.sidebar.markdown(f"**Explorer stations:** {len(explorer_results)}")
+        
+        # Note about Trip Planner (with proper spacing to avoid overlap)
+        if last_run:
+            route_station_count = len(list(last_run.get("stations") or []))
+            # Use HTML with explicit margin to prevent overlap
+            st.sidebar.markdown(
+                f'<p style="margin-top: 0.5rem; font-size: 0.85rem; color: #6b7280;">ℹ️ Trip Planner data also available ({route_station_count} route stations)</p>',
+                unsafe_allow_html=True
+            )
+        
+        st.sidebar.markdown("---")
+        
+        # Station selector
+        st.sidebar.markdown(
+            "**Select Station**",
+            help="Choose a station to analyze from your Explorer search results."
+        )
+        
+        render_station_selector(
+            last_run=last_run,
+            explorer_results=explorer_results,
+            max_ranked=200,
+            max_excluded=200,
+        )
+        
+        # Comparison selector - include explorer stations
+        current_uuid = str(st.session_state.get("selected_station_uuid") or "")
+        ranked = list(last_run.get("ranked") or [])
+        stations = list(last_run.get("stations") or [])
+        render_comparison_selector(
+            ranked, stations, current_uuid, 
+            max_ranked=50, max_excluded=100,
+            explorer_results=explorer_results,
+        )
+        return
+    
+    # -------------------------------------------------------------------------
+    # TRIP PLANNER MODE (default)
+    # -------------------------------------------------------------------------
+    # Note: We already handled the case of no last_run in the logic above,
+    # so at this point we're guaranteed to have last_run data.
     
     # Extract settings
     fuel_code = str(last_run.get("fuel_code") or st.session_state.get("fuel_label") or "e5")
@@ -901,47 +1107,53 @@ def _render_trip_settings():
     econ_status = "Yes" if use_economics else "No"
     
     litres = _safe_float(last_run.get("litres_to_refuel"))
-    refuel_amount = f"{litres:.0f} L" if litres else "—"
+    refuel_amount = f"{litres:.0f} L" if litres else "-"
     
     ranked = list(last_run.get("ranked") or [])
     stations = list(last_run.get("stations") or [])
     route_station_count = len(stations)
     
-    explorer_results = list(st.session_state.get("explorer_results") or [])
     explorer_station_count = len(explorer_results)
     
     # Header with explanation
     st.sidebar.markdown(
-        "**Current Parameters** (?)",
+        "**Last Trip Planner Settings**",
         help="These settings come from your last Trip Planner run on the Home page. To change them, go back to Home and run a new trip."
     )
     
     # Display settings
-    st.sidebar.markdown("**Fuel:** " + fuel_label)
-    st.sidebar.markdown("**Economics:** " + econ_status)
-    st.sidebar.markdown("**Refuel amount:** " + refuel_amount)
-    st.sidebar.markdown("**Route stations:** " + str(route_station_count))
-    st.sidebar.markdown("**Explorer stations:** " + str(explorer_station_count))
+    st.sidebar.markdown(f"**Fuel:** {fuel_label}")
+    st.sidebar.markdown(f"**Economics:** {econ_status}")
+    st.sidebar.markdown(f"**Refuel amount:** {refuel_amount}")
+    st.sidebar.markdown(f"**Route stations:** {route_station_count}")
+    if explorer_station_count > 0:
+        st.sidebar.markdown(f"**Explorer stations:** {explorer_station_count}")
     
     st.sidebar.markdown("---")
     
     # Station selectors with help text
     st.sidebar.markdown(
-        "**Select Station** (?)",
-        help="Choose a station to analyze. 'Ranked' stations passed all filters and are recommended. 'Not Ranked' stations were excluded due to detour limits, being closed, or other filters."
+        "**Select Station**",
+        help="Choose a station to analyze. In Trip Planner mode: 'Ranked' stations passed all filters and are recommended. 'Not Ranked' stations were excluded due to detour limits, being closed, or other filters. Use the 'Station source' radio above to switch between Trip Planner and Explorer stations."
     )
     
     # Station selectors (inside Action tab for faster sidebar switching)
     render_station_selector(
         last_run=last_run,
         explorer_results=explorer_results,
-        max_ranked=200,      # Show all ranked stations (not just top 20)
-        max_excluded=200,    # Show all excluded stations too
+        max_ranked=200,
+        max_excluded=200,
     )
     
-    # Comparison selector
+    # Comparison selector - include explorer stations if available
     current_uuid = str(st.session_state.get("selected_station_uuid") or "")
-    render_comparison_selector(ranked, stations, current_uuid, max_ranked=50, max_excluded=100)
+    render_comparison_selector(
+        ranked, stations, current_uuid, 
+        max_ranked=50, max_excluded=100,
+        explorer_results=explorer_results if explorer_results else None,
+    )
+
+
 
 
 # =============================================================================
@@ -1012,7 +1224,7 @@ def main():
         st.switch_page(target)
     
     # =========================================================================
-    # SIDEBAR - WITH TRIP SETTINGS IN ACTION TAB
+    # SIDEBAR - WITH TRIP SETTINGS IN ACTION TAB AND HELP CONTENT
     # =========================================================================
     render_sidebar_shell(action_renderer=_render_trip_settings, help_renderer=_render_help_action)
     
@@ -1037,15 +1249,54 @@ def main():
     )
     
     if not station or not station_uuid:
-        st.info("No station selected. Please select a station from the sidebar.")
+        # Check if there's any data available at all
+        has_any_data = bool(ranked or stations or explorer_results)
+        
+        if has_any_data:
+            st.info("No station selected. Please select a station from the sidebar.")
+            st.caption("Tip: Use the 'Select Station' dropdown in the sidebar to choose a station.")
+        else:
+            st.info("No station data available yet.")
+            st.caption("Tip: Run **Trip Planner** on the Home page or use **Station Explorer** to search for stations first.")
+        
         st.markdown("---")
-        st.caption("Tip: Run Trip Planner or use Station Explorer to find stations.")
         maybe_persist_state()
         return
     
     # =========================================================================
     # EXTRACT STATION INFO
     # =========================================================================
+    
+    # Detect source context EARLY so all sections can use it
+    # Check BOTH session state AND radio widget state
+    station_source = st.session_state.get("selected_station_source", "")
+    radio_key = "station_details_source_radio"
+    if radio_key in st.session_state:
+        radio_label = st.session_state.get(radio_key, "")
+        if "explorer" in radio_label.lower():
+            station_source = "explorer"
+        elif "route" in radio_label.lower():
+            station_source = "route"
+    
+    # Auto-detect if not set
+    if station_source not in {"route", "explorer"}:
+        # Check if we actually have route data (not just empty dict)
+        has_route_data = bool(last_run and (last_run.get("ranked") or last_run.get("stations")))
+        has_explorer_data = bool(explorer_results)
+        
+        if has_explorer_data and not has_route_data:
+            station_source = "explorer"
+        elif has_route_data and not has_explorer_data:
+            station_source = "route"
+        elif has_explorer_data and has_route_data:
+            # Both available - check which was used to select current station
+            current_station_source = st.session_state.get("selected_station_source", "")
+            station_source = current_station_source if current_station_source in {"route", "explorer"} else "route"
+        else:
+            station_source = "route"  # Default fallback
+    
+    is_from_explorer = (station_source == "explorer")
+    
     name = _station_name(station)
     brand = _station_brand(station)
     city = _station_city(station) or _reverse_geocode_station_city(station)
@@ -1110,7 +1361,7 @@ def main():
                 is_open_check, _ = _parse_opening_hours(station, eta_dt)
                 if not is_open_check:
                     exclusion_reason = f"Station closed at arrival time ({eta_dt.strftime('%H:%M') if eta_dt else 'unknown'})"
-            except:
+            except Exception:
                 pass
         
         # 4. Check if no price prediction
@@ -1130,9 +1381,12 @@ def main():
     
     # Traffic light status
     if not is_ranked:
-        # Station is excluded - show neutral gray indicator
+        # Station is excluded or in Explorer mode - show neutral gray indicator
         traffic_status = "gray"
-        traffic_text = "Not Ranked"
+        if is_from_explorer:
+            traffic_text = "Explorer"  # Shorter text for Explorer mode
+        else:
+            traffic_text = "Not Ranked"
     elif use_economics and net_saving is not None:
         # Ranked station with economics - use net savings ranking
         traffic_status, traffic_text_raw, traffic_css = calculate_traffic_light_status(
@@ -1175,7 +1429,7 @@ def main():
                 eta_datetime = datetime.fromisoformat(eta_str.replace('Z', '+00:00'))
             else:
                 eta_datetime = eta_str
-        except:
+        except Exception:
             pass
     
     is_open, time_info = _parse_opening_hours(station, eta_datetime)
@@ -1184,8 +1438,17 @@ def main():
     # HERO SECTION - CYAN BOX WITH PRICE + TRAFFIC LIGHT
     # =========================================================================
     
-    base_name = brand if (brand and brand != "—") else name
-    city_clean = city.title() if (city and city != "—") else ""
+    # Check for valid brand (not empty, not dash variants, not just whitespace)
+    invalid_brand_values = {"", "-", "—", "–", "None", "null", "N/A", "n/a"}
+    brand_valid = brand and brand.strip() and brand.strip() not in invalid_brand_values
+    
+    base_name = brand if brand_valid else name
+    city_clean = city.title() if (city and city.strip() and city.strip() not in invalid_brand_values) else ""
+    
+    # Handle case where base_name is still invalid
+    if not base_name or base_name.strip() in invalid_brand_values:
+        base_name = "Unknown Station"
+    
     title_line = f"{base_name} in {city_clean}" if (base_name and city_clean) else base_name
     
     # Build subtitle with address - prioritize full address, then construct from available data
@@ -1223,41 +1486,36 @@ def main():
     
     # Traffic light circles
     if traffic_status == "green":
-        circles = '<span style="color: #4ade80; font-size: 1.6rem;">●</span> <span style="color: #fbbf24; font-size: 1.6rem;">○</span> <span style="color: #f87171; font-size: 1.6rem;">○</span>'
+        circles = '<span style="color: #4ade80; font-size: 1.6rem;">●</span> <span style="color: #fbbf24; font-size: 1.6rem;">○</span> <span style="color: #f87171; font-size: 1.6rem;">○</span>'
     elif traffic_status == "yellow":
-        circles = '<span style="color: #4ade80; font-size: 1.6rem;">○</span> <span style="color: #fbbf24; font-size: 1.6rem;">●</span> <span style="color: #f87171; font-size: 1.6rem;">○</span>'
+        circles = '<span style="color: #4ade80; font-size: 1.6rem;">○</span> <span style="color: #fbbf24; font-size: 1.6rem;">●</span> <span style="color: #f87171; font-size: 1.6rem;">○</span>'
     elif traffic_status == "red":
-        circles = '<span style="color: #4ade80; font-size: 1.6rem;">○</span> <span style="color: #fbbf24; font-size: 1.6rem;">○</span> <span style="color: #f87171; font-size: 1.6rem;">●</span>'
+        circles = '<span style="color: #4ade80; font-size: 1.6rem;">○</span> <span style="color: #fbbf24; font-size: 1.6rem;">○</span> <span style="color: #f87171; font-size: 1.6rem;">●</span>'
     else:
         # Gray/excluded - show all circles as gray/empty
         circles = '<span style="color: #9ca3af; font-size: 1.6rem;">○</span> <span style="color: #9ca3af; font-size: 1.6rem;">○</span> <span style="color: #9ca3af; font-size: 1.6rem;">○</span>'
     
-    price_display = f"€{display_price:.3f}" if display_price else "—"
+    price_display = f"€{display_price:.3f}" if display_price else "-"
     
-    # Build tooltip based on station status
+    # Build tooltip based on station status and source context
     if not is_ranked:
-        # Excluded station
+        # Excluded station or Explorer station (no ranking in Explorer mode)
         reason_text = exclusion_reason if exclusion_reason else "Station did not meet ranking criteria"
-        traffic_tooltip = (
-            f"⚪ This station is not ranked&#10;&#10;"
-            f"Reason: {reason_text}&#10;&#10;"
-            "Only ranked stations are compared for value.&#10;"
-            "Check the ranked stations list for recommendations."
-        )
+        if is_from_explorer:
+            traffic_tooltip = (
+                f"⚪ Explorer Mode | Ranking not available for Explorer searches. Use Trip Planner for route-based recommendations."
+            )
+        else:
+            traffic_tooltip = (
+                f"⚪ This station is not ranked | Reason: {reason_text} | Only ranked stations are compared for value. Check the ranked stations list for recommendations."
+            )
     elif use_economics and net_saving is not None:
         traffic_tooltip = (
-            "🟢 Excellent Value = Top 33% net savings (price minus detour costs)&#10;"
-            "🟡 Fair Value = Middle 33%&#10;"
-            "🔴 Poor Value = Bottom 33%&#10;&#10;"
-            "Compared against all ranked stations on your route.&#10;"
-            "Accounts for both price and detour time/fuel costs."
+            "🟢 Excellent Value = Top 33% net savings | 🟡 Fair Value = Middle 33% | 🔴 Poor Value = Bottom 33% | Compared against all ranked stations. Accounts for price and detour costs."
         )
     else:
         traffic_tooltip = (
-            "🟢 Excellent Deal = Cheapest 33% of stations&#10;"
-            "🟡 Fair Price = Middle 33%&#10;"
-            "🔴 Expensive = Most expensive 33%&#10;&#10;"
-            "Based on predicted prices. Enable economics for value-based ranking."
+            "🟢 Excellent Deal = Cheapest 33% | 🟡 Fair Price = Middle 33% | 🔴 Expensive = Top 33% | Based on predicted prices. Enable economics for value-based ranking."
         )
     
     hero_html = f"""
@@ -1272,7 +1530,6 @@ def main():
             <div style='display: flex; align-items: center; justify-content: center; gap: 0.4rem; color: #374151; font-size: 1.1rem; font-weight: 600;'>
                 {circles}
                 <span style='margin-left: 0.5rem;'>{traffic_text}</span>
-                <span style='margin-left: 0.3rem; color: #9ca3af; cursor: help; font-size: 0.9rem;' title='{traffic_tooltip}'>(?)</span>
             </div>
         </div>
     </div>
@@ -1280,12 +1537,60 @@ def main():
     
     st.markdown(hero_html, unsafe_allow_html=True)
     
+    # Mobile-friendly help for traffic light rating
+    # Using (?) style to match the help buttons elsewhere in the app
+    with st.expander("Rating explained", expanded=False):
+        if is_from_explorer:
+            # Explorer mode - different explanation
+            if not is_ranked:
+                st.markdown("""
+                **⚪ Explorer Mode**: Ranking not available for Explorer searches.
+                
+                In Explorer mode, you're browsing stations near a location - not along a route.
+                The traffic light rating compares stations within your Trip Planner route, 
+                so it doesn't apply here.
+                
+                **To get rankings:** Use Trip Planner on the Home page to plan a route, 
+                then stations will be ranked by price and detour cost.
+                """)
+            else:
+                st.markdown("""
+                **Explorer Mode**: Showing station data from your proximity search.
+                
+                Note: Traffic light ratings are based on Trip Planner route data.
+                For the most accurate comparison, use Trip Planner to plan your route.
+                """)
+        elif not is_ranked:
+            st.markdown(f"""
+            **⚪ Not Ranked**: This station did not meet the ranking criteria.
+            
+            **Reason:** {exclusion_reason if exclusion_reason else "Station did not pass filters"}
+            
+            Only ranked stations are compared for value. Check the ranked stations list for recommendations.
+            """)
+        elif use_economics and net_saving is not None:
+            st.markdown("""
+            **Value Rating** (based on net savings after detour costs):
+            - 🟢 **Excellent Value** = Top 33%: Best savings after accounting for detour
+            - 🟡 **Fair Value** = Middle 33%: Moderate savings
+            - 🔴 **Poor Value** = Bottom 33%: Detour costs eat into savings
+            """)
+        else:
+            st.markdown("""
+            **Price Rating** (based on predicted fuel price):
+            - 🟢 **Excellent Deal** = Cheapest 33% of stations
+            - 🟡 **Fair Price** = Middle 33%
+            - 🔴 **Expensive** = Most expensive 33%
+            
+            *Tip: Enable Economics in Trip Planner for value-based ranking that includes detour costs.*
+            """)
+    
     # =========================================================================
     # MISSING PREDICTION WARNING (if using current price as fallback)
     # =========================================================================
     if using_current_as_fallback:
         st.warning(
-            "⚠️ **Using current price** — No prediction available for this station at your arrival time. "
+            "**Using live price (no forecast)**: No prediction available for this station at your arrival time. "
             "The displayed price is the current real-time price, not a forecast.",
             icon="⚠️"
         )
@@ -1293,12 +1598,12 @@ def main():
             st.markdown("""
             **Possible reasons:**
             - The station may have limited historical price data
-            - The model couldn't generate a reliable forecast for this specific time
+            - The model could not generate a reliable forecast for this specific time
             - Data collection gap for this station
             
             **What this means:**
-            - The current price shown may differ from the actual price when you arrive
-            - Savings calculations are based on the current price, not a predicted one
+            - The live price shown is from right now - it may change by the time you arrive
+            - Savings calculations use today's live price, not a forecast for your arrival time
             - Consider checking prices again closer to your departure time
             """)
     
@@ -1332,7 +1637,7 @@ def main():
                 # Check if ETA is on a different day than today
                 try:
                     today = datetime.now(tz=ZoneInfo("Europe/Berlin") if ZoneInfo else None)
-                except:
+                except Exception:
                     today = datetime.now()
                 
                 if eta_dt.date() != today.date():
@@ -1344,9 +1649,9 @@ def main():
                 
                 st.info(f"ETA: {eta_display}")
             except Exception:
-                st.info("ETA: —")
+                st.info("ETA: Unknown")
         else:
-            st.info("ETA: —")
+            st.info("ETA: Unknown")
 
     with info_cols[2]:
         # Opening hours - show day if ETA is different from today
@@ -1354,7 +1659,7 @@ def main():
         if eta_datetime:
             try:
                 today = datetime.now(tz=ZoneInfo("Europe/Berlin") if ZoneInfo else None)
-            except:
+            except Exception:
                 today = datetime.now()
             
             if eta_datetime.date() != today.date():
@@ -1380,229 +1685,244 @@ def main():
     st.markdown("---")
     
     # =========================================================================
-    # SAVINGS CALCULATOR
+    # SAVINGS CALCULATOR / PRICE COMPARISON
     # =========================================================================
     
-    # Get on-route thresholds (aligned with page 02 and recommender)
-    onroute_km_threshold, onroute_min_threshold = _get_onroute_thresholds(last_run)
-    
-    st.markdown("### Savings Calculator")
-    st.caption("Compare against the worst-priced station directly on your route (no detour needed)")
-    
-    # Initialize variable that will be used later
-    total_for_context = 0
-    
-    if not display_price:
-        st.info("No price data available for this station.")
-    else:
-        slider_value = st.slider(
-            "Refuel amount (liters)",
-            min_value=1.0,
-            max_value=1000.0,
-            value=float(litres_to_refuel),
-            step=1.0,
-            key="savings_calc_slider",
-        )
+    # Different behavior for Explorer vs Trip Planner mode
+    if is_from_explorer:
+        st.markdown("### Price Comparison")
+        st.caption("Compare this station against other Explorer stations.")
         
-        # Find the WORST on-route price for user-friendly display
-        # Uses consistent thresholds from recommender (aligned with page 02)
-        worst_onroute_computed = _compute_worst_onroute_price(
-            ranked, fuel_code, onroute_km_threshold, onroute_min_threshold
-        )
-        worst_onroute_price = worst_onroute_computed if worst_onroute_computed is not None else display_price
-        
-        # Calculate display metrics using WORST price
-        price_diff_display = worst_onroute_price - display_price
-        gross_savings_display = price_diff_display * slider_value
-        
-        # ECONOMICS MODE: Check user setting, not whether recommender calculated values
-        # For non-ranked stations, we calculate detour costs manually
-        if use_economics:
-            # Try to get pre-computed detour costs from station data first
-            detour_fuel_cost_key = f"econ_detour_fuel_cost_eur_{fuel_code}"
-            time_cost_key = f"econ_time_cost_eur_{fuel_code}"
-            
-            detour_fuel_cost = _safe_float(station.get(detour_fuel_cost_key))
-            time_cost = _safe_float(station.get(time_cost_key))
-            
-            # If not available (non-ranked station), calculate manually
-            if detour_fuel_cost is None or time_cost is None:
-                # Get parameters from last_run or session_state
-                consumption = _safe_float(last_run.get("consumption_l_per_100km")) or _safe_float(st.session_state.get("consumption_l_per_100km")) or 7.0
-                value_of_time = _safe_float(last_run.get("value_of_time_eur_per_hour")) or _safe_float(st.session_state.get("value_of_time_eur_per_hour")) or 0.0
-                
-                # Calculate detour fuel cost: (detour_km * consumption / 100) * fuel_price
-                if detour_km > 0 and display_price:
-                    detour_fuel_cost = (detour_km * consumption / 100.0) * display_price
-                else:
-                    detour_fuel_cost = 0.0
-                
-                # Calculate time cost: (detour_min / 60) * value_of_time
-                if detour_min > 0 and value_of_time > 0:
-                    time_cost = (detour_min / 60.0) * value_of_time
-                else:
-                    time_cost = 0.0
-            
-            detour_costs_constant = (detour_fuel_cost or 0.0) + (time_cost or 0.0)
-            
-            # Calculate gross and net using WORST on-route price
-            # This matches the Analytics page calculation (02_route_analytics.py)
-            gross_savings_display = price_diff_display * slider_value
-            net_savings_display = gross_savings_display - detour_costs_constant
-            
-            # Calculate break-even
-            breakeven_liters = None
-            if price_diff_display > 0 and detour_costs_constant > 0:
-                breakeven_liters = detour_costs_constant / price_diff_display
-            
-            # Price comparison header
-            st.markdown("**Comparing prices:**")
-            comp_cols = st.columns(2)
-            with comp_cols[0]:
-                st.markdown(f"🟢 **This station:** €{display_price:.3f}/L")
-            with comp_cols[1]:
-                st.markdown(f"🔴 **Worst on-route:** €{worst_onroute_price:.3f}/L")
-            
-            st.markdown("---")
-            
-            # NEGATIVE SAVINGS - Red warning with break-even
-            if net_savings_display < -0.01:
-                # Show numbers FIRST with tooltips
-                calc_cols = st.columns(2)
-                with calc_cols[0]:
-                    st.metric(
-                        "Gross Savings",
-                        f"€{gross_savings_display:.2f}",
-                        help=(
-                            "Price advantage before detour costs. "
-                            "Formula: (Worst on-route - This station) × Litres. "
-                            f"Example: (€{worst_onroute_price:.3f} - €{display_price:.3f}) × {slider_value:.0f}L = €{gross_savings_display:.2f}"
-                        )
-                    )
-                with calc_cols[1]:
-                    st.metric(
-                        "Detour Costs",
-                        f"€{detour_costs_constant:.2f}",
-                        help=(
-                            "Extra fuel for detour plus optional time cost. "
-                            "Formula: (Detour km × Consumption/100) × Price + Time cost. "
-                            f"Your detour: {detour_km:.1f}km, {detour_min:.0f} minutes. "
-                            f"Breakdown: Fuel €{detour_fuel_cost:.2f} + Time €{time_cost:.2f}"
-                        )
-                    )
-                
-                # Then show evaluation
-                st.error(f"**Net Loss: €{abs(net_savings_display):.2f}**")
-                
-                # Check if prices are equal (no price advantage)
-                if abs(price_diff_display) < 0.001:
-                    st.caption("**This station has the same price as the worst on-route option.** There's no price advantage, but the detour still costs fuel.")
-                else:
-                    st.caption(f"Detour costs (€{detour_costs_constant:.2f}) exceed price advantage (€{gross_savings_display:.2f})")
-                
-                if breakeven_liters:
-                    st.info(f"**Break-even:** Refuel at least **{breakeven_liters:.0f}L** to save money")
-            
-            # NEAR ZERO - Break-even
-            elif abs(net_savings_display) <= 0.01:
-                st.info("Detour costs cancel out price savings. No real advantage.")
-                
-            # POSITIVE SAVINGS - Green success
-            else:
-                calc_cols = st.columns(2)
-                
-                with calc_cols[0]:
-                    st.metric(
-                        "Net Savings",
-                        f"€{net_savings_display:.2f}",
-                        help=(
-                            "Real savings after all costs. "
-                            "Formula: Gross savings - Detour costs. "
-                            f"Example: €{gross_savings_display:.2f} - €{detour_costs_constant:.2f} = €{net_savings_display:.2f}"
-                        )
-                    )
-                    st.caption(f"for {slider_value:.0f} liters")
-                
-                with calc_cols[1]:
-                    st.metric(
-                        "Price Difference",
-                        f"€{price_diff_display:.3f}/L",
-                        help=(
-                            "How much cheaper per liter vs worst on-route. "
-                            "Formula: Worst - This station. "
-                            f"Example: €{worst_onroute_price:.3f} - €{display_price:.3f} = €{price_diff_display:.3f}/L"
-                        )
-                    )
-                
-                # Show breakdown
-                if detour_costs_constant > 0.01:
-                    st.success(f"Gross: €{gross_savings_display:.2f} - Detour: €{detour_costs_constant:.2f} = Net: €{net_savings_display:.2f}")
-            
-            # Set for weekly/monthly context
-            total_for_context = net_savings_display
-        
+        # In Explorer mode, we don't have route context
+        if not display_price:
+            st.info("No price data available for this station.")
+        elif len(explorer_results) < 2:
+            st.info("Search for more stations in Explorer to enable comparison.")
         else:
-            # NO ECONOMICS - Simple comparison with warning
-            # Use same logic: find worst on-route price (using consistent thresholds)
-            worst_price = display_price
-            for s in ranked:
-                s_price = _safe_float(s.get(pred_key))
-                if s_price and s_price > worst_price:
-                    d_km = _safe_float(s.get("detour_distance_km") or s.get("detour_km") or 0)
-                    d_min = _safe_float(s.get("detour_duration_min") or 0)
-                    # Use consistent thresholds (not hardcoded)
-                    if d_km <= onroute_km_threshold and d_min <= onroute_min_threshold:
-                        worst_price = s_price
+            # Find best and worst prices from explorer results WITH station names
+            explorer_prices = []
+            cheapest_station_name = None
+            cheapest_price = float('inf')
+            expensive_station_name = None
+            expensive_price = 0
             
-            price_diff = worst_price - display_price
-            total_savings = price_diff * slider_value
+            for s in explorer_results:
+                p = _safe_float(s.get(f"price_current_{fuel_code}"))
+                if p and p > 0:
+                    explorer_prices.append(p)
+                    s_name = _station_name(s) or "Unknown"
+                    s_city = _station_city(s)
+                    full_name = f"{s_name} ({s_city})" if s_city else s_name
+                    
+                    if p < cheapest_price:
+                        cheapest_price = p
+                        cheapest_station_name = full_name
+                    if p > expensive_price:
+                        expensive_price = p
+                        expensive_station_name = full_name
             
-            st.markdown("**Comparing prices:**")
-            comp_cols = st.columns(2)
-            with comp_cols[0]:
-                st.markdown(f"🟢 **This station:** €{display_price:.3f}/L")
-            with comp_cols[1]:
-                st.markdown(f"🔴 **Worst on-route:** €{worst_price:.3f}/L")
+            if explorer_prices:
+                min_explorer = min(explorer_prices)
+                max_explorer = max(explorer_prices)
+                avg_explorer = sum(explorer_prices) / len(explorer_prices)
+                
+                price_cols = st.columns(3)
+                with price_cols[0]:
+                    st.metric(
+                        label="This station",
+                        value=f"€{display_price:.3f}/L",
+                        help="Current price at this station"
+                    )
+                with price_cols[1]:
+                    st.metric(
+                        label="Cheapest nearby",
+                        value=f"€{min_explorer:.3f}/L",
+                        help=f"Cheapest: {cheapest_station_name}" if cheapest_station_name else "Cheapest station in your Explorer search"
+                    )
+                with price_cols[2]:
+                    st.metric(
+                        label="Most expensive",
+                        value=f"€{max_explorer:.3f}/L",
+                        help=f"Most expensive: {expensive_station_name}" if expensive_station_name else "Most expensive station in your Explorer search"
+                    )
+                
+                diff_from_cheapest = display_price - min_explorer
+                
+                if diff_from_cheapest < 0.001:
+                    st.success(f"This is the cheapest station in your search!")
+                else:
+                    st.info(f"€{diff_from_cheapest:.3f}/L more expensive than the cheapest nearby")
+                
+                # Show which stations are cheapest/most expensive
+                st.caption(f"Based on {len(explorer_prices)} stations. Average: €{avg_explorer:.3f}/L")
+                if cheapest_station_name and expensive_station_name:
+                    st.caption(f"Cheapest: {cheapest_station_name} | Most expensive: {expensive_station_name}")
+            else:
+                st.info("No price data available for comparison.")
+    else:
+        # TRIP PLANNER MODE - original Savings Calculator
+        st.markdown("### Savings Calculator")
+        st.caption("Compare this station against the most expensive on your route.")
+        
+        # Initialize variable that will be used later
+        total_for_context = 0
+        
+        # Get on-route thresholds (aligned with page 02 and recommender)
+        onroute_km_threshold, onroute_min_threshold = _get_onroute_thresholds(last_run)
+        
+        if not display_price:
+            st.info("No price data available for this station.")
+        else:
+            # Find the WORST on-route price for user-friendly display
+            worst_onroute_computed = _compute_worst_onroute_price(
+                ranked, fuel_code, onroute_km_threshold, onroute_min_threshold
+            )
+            worst_onroute_price = worst_onroute_computed if worst_onroute_computed is not None else display_price
+            
+            # Calculate price difference per liter
+            price_diff_per_liter = worst_onroute_price - display_price
+            
+            # ---------------------------------------------------------------------
+            # PRICE COMPARISON (side by side)
+            # ---------------------------------------------------------------------
+            price_cols = st.columns(2)
+            with price_cols[0]:
+                st.metric(
+                    label="This station",
+                    value=f"€{display_price:.3f}/L",
+                    delta=None,
+                    help="The predicted price at your selected station"
+                )
+            with price_cols[1]:
+                st.metric(
+                    label="Worst on-route",
+                    value=f"€{worst_onroute_price:.3f}/L",
+                    delta=None,
+                    help="Most expensive station requiring ≤1km and ≤5min detour. Assumption: Negligible detour cost for on-route stations."
+                )
+            
+            # Show price difference
+            if price_diff_per_liter > 0:
+                st.success(f"**You save €{price_diff_per_liter:.3f} per liter**")
+            elif price_diff_per_liter < 0:
+                st.error(f"**This station is €{abs(price_diff_per_liter):.3f}/L more expensive**")
+            else:
+                st.info("Same price as worst on-route")
             
             st.markdown("---")
             
-            calc_cols = st.columns(2)
-            
-            with calc_cols[0]:
-                st.metric(
-                    "Total Savings",
-                    f"€{total_savings:.2f}",
-                    help=(
-                        "Price difference without detour costs. "
-                        f"Formula: Price diff × Litres = €{price_diff:.3f} × {slider_value:.0f}L = €{total_savings:.2f}"
-                    )
-                )
-                st.caption(f"for {slider_value:.0f} liters")
-            
-            with calc_cols[1]:
-                st.metric(
-                    "Price Difference",
-                    f"€{price_diff:.3f}/L",
-                    help=(
-                        "Cheaper per liter vs worst on-route. "
-                        f"Example: €{worst_price:.3f} - €{display_price:.3f} = €{price_diff:.3f}/L"
-                    )
-                )
-            
-            st.warning("Detour costs not included. Enable Economics in Trip Planner for accurate net savings.")
-            
-            # Set for weekly/monthly context
-            total_for_context = total_savings
-        
-        # Weekly/monthly/yearly projection (only for meaningful positive savings)
-        if total_for_context > 0.01:  # Show for any positive savings
-            weekly = total_for_context
-            monthly = total_for_context * 4.3
-            yearly = total_for_context * 52
-            st.info(
-                f"If you refuel here weekly: **€{weekly:.2f}** per week • "
-                f"**€{monthly:.2f}** per month • **€{yearly:.2f}** per year"
+            # Fuel amount slider
+            slider_value = st.slider(
+                "Refuel amount (liters)",
+                min_value=1.0,
+                max_value=1000.0,
+                value=float(litres_to_refuel),
+                step=1.0,
+                key="savings_calc_slider",
             )
+            
+            # ---------------------------------------------------------------------
+            # CALCULATE AND DISPLAY RESULTS
+            # ---------------------------------------------------------------------
+            gross_savings = price_diff_per_liter * slider_value
+            
+            # ECONOMICS MODE
+            if use_economics:
+                # Get detour costs
+                detour_fuel_cost_key = f"econ_detour_fuel_cost_eur_{fuel_code}"
+                time_cost_key = f"econ_time_cost_eur_{fuel_code}"
+                
+                detour_fuel_cost = _safe_float(station.get(detour_fuel_cost_key))
+                time_cost = _safe_float(station.get(time_cost_key))
+                
+                # Calculate manually if not available
+                if detour_fuel_cost is None or time_cost is None:
+                    consumption = _safe_float(last_run.get("consumption_l_per_100km")) or _safe_float(st.session_state.get("consumption_l_per_100km")) or 7.0
+                    value_of_time = _safe_float(last_run.get("value_of_time_eur_per_hour")) or _safe_float(st.session_state.get("value_of_time_eur_per_hour")) or 0.0
+                    
+                    if detour_km > 0 and display_price:
+                        detour_fuel_cost = (detour_km * consumption / 100.0) * display_price
+                    else:
+                        detour_fuel_cost = 0.0
+                    
+                    if detour_min > 0 and value_of_time > 0:
+                        time_cost = (detour_min / 60.0) * value_of_time
+                    else:
+                        time_cost = 0.0
+                
+                detour_costs = (detour_fuel_cost or 0.0) + (time_cost or 0.0)
+                net_savings = gross_savings - detour_costs
+                
+                # Round for display consistency
+                gross_rounded = round(gross_savings, 2)
+                detour_rounded = round(detour_costs, 2)
+                net_rounded = gross_rounded - detour_rounded
+                
+                # Show results with metrics - 3 columns for clearer display
+                result_cols = st.columns(3)
+                with result_cols[0]:
+                    st.metric(
+                        label="Net Savings",
+                        value=f"€{net_rounded:.2f}",
+                        help="Final savings after subtracting detour costs"
+                    )
+                with result_cols[1]:
+                    st.metric(
+                        label="Detour Costs",
+                        value=f"€{detour_rounded:.2f}",
+                        help="Extra fuel + time cost for the detour"
+                    )
+                with result_cols[2]:
+                    st.metric(
+                        label="Price Diff",
+                        value=f"€{price_diff_per_liter:.3f}/L",
+                        help="How much cheaper per liter vs worst on-route"
+                    )
+                
+                # Show breakdown formula
+                if detour_rounded > 0.01:
+                    st.success(f"Gross: €{gross_rounded:.2f} − Detour: €{detour_rounded:.2f} = Net: €{net_rounded:.2f}")
+                
+                # Result evaluation for negative/break-even
+                if net_savings < -0.01:
+                    st.error(f"**Net Loss:** Detour costs exceed price savings")
+                    if price_diff_per_liter > 0:
+                        breakeven_liters = detour_costs / price_diff_per_liter
+                        st.info(f"**Break-even:** Refuel at least **{breakeven_liters:.0f}L** to make this worthwhile.")
+                elif abs(net_savings) <= 0.01:
+                    st.info("**Break-even:** Detour costs cancel out savings")
+                
+                total_for_context = net_savings
+                
+            else:
+                # NO ECONOMICS MODE - simpler display
+                result_cols = st.columns(2)
+                with result_cols[0]:
+                    st.metric(
+                        label="Gross Savings",
+                        value=f"€{gross_savings:.2f}",
+                        help=f"{slider_value:.0f}L × €{price_diff_per_liter:.3f}/L"
+                    )
+                with result_cols[1]:
+                    st.metric(
+                        label="Price Difference",
+                        value=f"€{price_diff_per_liter:.3f}/L",
+                        help="How much cheaper per liter vs worst on-route"
+                    )
+                
+                st.warning("Detour costs not included. Enable Economics in Trip Planner for net savings.")
+                total_for_context = gross_savings
+            
+            # Weekly/monthly/yearly projection
+            if total_for_context > 0.01:
+                weekly = total_for_context
+                monthly = total_for_context * 4.3
+                yearly = total_for_context * 52
+                st.info(f"**If you refuel here weekly:** €{weekly:.2f}/week, €{monthly:.2f}/month, €{yearly:.2f}/year")
+                st.caption("Assumes you refuel the same amount once per week. Monthly = weekly × 4.3, yearly = weekly × 52.")
+            
+            # Rounding disclaimer
+            st.caption("**Note:** Small differences (a few cents) may occur because calculations use full precision while displayed prices are rounded to 3 decimals. See Help for details.")
     
     st.markdown("---")
     
@@ -1624,7 +1944,7 @@ def main():
             price_drop = alert["price_drop"]
             
             st.warning(
-                f"Price usually drops at {drop_hour}:00 (−€{price_drop:.3f}/L). "
+                f"Price usually drops at {drop_hour}:00 (-€{price_drop:.3f}/L). "
                 f"Worth waiting {hours_wait} hour{'s' if hours_wait > 1 else ''}?"
             )
     
@@ -1636,14 +1956,40 @@ def main():
     st.caption("Based on 14-day price patterns • 🟢 Cheapest 🟡 Average 🔴 Expensive")
     
     if hourly_df is not None and not hourly_df.empty:
-        fig = create_hourly_pattern_chart(hourly_df, fuel_code)
-        st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+        # Data quality thresholds
+        MIN_RECORDS_FOR_PATTERN = 20  # Need at least 20 price changes for reliable patterns
+        MIN_HOURS_FOR_PATTERN = 4     # Need data spread across at least 4 different hours
         
-        optimal = get_cheapest_and_most_expensive_hours(hourly_df)
-        cheapest_hour = optimal.get("cheapest_hour")
+        # Check data quality using ORIGINAL history data, not forward-filled hourly stats
+        # hourly_df is forward-filled so ALL hours have data - misleading for quality check
+        if history_df is not None and not history_df.empty:
+            original_records = len(history_df)
+            original_hours_with_data = history_df["date"].dt.hour.nunique() if "date" in history_df.columns else 0
+        else:
+            original_records = 0
+            original_hours_with_data = 0
         
-        if cheapest_hour is not None:
-            st.success(f"Usually cheapest: {cheapest_hour}:00")
+        is_sparse_data = (original_records < MIN_RECORDS_FOR_PATTERN or original_hours_with_data < MIN_HOURS_FOR_PATTERN)
+        
+        if is_sparse_data:
+            # Don't show misleading chart - just explain why
+            st.info(
+                f"**Not enough data for reliable patterns.** "
+                f"This station rarely reports price changes. "
+                f"Hourly patterns require more frequent updates to be meaningful."
+            )
+        else:
+            # Enough data - show the chart
+            fig = create_hourly_pattern_chart(hourly_df, fuel_code)
+            st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+            
+            # Show "Usually cheapest" 
+            hourly_df_displayed = hourly_df[hourly_df["hour"] % 2 == 0].copy()
+            optimal = get_cheapest_and_most_expensive_hours(hourly_df_displayed)
+            cheapest_hour = optimal.get("cheapest_hour")
+            
+            if cheapest_hour is not None:
+                st.success(f"Usually cheapest: {int(cheapest_hour)}:00")
         
         # Weekday × Hour Heatmap (below hourly chart)
         st.markdown("#### Price by Day & Hour")
@@ -1651,6 +1997,7 @@ def main():
             heatmap_fig = create_weekday_hour_heatmap(history_df, fuel_code)
             if heatmap_fig is not None:
                 st.plotly_chart(heatmap_fig, use_container_width=True, config=PLOTLY_CONFIG)
+                st.caption("White cells = no data for that day/hour in the last 14 days. Tankerkönig only records price changes, so quiet periods may have gaps.")
             else:
                 st.caption(f"Not enough variety in data for weekday patterns.")
         else:
@@ -1677,13 +2024,39 @@ def main():
     # COMPARE STATIONS
     # =========================================================================
     
+    # Detect if current station came from Explorer
+    # Check BOTH session state AND radio widget state (radio is more up-to-date)
+    station_source = st.session_state.get("selected_station_source", "")
+    radio_key = "station_details_source_radio"
+    if radio_key in st.session_state:
+        radio_label = st.session_state.get(radio_key, "")
+        if "explorer" in radio_label.lower():
+            station_source = "explorer"
+        elif "route" in radio_label.lower():
+            station_source = "route"
+    
+    is_from_explorer = (station_source == "explorer")
+    
     with st.expander("Compare Stations", expanded=False):
-        st.caption("Top ranked stations from your route")
+        # In Explorer mode, skip the automatic station boxes since there's no ranking
+        # Go directly to Historical Price Comparison
+        if is_from_explorer:
+            compare_list = []  # Empty - no automatic comparison for Explorer
+            show_ranking = False
+        elif ranked:
+            st.caption("Top ranked stations from your route")
+            compare_list = ranked
+            show_ranking = True
+        elif stations:
+            st.caption("Stations along your route")
+            compare_list = stations
+            show_ranking = False
+        else:
+            compare_list = []
+            show_ranking = False
         
-        # Use ranked if available, otherwise fall back to stations
-        compare_list = ranked if ranked else stations
-        
-        if len(compare_list) >= 1:
+        # Only show comparison boxes for Trip Planner mode (not Explorer)
+        if not is_from_explorer and len(compare_list) >= 1 and display_price is not None:
             # Current station card
             # Format ETA for current station
             eta_display = ""
@@ -1695,15 +2068,27 @@ def main():
                     else:
                         eta_dt = eta_str
                     eta_display = f" • ETA: {eta_dt.strftime('%H:%M')}"
-                except:
+                except Exception:
                     pass
             
-            detour_text = "On route" if detour_min < 0.5 else f"+{detour_min:.0f} min detour"
+            # Detour info (only relevant for Trip Planner mode)
+            if is_from_explorer:
+                detour_text = ""
+            else:
+                detour_text = "On route" if detour_min < 0.5 else f"+{detour_min:.0f} min detour"
             
             # Add city to current station name for disambiguation
             current_display_name = name
             if city:
                 current_display_name += f" · {city}"
+            
+            # Build info line for current station
+            current_info_parts = []
+            if detour_text:
+                current_info_parts.append(detour_text)
+            if eta_display:
+                current_info_parts.append(eta_display.lstrip(" • "))
+            current_info_line = " • ".join(current_info_parts) if current_info_parts else ""
             
             st.markdown(f"""
             <div style='background: #e0f2fe; border-left: 4px solid #0284c7; padding: 1rem; border-radius: 0.5rem; margin-bottom: 1rem;'>
@@ -1711,21 +2096,29 @@ def main():
                 <div style='margin-top: 0.5rem; color: #075985;'>
                     <span style='font-size: 1.3rem; font-weight: 700;'>€{display_price:.3f}</span> / L
                 </div>
-                <div style='margin-top: 0.3rem; color: #0369a1; font-size: 0.9rem;'>
-                    {detour_text}{eta_display}
-                </div>
+                {f"<div style='margin-top: 0.3rem; color: #0369a1; font-size: 0.9rem;'>{current_info_line}</div>" if current_info_line else ""}
             </div>
             """, unsafe_allow_html=True)
             
-            # Top 3 from ranking
-            for idx, s in enumerate(compare_list[:3], start=1):
+            # Show other stations from the list (up to 3)
+            shown_count = 0
+            for idx, s in enumerate(compare_list, start=1):
+                if shown_count >= 3:
+                    break
+                    
                 s_uuid = _station_uuid(s)
                 if s_uuid == station_uuid:
-                    continue
+                    continue  # Skip current station
                 
                 s_name = _station_name(s)
                 s_city = _station_city(s)
-                s_price = _safe_float(s.get(pred_key))
+                
+                # For Explorer stations, try current price; for Trip stations, use predicted
+                if is_from_explorer:
+                    s_price = _safe_float(s.get(f"price_current_{fuel_code}")) or _safe_float(s.get(pred_key))
+                else:
+                    s_price = _safe_float(s.get(pred_key))
+                
                 s_detour = _safe_float(s.get("detour_duration_min"))
                 
                 # Build display name with city for disambiguation
@@ -1733,38 +2126,61 @@ def main():
                 if s_city:
                     s_display_name += f" · {s_city}"
                 
-                # Format ETA for this station
+                # Format ETA for this station (only for Trip Planner)
                 s_eta_display = ""
-                s_eta_str = s.get("eta")
-                if s_eta_str:
-                    try:
-                        if isinstance(s_eta_str, str):
-                            s_eta_dt = datetime.fromisoformat(s_eta_str.replace("Z", "+00:00"))
-                        else:
-                            s_eta_dt = s_eta_str
-                        s_eta_display = f" • ETA: {s_eta_dt.strftime('%H:%M')}"
-                    except:
-                        pass
+                if not is_from_explorer:
+                    s_eta_str = s.get("eta")
+                    if s_eta_str:
+                        try:
+                            if isinstance(s_eta_str, str):
+                                s_eta_dt = datetime.fromisoformat(s_eta_str.replace("Z", "+00:00"))
+                            else:
+                                s_eta_dt = s_eta_str
+                            s_eta_display = f" • ETA: {s_eta_dt.strftime('%H:%M')}"
+                        except Exception:
+                            pass
                 
-                s_detour_text = "On route" if (s_detour or 0) < 0.5 else f"+{s_detour:.0f} min detour"
+                # Detour info (only for Trip Planner)
+                if is_from_explorer:
+                    s_detour_text = ""
+                else:
+                    s_detour_text = "On route" if (s_detour or 0) < 0.5 else f"+{s_detour:.0f} min detour"
+                
+                # Build info line
+                s_info_parts = []
+                if s_detour_text:
+                    s_info_parts.append(s_detour_text)
+                if s_eta_display:
+                    s_info_parts.append(s_eta_display.lstrip(" • "))
+                s_info_line = " • ".join(s_info_parts) if s_info_parts else ""
+                
+                # Display name with or without ranking
+                if show_ranking:
+                    card_title = f"#{idx} {s_display_name}"
+                else:
+                    card_title = s_display_name
                 
                 if s_price:
                     st.markdown(f"""
                     <div style='background: #f3f4f6; border-left: 4px solid #9ca3af; padding: 1rem; border-radius: 0.5rem; margin-bottom: 0.8rem;'>
-                        <div style='font-weight: 600; font-size: 1rem; color: #374151;'>#{idx} {s_display_name}</div>
+                        <div style='font-weight: 600; font-size: 1rem; color: #374151;'>{card_title}</div>
                         <div style='margin-top: 0.5rem; color: #1f2937;'>
                             <span style='font-size: 1.2rem; font-weight: 700;'>€{s_price:.3f}</span> / L
                         </div>
-                        <div style='margin-top: 0.3rem; color: #6b7280; font-size: 0.9rem;'>
-                            {s_detour_text}{s_eta_display}
-                        </div>
+                        {f"<div style='margin-top: 0.3rem; color: #6b7280; font-size: 0.9rem;'>{s_info_line}</div>" if s_info_line else ""}
                     </div>
                     """, unsafe_allow_html=True)
-        else:
-            st.info("Need route ranking to show comparison.")
+                    shown_count += 1
+                    
+        elif not is_from_explorer and len(compare_list) < 1:
+            # Only show this message for Trip Planner mode - Explorer already has its caption
+            st.info("Run Trip Planner to see station comparison.")
         
         # Historical Comparison Chart
-        st.markdown("---")
+        # Only show divider if we had content above (Trip Planner mode with boxes)
+        if not is_from_explorer:
+            st.markdown("---")
+        
         st.markdown("#### Historical Price Comparison (7 Days)")
         
         comp_uuids = st.session_state.get("comparison_station_uuids")
@@ -1790,7 +2206,7 @@ def main():
                     stations_data[f"{current_label} (Current)"] = current_df
                 
                 # Map UUIDs to readable labels using _station_name
-                # Search both ranked AND stations lists to find all station names
+                # Search ranked, stations, AND explorer_results lists to find all station names
                 label_by_uuid: Dict[str, str] = {}
                 
                 # First check ranked list
@@ -1823,6 +2239,21 @@ def main():
                         label += f" · {s_city}"
                     label_by_uuid[u] = label
                 
+                # Also check explorer_results (for Explorer mode comparisons)
+                for s in explorer_results:
+                    u = _station_uuid(s)
+                    if not u or u in label_by_uuid:  # Don't overwrite if already found
+                        continue
+                    s_name = _station_name(s)
+                    s_brand = _station_brand(s)
+                    s_city = _station_city(s)
+                    label = s_name
+                    if s_brand and s_brand != s_name:
+                        label += f" ({s_brand})"
+                    if s_city:
+                        label += f" · {s_city}"
+                    label_by_uuid[u] = label
+                
                 for u in comp_uuids[:1]:  # Only 1 comparison for cleaner mobile view
                     if not u or u == station_uuid:
                         continue
@@ -1843,8 +2274,8 @@ def main():
                 # Show full station names below chart
                 st.markdown(
                     f"""<div style="font-size: 0.85rem; color: #555; margin-top: -0.5rem;">
-                    <span style="color: #16a34a;">●</span> <b>Your station:</b> {current_full_name}<br>
-                    <span style="color: #2563eb;">●</span> <b>Comparison:</b> {comparison_full_name}
+                    <span style="color: #16a34a;">●</span> <b>Your station:</b> {current_full_name}<br>
+                    <span style="color: #2563eb;">●</span> <b>Comparison:</b> {comparison_full_name}
                     </div>""",
                     unsafe_allow_html=True
                 )
