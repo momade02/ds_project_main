@@ -299,11 +299,24 @@ def load_all_stations_from_supabase() -> pd.DataFrame:
 
 
 def get_historical_prices_batch(
-    station_uuids: List[str], target_date: datetime, target_cell: int
+    station_uuids: List[str], target_date: datetime, target_cell: int,
+    fallback_days: int = 3
 ) -> Dict[str, FuelPriceDict]:
     """
     Fetches prices for multiple stations at a specific date in ONE query.
     Uses Supabase `.in_()` filtering for efficiency.
+    
+    FORWARD-FILL LOGIC:
+    If a station has no price data on target_date, we look back up to
+    `fallback_days` to find the most recent available price.
+    
+    This handles stations that don't change prices every day (~21% of stations).
+    
+    Example for 1d lag with fallback_days=3:
+    - First try: yesterday (target_date)
+    - If no data: try day before yesterday
+    - If no data: try 3 days ago
+    - Take the most recent price found
     
     NOTE: We search the WHOLE DAY and take the latest price, not just up to target_cell.
     This ensures we get data even when ETA is shortly after midnight.
@@ -314,15 +327,17 @@ def get_historical_prices_batch(
         return {}
 
     client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
-    date_str = target_date.strftime("%Y-%m-%d")
-
-    # Search the WHOLE DAY - take latest available price
-    # This fixes the bug where ETA after midnight caused empty lag data
-    range_start = f"{date_str} 00:00:00"
-    range_end = f"{date_str} 23:59:59"
+    
+    # Forward-fill: Search from (target_date - fallback_days) to target_date
+    # This way we find the most recent price even if target_date has no data
+    earliest_date = target_date - timedelta(days=fallback_days)
+    
+    range_start = earliest_date.strftime("%Y-%m-%d") + " 00:00:00"
+    range_end = target_date.strftime("%Y-%m-%d") + " 23:59:59"
 
     try:
         # Query: Get all prices in range for these stations
+        # Ordered by date DESC so we get the most recent first
         res = (
             client.table("prices")
             .select("station_uuid, date, e5, e10, diesel")
@@ -334,6 +349,7 @@ def get_historical_prices_batch(
         )
 
         # Process: Find most recent record per station
+        # Since we ordered DESC, the first occurrence is the most recent
         prices_map: Dict[str, FuelPriceDict] = {}
         seen: Set[str] = set()
 
@@ -347,7 +363,7 @@ def get_historical_prices_batch(
                 }
                 seen.add(uuid)
 
-        # Fill missing with None
+        # Fill missing with None (station had no data in entire fallback window)
         for uuid in station_uuids:
             if uuid not in prices_map:
                 prices_map[uuid] = {"e5": None, "e10": None, "diesel": None}
