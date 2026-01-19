@@ -23,7 +23,7 @@ import json
 import os
 from datetime import datetime, timedelta
 from functools import lru_cache
-from typing import Any, Dict, List, Optional, TypeAlias, Final
+from typing import Any, Dict, List, Optional, Final
 
 import pandas as pd
 from supabase import create_client, Client  # type: ignore
@@ -34,14 +34,15 @@ from src.app.app_errors import DataAccessError, DataQualityError
 # Type Definitions & Constants
 # ==========================================
 
-StationUUID: TypeAlias = str
-FuelType: TypeAlias = str  # 'e5', 'e10', 'diesel'
+# Type aliases using string annotations for Python 3.9 compatibility
+StationUUID = str
+FuelType = str  # 'e5', 'e10', 'diesel'
 
 # DataFrame Schema: ['date', 'price', 'price_change']
-PriceHistoryDF: TypeAlias = pd.DataFrame
+PriceHistoryDF = pd.DataFrame
 
 # DataFrame Schema: ['hour', 'avg_price', 'min_price', 'max_price', 'count']
-HourlyStatsDF: TypeAlias = pd.DataFrame
+HourlyStatsDF = pd.DataFrame
 
 VALID_FUEL_TYPES: Final[List[str]] = ["e5", "e10", "diesel"]
 DEFAULT_HISTORY_DAYS: Final[int] = 14
@@ -84,7 +85,7 @@ def get_station_price_history(
     Fetches raw time-series price data for a specific station.
 
     Args:
-        station_uuid: Tankerkönig UUID.
+        station_uuid: Tankerkoenig UUID.
         fuel_type: 'e5', 'e10', or 'diesel'.
         days: Lookback window size.
 
@@ -156,6 +157,10 @@ def get_station_price_history(
 
         return df
 
+    except DataAccessError:
+        raise
+    except DataQualityError:
+        raise
     except Exception as e:
         raise DataAccessError(
             user_message="Failed to retrieve price history.",
@@ -167,6 +172,10 @@ def get_station_price_history(
 def calculate_hourly_price_stats(df: PriceHistoryDF) -> HourlyStatsDF:
     """
     Aggregates a price history DataFrame by Hour of Day (0-23).
+    
+    IMPORTANT: Uses forward-fill to show the EFFECTIVE price at each hour,
+    not just hours when prices changed. This solves the "sparse data" problem
+    where stations that rarely change prices would show mostly empty charts.
 
     Returns:
         pd.DataFrame: Indexed by 0-23, containing avg/min/max/count.
@@ -176,8 +185,45 @@ def calculate_hourly_price_stats(df: PriceHistoryDF) -> HourlyStatsDF:
     if df.empty:
         return pd.DataFrame(columns=expected_cols)
 
-    # work on copy to avoid side-effects
+    # Work on copy to avoid side-effects
     work_df = df.copy()
+    
+    # Sort by date to ensure forward-fill works correctly
+    work_df = work_df.sort_values("date").reset_index(drop=True)
+    
+    # Create a complete hourly time series and forward-fill prices
+    # This gives us the EFFECTIVE price at each hour, not just when prices changed
+    if len(work_df) >= 2:
+        try:
+            # Get the date range
+            min_date = work_df["date"].min()
+            max_date = work_df["date"].max()
+            
+            # Create hourly index covering the full period
+            hourly_index = pd.date_range(
+                start=min_date.floor('H'),
+                end=max_date.ceil('H'),
+                freq='H'
+            )
+            
+            # Set date as index for resampling
+            work_df = work_df.set_index("date")
+            
+            # Resample to hourly and forward-fill
+            # This means: at each hour, what was the last known price?
+            hourly_prices = work_df["price"].resample('H').last().ffill()
+            
+            # Convert back to DataFrame
+            work_df = pd.DataFrame({
+                "date": hourly_prices.index,
+                "price": hourly_prices.values
+            })
+            
+        except Exception:
+            # If forward-fill fails, fall back to original method
+            work_df = df.copy()
+    
+    # Extract hour of day
     work_df["hour"] = work_df["date"].dt.hour
 
     # Aggregation
@@ -225,6 +271,80 @@ def get_cheapest_and_most_expensive_hours(hourly_df: HourlyStatsDF) -> Dict[str,
     }
 
 
+def filter_price_outliers(df: PriceHistoryDF, method: str = "iqr") -> PriceHistoryDF:
+    """
+    Remove outliers from price history data.
+    
+    These outliers typically appear as sudden drops/spikes that immediately reverse,
+    often caused by data entry errors or API glitches.
+    
+    Args:
+        df: Price history DataFrame with 'date' and 'price' columns
+        method: "iqr" (interquartile range) or "spike" (rapid reversal detection)
+    
+    Returns:
+        Filtered DataFrame with outliers removed
+    """
+    if df is None or df.empty or len(df) < 5:
+        return df
+    
+    df_clean = df.copy()
+    
+    if method == "iqr":
+        # IQR method: remove prices outside 1.5 * IQR
+        Q1 = df_clean["price"].quantile(0.25)
+        Q3 = df_clean["price"].quantile(0.75)
+        IQR = Q3 - Q1
+        
+        # Use wider bounds (2.5 * IQR) since fuel prices can have legitimate variation
+        lower_bound = Q1 - 2.5 * IQR
+        upper_bound = Q3 + 2.5 * IQR
+        
+        df_clean = df_clean[
+            (df_clean["price"] >= lower_bound) & 
+            (df_clean["price"] <= upper_bound)
+        ]
+    
+    elif method == "spike":
+        # Spike detection: remove prices that differ significantly from neighbors
+        # and immediately revert (characteristic of data errors)
+        if len(df_clean) < 3:
+            return df_clean
+        
+        import numpy as np
+        
+        df_clean = df_clean.sort_values("date").reset_index(drop=True)
+        
+        # Calculate price changes
+        # change_in: how we arrived at this point (current - previous)
+        # change_out: how we leave this point (next - current)
+        df_clean["change_in"] = df_clean["price"].diff()
+        df_clean["change_out"] = df_clean["price"].shift(-1) - df_clean["price"]
+        
+        # A spike is when: large change in one direction, immediately followed by
+        # a similar change in the opposite direction
+        threshold = 0.05  # 5 cents minimum change to be considered a spike
+        
+        abs_in = df_clean["change_in"].abs()
+        abs_out = df_clean["change_out"].abs()
+        
+        is_spike = (
+            (abs_in > threshold) &
+            (abs_out > threshold) &
+            # Signs are opposite (spike up then down, or down then up)
+            (df_clean["change_in"] * df_clean["change_out"] < 0) &
+            # The changes are of similar magnitude (within 50%)
+            ((abs_in - abs_out).abs() < 0.5 * np.maximum(abs_in, abs_out))
+        )
+        
+        # Fill NaN values with False (first and last rows)
+        is_spike = is_spike.fillna(False)
+        
+        df_clean = df_clean[~is_spike].drop(columns=["change_in", "change_out"])
+    
+    return df_clean.reset_index(drop=True)
+
+
 # ==========================================
 # Metadata & Utils
 # ==========================================
@@ -236,7 +356,11 @@ def get_station_metadata(station_uuid: StationUUID) -> Dict[str, Any]:
     Cached in memory to reduce DB calls for frequently accessed stations.
     """
     if not station_uuid:
-        raise DataQualityError("Station UUID is missing.")
+        raise DataQualityError(
+            user_message="Station UUID is missing.",
+            remediation="Provide a valid station UUID.",
+            details="station_uuid was empty or None",
+        )
 
     client = _get_supabase_client()
     try:
@@ -248,7 +372,12 @@ def get_station_metadata(station_uuid: StationUUID) -> Dict[str, Any]:
             .execute()
         )
     except Exception as e:
-        raise DataAccessError("Failed to fetch station metadata.", debug=e)
+        # FIX: Changed debug=e to details=str(e)
+        raise DataAccessError(
+            user_message="Failed to fetch station metadata.",
+            remediation="Check database connection and try again.",
+            details=str(e),
+        ) from e
 
     data = response.data
     if not data:
@@ -263,7 +392,7 @@ def get_station_metadata(station_uuid: StationUUID) -> Dict[str, Any]:
 
 def get_opening_hours_display(openingtimes_json: str) -> str:
     """
-    Parses Tankerkönig JSON bitmasks into readable strings.
+    Parses Tankerkoenig JSON bitmasks into readable strings.
 
     Logic:
         The 'applicable_days' field is a 7-bit mask:
@@ -382,5 +511,5 @@ if __name__ == "__main__":
         print("\n✓ Test Complete.")
 
     except Exception as e:
-        print(f"\n✗ Test Failed: {e}")
+        print(f"\n[FAIL] Test Failed: {e}")
         sys.exit(1)

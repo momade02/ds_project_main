@@ -169,8 +169,6 @@ def _render_trip_planner_action() -> SidebarState:
             background: rgba(0,0,0,0.90) !important;
             border: none !important;
             box-shadow: none !important;
-            }
-            .route-dots-right span{
             width: 5px !important;
             height: 5px !important;
             border-radius: 999px !important;
@@ -365,8 +363,8 @@ def _render_trip_planner_action() -> SidebarState:
         value=float(_canonical("min_net_saving_eur", 0.0)),
         key=_w("min_net_saving_eur"),
         help=(
-            "Minimum required net benefit for accepting a detour. Net saving = fuel price saving − "
-            "detour fuel cost − optional time cost. Set to 0 to allow any positive or zero net saving."
+            "Minimum required net benefit for accepting a detour. Net saving = fuel price saving - "
+            "detour fuel cost - optional time cost. Set to 0 to allow any positive or zero net saving."
         ),
     )
 
@@ -524,7 +522,7 @@ def _render_help_action() -> SidebarState:
         (
             "Min net saving (€)",
             str(float(_canonical("min_net_saving_eur", 0.0))),
-            "Minimum required net benefit for accepting a detour. Net saving = fuel price saving − detour fuel cost − optional time cost.",
+            "Minimum required net benefit for accepting a detour. Net saving = fuel price saving - detour fuel cost - optional time cost.",
         ),
         (
             "Stations open at ETA",
@@ -543,9 +541,116 @@ def _render_help_action() -> SidebarState:
         with st.sidebar.expander(label, expanded=False):
             st.markdown(f"**Current value:** {value}")
             st.write(help_text)
+    
+    # Additional help topics
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### Additional Topics")
+    
+    with st.sidebar.expander("Savings Calculator Rounding", expanded=False):
+        st.markdown("""
+**Why do calculated values sometimes differ by a few cents?**
+
+The Savings Calculator uses **full precision** internally for accurate results, but displays prices rounded to 3 decimal places.
+
+**Example:**
+- Displayed prices: €1.887/L - €1.727/L = €0.160/L
+- Actual prices: €1.8874/L - €1.7265/L = €0.1609/L
+- At 226L: 226 x €0.1609 = **€36.36** (shown)
+- User calculates: 226 x €0.160 = **€36.16** (expected)
+
+This 20-cent difference comes from the hidden precision in the raw prices. The calculated result is mathematically correct - the small discrepancy is purely a display artifact.
+
+**Why not round first?** Rounding before calculation would accumulate errors over multiple operations, potentially leading to larger inaccuracies in complex calculations like net savings with detour costs.
+""")
 
     # Return a SidebarState compatible object (keep cached values, only change view)
     return SidebarState(**{**state.__dict__, "view": "Help"})
+
+
+def render_station_help():
+    """
+    Render help content for Station Details page (Page 03).
+    Explains the key concepts and features available.
+    """
+    st.sidebar.markdown("### Help")
+    st.sidebar.markdown(
+        "Below are explanations of the key features on this page."
+    )
+    
+    # Rating System
+    with st.sidebar.expander("Rating System"):
+        st.markdown("""
+**Traffic Light Rating**
+
+The colored circles show how this station compares to others:
+
+**In Trip Planner mode** (route-based):
+- 🟢 **Green** = Top 33% (best value/price)
+- 🟡 **Yellow** = Middle 33% (average)
+- 🔴 **Red** = Bottom 33% (worst value/price)
+- ⚪ **No Rating** = Station did not meet ranking criteria (e.g., excessive detour, closed at ETA, filtered by brand, or insufficient data)
+
+**In Explorer mode** (location-based):
+- ⚪ **Explorer** = No ranking available. Explorer searches show stations near a location, not along a route. Rankings require route context (detours, ETAs).
+
+**With Economics enabled:** Rating based on net savings (price advantage minus detour costs).
+
+**Without Economics:** Rating based on predicted price only.
+        """)
+    
+    # Savings Calculator / Price Comparison
+    with st.sidebar.expander("Savings / Price Comparison"):
+        st.markdown("""
+**Trip Planner mode: Savings Calculator**
+
+We compare this station against the **worst on-route** price (most expensive station directly on your route, no detour needed).
+
+- **Gross Savings** = Price difference × Liters
+- **Net Savings** = Gross Savings − Detour Costs
+  - Detour fuel cost: extra km × consumption × price
+  - Time cost: extra minutes × your hourly rate
+- **Break-even:** Minimum liters needed for the detour to be worthwhile.
+
+**Explorer mode: Price Comparison**
+
+Shows this station's price vs the cheapest and most expensive in your search results. No calculations - just a quick overview to see where this station stands.
+        """)
+    
+    # Best Time to Refuel
+    with st.sidebar.expander("Best Time to Refuel"):
+        st.markdown("""
+**Hourly Price Patterns**
+
+Based on 14 days of historical data, we show when prices are typically:
+- 🟢 Cheapest (often early morning or late evening)
+- 🟡 Average
+- 🔴 Most expensive (often mid-day)
+
+**Heatmap:** Shows price patterns by day and hour. White cells mean no data was recorded for that time slot.
+
+**When is data "not enough"?**
+
+We need at least 20 price changes across 4 different hours in the last 14 days. In our experience, stations with fewer updates rarely change prices, making hourly patterns unreliable. A typical station updates prices 3-5 times per day.
+        """)
+    
+    # Station Selection
+    with st.sidebar.expander("Station Selection"):
+        st.markdown("""
+**Station Source**
+
+Use the radio button to switch between:
+- **From latest route run:** Stations from your Trip Planner route
+- **From station explorer:** Stations from your proximity search
+
+**Ranked vs Not Ranked** (Trip Planner only)
+
+- **Ranked:** Stations that passed all your filters (detour limits, opening hours, etc.)
+- **Not Ranked:** Stations excluded due to excessive detour, being closed at ETA, or other filters.
+
+**Explorer stations:** No ranking - these are simply stations near your searched location.
+
+**Comparison:** Select stations from the sidebar to compare historical prices.
+        """)
 
 
 def render_sidebar(
@@ -599,25 +704,27 @@ def render_sidebar(
 
 
 # =============================================================================
-# Shared sidebar shell (Pages 2—4)
+# Shared sidebar shell (Pages 2-4)
 # =============================================================================
 
 def render_sidebar_shell(
     *,
     action_renderer: Optional[Callable[[], None]] = None,
+    help_renderer: Optional[Callable[[], None]] = None,
     action_placeholder: str = "Placeholder: Action",
     help_placeholder: str = "Placeholder: Help (will be added later).",
     settings_placeholder: str = "Placeholder: Settings (will be added later).",
     profile_placeholder: str = "Placeholder: Profile (will be added later).",
 ) -> str:
     """
-    Shared 4-tab sidebar shell for Pages 2—4 (and optionally others):
+    Shared 4-tab sidebar shell for Pages 2-4 (and optionally others):
       - Action
       - Help
       - Settings
       - Profile
 
     Action tab renders page-specific controls via action_renderer.
+    Help tab renders page-specific help via help_renderer.
     Other tabs are placeholders for now.
     """
     if "sidebar_view" not in st.session_state:
@@ -642,7 +749,10 @@ def render_sidebar_shell(
             else:
                 st.info(action_placeholder)
         elif view == "Help":
-            st.info(help_placeholder)
+            if help_renderer is not None:
+                help_renderer()
+            else:
+                st.info(help_placeholder)
         elif view == "Settings":
             st.info(settings_placeholder)
         else:
@@ -810,16 +920,37 @@ def render_station_selector(
 
     # Render source selector (only if both exist)
     if len(available_sources) >= 2:
-        # index based on inferred / stored source
         src_ids = [sid for sid, _ in available_sources]
-        default_idx = src_ids.index(current_source) if current_source in src_ids else 0
+        radio_key = f"{widget_key_prefix}_source_radio"
+        
+        # Determine default index:
+        # - If radio widget already has a value (user interacted), use that
+        # - Otherwise, use the session state source
+        if radio_key in st.session_state:
+            # User has already interacted with radio - find index from their selection
+            existing_label = st.session_state.get(radio_key)
+            existing_source = next((sid for sid, lbl in available_sources if lbl == existing_label), None)
+            if existing_source in src_ids:
+                default_idx = src_ids.index(existing_source)
+            else:
+                default_idx = src_ids.index(current_source) if current_source in src_ids else 0
+        else:
+            # First render - use session state source
+            default_idx = src_ids.index(current_source) if current_source in src_ids else 0
+        
         chosen_source_label = st.sidebar.radio(
             "Station source",
             options=[lbl for _, lbl in available_sources],
             index=default_idx,
-            key=f"{widget_key_prefix}_source_radio",
+            key=radio_key,
+            help="Switch between stations from your Trip Planner route or from your Station Explorer search."
         )
         source = next((sid for sid, lbl in available_sources if lbl == chosen_source_label), src_ids[0])
+        
+        # Update session state to match user's radio selection
+        # This ensures the header ("Explorer Mode" vs "Trip Planner Settings") stays in sync
+        if source != current_source:
+            st.session_state[selected_source_key] = source
     elif len(available_sources) == 1:
         source = available_sources[0][0]
         # Keep the UI compact; still show where selection comes from.
@@ -867,17 +998,31 @@ def render_station_selector(
                 options.append((uid, base))
 
     # Ensure the currently selected UUID is present (even if not in top-N lists)
+    # BUT only if it actually belongs to this source!
     if current_uuid and current_uuid not in {u for u, _ in options}:
-        st_obj = None
-        if isinstance(current_station, dict):
-            st_obj = current_station
-        elif current_uuid in uuid_to_station:
-            st_obj = uuid_to_station.get(current_uuid)
+        # Check if current station belongs to this source
+        belongs_to_source = False
+        
+        if source == "route":
+            # Check if UUID exists in ranked or stations lists
+            route_uuids = {_station_uuid(s) for s in (ranked + stations) if _station_uuid(s)}
+            belongs_to_source = current_uuid in route_uuids
+        else:  # explorer
+            # Check if UUID exists in explorer_results
+            explorer_uuids = {_station_uuid(s) for s in explorer_results if _station_uuid(s)}
+            belongs_to_source = current_uuid in explorer_uuids
+        
+        if belongs_to_source:
+            st_obj = None
+            if isinstance(current_station, dict):
+                st_obj = current_station
+            elif current_uuid in uuid_to_station:
+                st_obj = uuid_to_station.get(current_uuid)
 
-        if isinstance(st_obj, dict):
-            options.insert(0, (current_uuid, _build_station_label(st_obj, tag="current", rank_index=None)))
-        else:
-            options.insert(0, (current_uuid, f"{current_uuid} [current]"))
+            if isinstance(st_obj, dict):
+                options.insert(0, (current_uuid, _build_station_label(st_obj, tag="current", rank_index=None)))
+            else:
+                options.insert(0, (current_uuid, f"{current_uuid} [current]"))
 
     if not options:
         st.sidebar.info("No stations available in this source. Try the other source or run a search/route.")
@@ -963,6 +1108,9 @@ def render_comparison_selector(
     current_station_uuid: str,
     max_ranked: int = 10,
     max_excluded: int = 50,
+    explorer_results: Optional[List[Dict[str, Any]]] = None,
+    max_explorer: int = 50,
+    active_source: Optional[str] = None,
 ) -> Optional[str]:
     """
     Render a comparison station selector in the sidebar.
@@ -974,6 +1122,9 @@ def render_comparison_selector(
         current_station_uuid: UUID of the currently selected station (to exclude)
         max_ranked: Maximum number of ranked stations to show
         max_excluded: Maximum number of excluded stations to show
+        explorer_results: Optional list of stations from Explorer
+        max_explorer: Maximum number of explorer stations to show
+        active_source: "route" or "explorer" - determines which stations to show
     
     Returns:
         UUID of the selected comparison station, or None if none selected
@@ -981,51 +1132,102 @@ def render_comparison_selector(
     st.sidebar.markdown("---")
     st.sidebar.markdown("**Compare stations**")
     
-    if not ranked and not stations:
-        st.sidebar.caption("Run Trip Planner to enable comparison.")
+    explorer_results = explorer_results or []
+    
+    # Determine active source from radio widget if not explicitly provided
+    if active_source is None:
+        radio_key = "station_details_source_radio"
+        if radio_key in st.session_state:
+            radio_label = st.session_state.get(radio_key, "")
+            if "explorer" in radio_label.lower():
+                active_source = "explorer"
+            elif "route" in radio_label.lower():
+                active_source = "route"
+        if active_source is None:
+            active_source = st.session_state.get("selected_station_source", "route")
+    
+    if not ranked and not stations and not explorer_results:
+        st.sidebar.caption("Run Trip Planner or Explorer to enable comparison.")
         return None
     
-    # Build UUID to label mapping - same structure as render_station_selector
+    # Build UUID to label mapping based on active source
     uuid_labels: Dict[str, str] = {}
     
-    # First: ranked stations with #1, #2, etc.
-    ranked_uuids = set()
-    for i, s in enumerate(ranked[:max_ranked], start=1):
-        u = _station_uuid(s)
-        if not u:
-            continue
-        ranked_uuids.add(u)
-        nm = _station_name_for_comparison(s)
-        br = _station_brand_for_comparison(s)
-        city = _safe_text(s.get("city", ""))
+    if active_source == "explorer":
+        # EXPLORER MODE: Show only explorer stations
+        for s in explorer_results[:max_explorer]:
+            u = _station_uuid(s)
+            if not u or u in uuid_labels:
+                continue
+            nm = _station_name_for_comparison(s)
+            br = _station_brand_for_comparison(s)
+            city = _safe_text(s.get("city", ""))
+            
+            label = f"{nm}"
+            if br and br != nm:
+                label += f" ({br})"
+            if city:
+                label += f" · {city}"
+            
+            # Add distance if available
+            dist = s.get("distance_km")
+            try:
+                if dist is not None:
+                    label += f" · {float(dist):.1f} km"
+            except (TypeError, ValueError):
+                pass
+            
+            label += " [explorer]"
+            uuid_labels[u] = label
         
-        label = f"#{i} {nm}"
-        if br and br != nm:
-            label += f" ({br})"
-        if city:
-            label += f" · {city}"
-        label += " [ranked]"
-        
-        uuid_labels[u] = label
+        if not uuid_labels:
+            st.sidebar.caption("No explorer stations available for comparison.")
+            return None
     
-    # Second: excluded stations (in stations but not in ranked)
-    excluded = [s for s in stations if (_station_uuid(s) and _station_uuid(s) not in ranked_uuids)]
-    for s in excluded[:max_excluded]:
-        u = _station_uuid(s)
-        if not u or u in uuid_labels:
-            continue
-        nm = _station_name_for_comparison(s)
-        br = _station_brand_for_comparison(s)
-        city = _safe_text(s.get("city", ""))
+    else:
+        # ROUTE MODE: Show ranked and excluded stations
+        # First: ranked stations with #1, #2, etc.
+        ranked_uuids = set()
+        for i, s in enumerate(ranked[:max_ranked], start=1):
+            u = _station_uuid(s)
+            if not u:
+                continue
+            ranked_uuids.add(u)
+            nm = _station_name_for_comparison(s)
+            br = _station_brand_for_comparison(s)
+            city = _safe_text(s.get("city", ""))
+            
+            label = f"#{i} {nm}"
+            if br and br != nm:
+                label += f" ({br})"
+            if city:
+                label += f" · {city}"
+            label += " [ranked]"
+            
+            uuid_labels[u] = label
         
-        label = f"{nm}"
-        if br and br != nm:
-            label += f" ({br})"
-        if city:
-            label += f" · {city}"
-        label += " [excluded]"
+        # Second: excluded stations (in stations but not in ranked)
+        excluded = [s for s in stations if (_station_uuid(s) and _station_uuid(s) not in ranked_uuids)]
+        for s in excluded[:max_excluded]:
+            u = _station_uuid(s)
+            if not u or u in uuid_labels:
+                continue
+            nm = _station_name_for_comparison(s)
+            br = _station_brand_for_comparison(s)
+            city = _safe_text(s.get("city", ""))
+            
+            label = f"{nm}"
+            if br and br != nm:
+                label += f" ({br})"
+            if city:
+                label += f" · {city}"
+            label += " [excluded]"
+            
+            uuid_labels[u] = label
         
-        uuid_labels[u] = label
+        if not uuid_labels:
+            st.sidebar.caption("No route stations available for comparison.")
+            return None
     
     # Filter out the current station
     candidates = [u for u in uuid_labels.keys() if u and u != current_station_uuid]
@@ -1036,7 +1238,7 @@ def render_comparison_selector(
     
     # Add "None" option at the beginning
     options_with_none = [""] + candidates
-    labels_with_none = {"": "— Select a station —"}
+    labels_with_none = {"": "- Select a station -"}
     labels_with_none.update(uuid_labels)
     
     # Get current selection from session state
@@ -1061,8 +1263,8 @@ def render_comparison_selector(
         options=options_with_none,
         index=default_idx,
         format_func=lambda u: labels_with_none.get(u, uuid_labels.get(u, u)),
-        key="comparison_station_selectbox",
-        help="Select a station to compare historical prices.",
+        key=f"comparison_station_selectbox_{active_source}",
+        help=f"Select a station to compare historical prices ({len(candidates)} available).",
     )
     
     # Store selection in session state
