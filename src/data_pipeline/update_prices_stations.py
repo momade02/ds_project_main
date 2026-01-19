@@ -236,12 +236,12 @@ def update_prices():
         # Handle NaN values
         df = df.where(pd.notnull(df), None)
         
-        # === DELETION STEP 1: Old data (>14 days) - BATCHED BY DAY ===
+        # === DELETION STEP 1: Old data (>14 days) - BATCHED BY HOUR ===
         cutoff_date = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
-        logger.info(f"Deleting prices older than {cutoff_date} (batched by day)...")
+        logger.info(f"Deleting prices older than {cutoff_date} (batched by hour)...")
         
         deletion_success = False
-        total_deleted_days = 0
+        total_deleted_hours = 0
         try:
             # Find oldest date in database
             oldest_result = supabase.table('prices').select('date').order('date', desc=False).limit(1).execute()
@@ -251,23 +251,23 @@ def update_prices():
                 oldest_date = datetime.strptime(oldest_date_str, '%Y-%m-%d')
                 cutoff_dt = datetime.strptime(cutoff_date, '%Y-%m-%d')
                 
-                # Delete day by day (oldest first)
-                current_date = oldest_date
-                while current_date < cutoff_dt:
-                    day_start = current_date.strftime('%Y-%m-%d 00:00:00')
-                    day_end = current_date.strftime('%Y-%m-%d 23:59:59')
+                # Delete hour by hour (oldest first)
+                current_dt = oldest_date
+                while current_dt < cutoff_dt:
+                    hour_start = current_dt.strftime('%Y-%m-%d %H:00:00')
+                    hour_end = current_dt.strftime('%Y-%m-%d %H:59:59')
                     
                     try:
-                        supabase.table('prices').delete().gte('date', day_start).lte('date', day_end).execute()
-                        total_deleted_days += 1
-                        if total_deleted_days % 5 == 0:
-                            logger.info(f"  Deleted {total_deleted_days} days so far...")
-                    except Exception as day_error:
-                        logger.warning(f"  Could not delete {current_date.strftime('%Y-%m-%d')}: {day_error}")
+                        supabase.table('prices').delete().gte('date', hour_start).lte('date', hour_end).execute()
+                        total_deleted_hours += 1
+                        if total_deleted_hours % 24 == 0:  # Log every day (24 hours)
+                            logger.info(f"  Deleted {total_deleted_hours} hours ({total_deleted_hours // 24} days) so far...")
+                    except Exception as hour_error:
+                        logger.warning(f"  Could not delete {hour_start}: {hour_error}")
                     
-                    current_date += timedelta(days=1)
+                    current_dt += timedelta(hours=1)
                 
-                logger.info(f"✓ Old price records deleted ({total_deleted_days} days removed)")
+                logger.info(f"✓ Old price records deleted ({total_deleted_hours} hours = {total_deleted_hours // 24} days removed)")
                 deletion_success = True
             else:
                 logger.info("✓ No old data to delete")
