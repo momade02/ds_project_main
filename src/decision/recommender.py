@@ -588,6 +588,8 @@ def recommend_best_station(
     min_net_saving_eur: float = 0.0,
     onroute_max_detour_km: float = ONROUTE_MAX_DETOUR_KM,
     onroute_max_detour_min: float = ONROUTE_MAX_DETOUR_MIN,
+    min_distance_km: Optional[float] = None,
+    max_distance_km: Optional[float] = None,
 ) -> Optional[StationDict]:
     """
     Wrapper around ranking that returns only the top-ranked station.
@@ -605,6 +607,8 @@ def recommend_best_station(
         min_net_saving_eur=min_net_saving_eur,
         onroute_max_detour_km=onroute_max_detour_km,
         onroute_max_detour_min=onroute_max_detour_min,
+        min_distance_km=min_distance_km,
+        max_distance_km=max_distance_km,
     )
     
     return ranked[0] if ranked else None

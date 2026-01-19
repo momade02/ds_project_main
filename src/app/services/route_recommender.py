@@ -125,6 +125,8 @@ def run_route_recommendation(
             "use_economics": inputs.use_economics,
             "debug_mode": inputs.debug_mode,
             "filter_log": audit_log,
+            "min_distance": inputs.min_distance_km,  # Add min_distance to last_run
+            "max_distance": inputs.max_distance_km,  # Add max_distance to last_run
         }
 
         return last_run
