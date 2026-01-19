@@ -10,7 +10,7 @@ import streamlit as st
 
 from ui.styles import apply_app_css
 
-from ui.sidebar import render_sidebar_shell
+from ui.sidebar import render_sidebar, render_sidebar_shell, _render_help_action
 
 from config.settings import load_env_once
 
@@ -220,7 +220,7 @@ def main() -> None:
     if _preserve_sidebar_view is not None:
         st.session_state["sidebar_view"] = _preserve_sidebar_view
     if _preserve_map_style_mode is not None:
-        st.session_state["map_style_mode"] = _preserve_map_style_mode  # <-- ADD THIS
+        st.session_state["map_style_mode"] = _preserve_map_style_mode
 
     # ------------------------------------------------------------------
     # Page 04 hard overrides (do not expose as UI on this page)
@@ -376,7 +376,7 @@ def main() -> None:
         ):
             _sync(k)
 
-    sidebar_view = render_sidebar_shell(action_renderer=_action_tab)
+    sidebar_view = render_sidebar_shell(action_renderer=_action_tab, help_renderer = _render_help_action)
 
     # Read values from session_state so they remain available even on non-Action tabs
     use_realtime = True

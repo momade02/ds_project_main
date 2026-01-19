@@ -292,6 +292,18 @@ def _compute_value_view_stations(
     except (TypeError, ValueError):
         cap_min_f = float("inf")
 
+    # New: distance window (hard constraints)
+    min_distance_km = constraints.get("min_distance_km")
+    max_distance_km = constraints.get("max_distance_km")
+    try:
+        min_distance_km_f = float(min_distance_km) if min_distance_km is not None else 0.0
+    except (TypeError, ValueError):
+        min_distance_km_f = 0.0
+    try:
+        max_distance_km_f = float(max_distance_km) if max_distance_km is not None else float("inf")
+    except (TypeError, ValueError):
+        max_distance_km_f = float("inf")
+
     # On-route thresholds (prefer decision-layer thresholds if present; else reuse constants).
     onroute_km = filter_thresholds.get("onroute_max_detour_km", None)
     onroute_min = filter_thresholds.get("onroute_max_detour_min", None)
@@ -321,7 +333,7 @@ def _compute_value_view_stations(
         except (TypeError, ValueError):
             continue
 
-        # must be within caps
+        # must be within caps (detour)
         try:
             km = float((s or {}).get("detour_distance_km") or 0.0)
         except (TypeError, ValueError):
@@ -334,8 +346,38 @@ def _compute_value_view_stations(
         km = max(km, 0.0)
         mins = max(mins, 0.0)
 
-        if km <= cap_km_f and mins <= cap_min_f:
-            hard_pass.append(s)
+        if km > cap_km_f or mins > cap_min_f:
+            continue
+
+        # --- NEW: enforce min/max distance constraints ---
+        # Try multiple possible distance keys (km or meters)
+        dist_km = None
+        if (s or {}).get("distance_to_station_km") is not None:
+            try:
+                dist_km = float((s or {}).get("distance_to_station_km"))
+            except (TypeError, ValueError):
+                dist_km = None
+        if dist_km is None and (s or {}).get("distance_km") is not None:
+            try:
+                dist_km = float((s or {}).get("distance_km"))
+            except (TypeError, ValueError):
+                dist_km = None
+        # fallback to meter-based fields
+        if dist_km is None:
+            for mkey in ("distance_along_m", "distance_to_station_m", "distance_m", "dist_m"):
+                if (s or {}).get(mkey) is not None:
+                    try:
+                        dist_km = float((s or {}).get(mkey)) / 1000.0
+                        break
+                    except (TypeError, ValueError):
+                        dist_km = None
+        # If distance is unknown, skip the min/max distance filtering
+        # (we cannot conclude it breaks the constraints).
+        if dist_km is not None:
+            if dist_km < min_distance_km_f or dist_km > max_distance_km_f:
+                continue
+
+        hard_pass.append(s)
 
     # Worst on-route price among hard-pass
     onroute_prices: List[float] = []
@@ -374,6 +416,8 @@ def _compute_value_view_stations(
         "pred_key": pred_key,
         "cap_km": cap_km_f,
         "cap_min": cap_min_f,
+        "min_distance_km": float(min_distance_km_f),
+        "max_distance_km": float(max_distance_km_f),
         "onroute_km_th": float(onroute_km_th),
         "onroute_min_th": float(onroute_min_th),
         "hard_pass_n": int(len(hard_pass)),
@@ -422,7 +466,7 @@ def _display_best_station(
     econ_baseline_key = f"econ_baseline_price_{fuel_code}"
 
     if not best_station:
-        st.info("No station could be recommended (no valid predictions).")
+        st.info("No station could be recommended (no valid predictions or constraints can't be satisfied).")
         return
 
     station_name = best_station.get("tk_name") or best_station.get("osm_name") or best_station.get("name")
@@ -700,7 +744,7 @@ def _display_best_station(
                 with col7:
                     st.metric("Gross saving vs on-route median", _format_eur(gross_vs_median))
                 with col8:
-                    st.metric("Net saving vs on-route median", _format_eur(net_vs_median))
+                    st.metric("Net saving vs onroute median", _format_eur(net_vs_median))
                 with col9:
                     st.metric("Net saving vs on-route best", _format_eur(net_vs_best))
 
@@ -1005,7 +1049,8 @@ def main() -> None:
     min_net_saving_eur = sidebar.min_net_saving_eur
     filter_closed_at_eta = sidebar.filter_closed_at_eta
     brand_filter_selected = list(getattr(sidebar, "brand_filter_selected", []) or [])
-
+    min_distance_km = sidebar.min_distance_km  
+    max_distance_km = sidebar.max_distance_km 
 
     debug_mode = bool(st.session_state.get("debug_mode", False))
 
@@ -1027,9 +1072,9 @@ def main() -> None:
             "\n- You can further customize the recommendation by adjusting the other parameters in the sidebar."
             "\n\n"
             "**Need help?**"
-            "\n- :computer: Hover over the $\\text{\\textcircled ?}$ info buttons in the sidebar to learn more about the system."
-            "\n- :computer:/:iphone: You can also open the $\\text{\\textcircled ?}$ section at the top of the sidebar for even more guidance.\n\n"
-            "\n- An **introduction video** is available below ↓.\n\n"
+            "\n- Hover over the $\\text{\\textcircled ?}$ info buttons in the sidebar to receive guidance."
+            "\n- In addition an **introduction video** is available below ↓.\n\n"            
+            "\n- You can also open the $\\text{\\textcircled ?}$ section at the top of the sidebar for a more detailed explanation of the system components.\n\n"
             "**What you will see as an output:**"
             "\n- Your maximum potential savings."
             "\n- The recommended station with key details (current/predicted price, distance along the route and expected detour)."
@@ -1059,6 +1104,8 @@ def main() -> None:
         "max_detour_min": max_detour_min,
         "min_net_saving_eur": min_net_saving_eur,
         "filter_closed_at_eta": bool(filter_closed_at_eta),
+        "min_distance_km": min_distance_km,
+        "max_distance_km": max_distance_km,
     }
     params_hash = hashlib.sha256(
         json.dumps(params, sort_keys=True, default=str).encode("utf-8")
@@ -1097,6 +1144,8 @@ def main() -> None:
                 max_detour_time_min=max_detour_min,
                 max_detour_distance_km=max_detour_km,
                 min_net_saving_eur=min_net_saving_eur,
+                min_distance_km=min_distance_km,  # Added min_distance_km
+                max_distance_km=max_distance_km   # Added max_distance_km
             )
 
             integration_kwargs = {
@@ -1279,6 +1328,8 @@ def main() -> None:
                 "litres_to_refuel": float(litres_to_refuel),
                 "consumption_l_per_100km": float(consumption_l_per_100km),
                 "value_of_time_eur_per_hour": float(value_of_time_eur_per_hour),
+                "min_distance_km": float(min_distance_km),
+                "max_distance_km": float(max_distance_km),
             "brand_filter_selected": list(brand_filter_selected),
             "brand_filter_aliases": dict(brand_filter_aliases_used),
             "brand_filtered_out_n": int(brand_filtered_out_n),

@@ -365,6 +365,7 @@ def create_map_visualization(
             "<div><b>Current</b>: {current_price} &nbsp; <b>Pred</b>: {predicted_price}</div>"
             "<div><b>Detour</b>: {detour_km} / {detour_min}</div>"
             "<div><b>Net saving</b>: {net_saving}</div>"
+            "<div><b>Distance along route</b>: {distance_along_km} km</div>"
             "</div>"
         ),
         "style": {
@@ -536,6 +537,10 @@ def create_mapbox_gl_html(
             except Exception:
                 save_vs_worst_s = "—"
 
+        # Add distance_along_m to the properties for each station
+        distance_along_m = s.get("distance_along_m", 0)
+        distance_along_km = distance_along_m / 1000.0 if distance_along_m else None
+
         features.append(
             {
                 "type": "Feature",
@@ -556,6 +561,9 @@ def create_mapbox_gl_html(
                     "is_selected": is_selected,
                     "marker_category": str(props_category or ("best" if is_best else "better")),
                     "distance_km": str(distance_km_s),
+                    # Preserve raw meters and a formatted km string so JS can show/format it reliably
+                    "distance_along_m": distance_along_m,
+                    "distance_along_km": (f"{distance_along_km:.1f}" if distance_along_km is not None else "—"),
                 },
             }
         )
@@ -730,13 +738,7 @@ def create_mapbox_gl_html(
         }}
         if (cat === "best" || isBest) {{
           fill = "#00C800";     // best = green
-          stroke = "#FFFFFF";
-        }}
-
-        // Selection override (blue)
-        if (isSelected) {{
-          fill = "#1E90FF";
-          stroke = "#FFFFFF";
+          stroke = "#000000";
         }}
 
         const el = document.createElement("div");
@@ -806,9 +808,9 @@ def create_mapbox_gl_html(
                             ${{addrHtml}}
                             <div><b>Current</b>: ${{esc(curP)}} &nbsp; <b>Pred</b>: ${{esc(predP)}}</div>
                             <div><b>Detour</b>: ${{esc(detKm)}} &nbsp; (${{esc(detMin)}})</div>
+                            <div><b>Distance to station</b>: ${{esc(props.distance_along_km || "-")}} km</div>
                             <div><b>Safe up to</b>: ${{esc(save)}}</div>
-                        </div>
-                    `;
+                        </div>`;
                 }}
 
                 popup
