@@ -2035,28 +2035,51 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
                 return "—"
             return _fmt_eur(v)
 
-        def _onroute_price_stats() -> Tuple[Optional[float], Optional[float], Optional[float]]:
-            """Return (best, median, worst) predicted price among on-route stations."""
+        def _onroute_price_stats(
+            universe: List[Dict[str, Any]],
+        ) -> Tuple[Optional[float], Optional[float], Optional[float], int]:
+            """
+            Return (best, median, worst, n_onroute) predicted price among on-route stations
+            within the provided universe.
+
+            IMPORTANT: We intentionally compute benchmarks from the hard-feasible universe
+            (post hard-constraints), not from `ranked`, because `ranked` may be economically
+            filtered in a way that removes all on-route stations.
+            """
             vals: List[float] = []
-            for s in ranked:
-                p = _as_float(s.get(pred_key))
+            n_onroute = 0
+
+            for s in universe:
+                p = _as_float((s or {}).get(pred_key))
                 if p is None or p < MIN_VALID_PRICE_EUR_L:
                     continue
+
                 km, mins = _detour_metrics(s)
-                # Keep definition consistent with other Page-02 computations.
                 if km <= 1.0 and mins <= 5.0:
+                    n_onroute += 1
                     vals.append(float(p))
 
             if not vals:
-                return None, None, None
+                return None, None, None, n_onroute
 
             ser = pd.Series(vals, dtype="float")
             best = float(ser.min())
             median = float(ser.median())
             worst = float(ser.max())
-            return best, median, worst
+            return best, median, worst, n_onroute
 
-        on_best, on_median, on_worst = _onroute_price_stats()
+        # Benchmark universe = hard-feasible (stable, post hard constraints)
+        on_best, on_median, on_worst, onroute_n = _onroute_price_stats(hard_feasible)
+
+        onroute_benchmark_available = (
+            on_best is not None and on_median is not None and on_worst is not None
+        )
+
+        if not onroute_benchmark_available:
+            st.info(
+                "On-route benchmark unavailable for this run: no on-route station (≤ 1.0 km detour and ≤ 5 min detour) "
+                "with a valid predicted price remained after hard constraints. Benchmark-driven KPIs are shown as N/A."
+            )
 
         chosen_pred = _as_float(best_station.get(pred_key)) if isinstance(best_station, dict) else None
         chosen_curr = _as_float(best_station.get(curr_key)) if isinstance(best_station, dict) else None
@@ -2078,13 +2101,20 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
             return float(g) - float(detour_fuel_cost) - float(time_cost)
 
         # Primary KPIs
+        net_vs_median_str = (
+            "N/A" if not onroute_benchmark_available else _fmt_eur_or_dash(_net_saving(on_median))
+        )
+        net_vs_worst_str = (
+            "N/A" if not onroute_benchmark_available else _fmt_eur_or_dash(_net_saving(on_worst))
+        )
+
         primary_cards: List[Tuple[str, str]] = [
             ("Best (pred)", _fmt_price_or_dash(chosen_pred)),
             ("Best (current)", _fmt_price_or_dash(chosen_curr)),
             ("Detour fuel", _fmt_eur_or_dash(detour_fuel_cost)),
             ("Time cost", _fmt_eur_or_dash(time_cost)),
-            ("Net vs median", _fmt_eur_or_dash(_net_saving(on_median))),
-            ("Net vs worst", _fmt_eur_or_dash(_net_saving(on_worst))),
+            ("Net vs median", net_vs_median_str),
+            ("Net vs worst", net_vs_worst_str),
         ]
         render_card_grid(primary_cards, cols=3)
 
@@ -2098,9 +2128,9 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
             unsafe_allow_html=True,
         )
         benchmark_cards: List[Tuple[str, str]] = [
-            ("On-route best", _fmt_price_or_dash(on_best)),
-            ("On-route median", _fmt_price_or_dash(on_median)),
-            ("On-route worst", _fmt_price_or_dash(on_worst)),
+            ("On-route best", "N/A" if not onroute_benchmark_available else _fmt_price_or_dash(on_best)),
+            ("On-route median", "N/A" if not onroute_benchmark_available else _fmt_price_or_dash(on_median)),
+            ("On-route worst", "N/A" if not onroute_benchmark_available else _fmt_price_or_dash(on_worst)),
         ]
         render_card_grid(benchmark_cards, cols=3)
 
@@ -2108,14 +2138,14 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
         with st.expander("**Savings breakdown**", expanded=False):
 
             gross_cards: List[Tuple[str, str]] = [
-                ("Gross vs best", _fmt_eur_or_dash(_gross_saving(on_best))),
-                ("Gross vs median", _fmt_eur_or_dash(_gross_saving(on_median))),
-                ("Gross vs worst", _fmt_eur_or_dash(_gross_saving(on_worst))),
+                ("Gross vs best", "N/A" if not onroute_benchmark_available else _fmt_eur_or_dash(_gross_saving(on_best))),
+                ("Gross vs median", "N/A" if not onroute_benchmark_available else _fmt_eur_or_dash(_gross_saving(on_median))),
+                ("Gross vs worst", "N/A" if not onroute_benchmark_available else _fmt_eur_or_dash(_gross_saving(on_worst))),
             ]
             net_cards: List[Tuple[str, str]] = [
-                ("Net vs best", _fmt_eur_or_dash(_net_saving(on_best))),
-                ("Net vs median", _fmt_eur_or_dash(_net_saving(on_median))),
-                ("Net vs worst", _fmt_eur_or_dash(_net_saving(on_worst))),
+                ("Net vs best", "N/A" if not onroute_benchmark_available else _fmt_eur_or_dash(_net_saving(on_best))),
+                ("Net vs median", "N/A" if not onroute_benchmark_available else _fmt_eur_or_dash(_net_saving(on_median))),
+                ("Net vs worst", "N/A" if not onroute_benchmark_available else _fmt_eur_or_dash(_net_saving(on_worst))),
             ]
 
             render_card_grid(gross_cards, cols=3)

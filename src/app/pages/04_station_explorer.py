@@ -479,7 +479,7 @@ def main() -> None:
         )
 
         st.info(
-            "**Get started:** Open the sidebar, set your search location and filters, then click **Search Stations**."
+            "**Get started:** Open the sidebar, set your search location and filters -> click **Search Stations**."
         )
         return
 
