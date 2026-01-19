@@ -52,6 +52,10 @@ class SidebarState:
     # Brand whitelist (canonical brand labels)
     brand_filter_selected: list[str]
 
+    # Distance to station filters (km)
+    min_distance_km: float
+    max_distance_km: float
+
 
 def _ss(key: str, default: Any) -> Any:
     """Read session_state with a default; used to keep behavior stable across tabs."""
@@ -438,8 +442,6 @@ def _render_trip_planner_action() -> SidebarState:
             "Please adjust the values."
         )
         
-
-
     # Sync widget values back into canonical persisted keys
     for k in (
         "start_locality",

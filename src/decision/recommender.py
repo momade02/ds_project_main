@@ -254,7 +254,11 @@ def rank_stations_by_predicted_price(
     # Configuration
     onroute_max_detour_km: float = ONROUTE_MAX_DETOUR_KM,
     onroute_max_detour_min: float = ONROUTE_MAX_DETOUR_MIN,
-    # NEW
+    # Distance to station filters (km)
+    min_distance_km: Optional[float] = None,
+    max_distance_km: Optional[float] = None,    
+    
+    # Auditing (optional)
     audit_log: Optional[Dict[str, Any]] = None,
 ) -> List[StationDict]:
     """
@@ -303,6 +307,8 @@ def rank_stations_by_predicted_price(
             "min_net_saving_eur": float(min_net_saving_eur),
             "onroute_max_detour_km": float(onroute_max_detour_km),
             "onroute_max_detour_min": float(onroute_max_detour_min),
+            "min_distance_km": float(min_distance_km) if min_distance_km is not None else None,
+            "max_distance_km": float(max_distance_km) if max_distance_km is not None else None,
         }
 
     def _uid(s: StationDict) -> str:
@@ -391,7 +397,7 @@ def rank_stations_by_predicted_price(
     unique_stations = list(valid_map.values())
     if not unique_stations:
         return []
-
+    
     # 3. Determine Mode
     is_economic_mode = (
         litres_to_refuel is not None
@@ -431,6 +437,24 @@ def rank_stations_by_predicted_price(
 
     if not unique_stations:
         return []
+
+    # Apply distance filters (min_distance_km and max_distance_km)
+    if min_distance_km is not None or max_distance_km is not None:
+        filtered_stations = []
+        for s in unique_stations:
+            distance_km = s.get("distance_along_m", 0) / 1000.0  # Convert meters to kilometers
+
+            if min_distance_km is not None and distance_km < min_distance_km:
+                _add_reason(s, "Below minimum distance")
+                continue
+
+            if max_distance_km is not None and distance_km > max_distance_km:
+                _add_reason(s, "Above maximum distance")
+                continue
+
+            filtered_stations.append(s)
+
+        unique_stations = filtered_stations
 
     # 5. Economic Ranking Strategy
     if is_economic_mode:
