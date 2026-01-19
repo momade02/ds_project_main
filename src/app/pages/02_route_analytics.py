@@ -504,7 +504,7 @@ def _time_cell_48(dt_local: Optional[datetime]) -> Optional[int]:
 
 def _station_google_address_best_effort(station: Dict[str, Any]) -> str:
     """
-    Best-effort 'Address (Google)' WITHOUT calling external APIs on Page 02.
+    Best-effort 'Address' WITHOUT calling external APIs on Page 02.
     If Page 01 already filled st.session_state['reverse_geocode_cache'], reuse it.
     Otherwise fall back to station fields (street/houseNumber/postCode/place/address).
     """
@@ -576,84 +576,6 @@ def _compute_baseline_price_for_display(
         return min(all_prices)
     return None
 
-
-def _ensure_breakeven_liters_for_display(
-    stations: List[Dict[str, Any]],
-    *,
-    fuel_code: str,
-    baseline_price: Optional[float] = None,
-    onroute_max_detour_km: float = 1.0,
-    onroute_max_detour_min: float = 5.0,
-) -> None:
-    """
-    Backfill missing econ_breakeven_liters_* values in-place so tables/captions do not show "-".
-
-    Break-even litres:
-        (detour_fuel_cost + time_cost) / (baseline_price - station_price)
-    Only meaningful if station_price < baseline_price.
-    """
-    if not stations:
-        return
-
-    econ_breakeven_key = f"econ_breakeven_liters_{fuel_code}"
-    econ_baseline_key = f"econ_baseline_price_{fuel_code}"
-    econ_detour_fuel_cost_key = f"econ_detour_fuel_cost_eur_{fuel_code}"
-    econ_detour_fuel_l_key = f"econ_detour_fuel_l_{fuel_code}"
-    econ_time_cost_key = f"econ_time_cost_eur_{fuel_code}"
-
-    pred_key = f"pred_price_{fuel_code}"
-    curr_key = f"price_current_{fuel_code}"
-
-    # 1) Determine baseline price (prefer what decision layer already computed)
-    b = _as_float(baseline_price)
-    if b is None:
-        for s in stations:
-            b = _as_float(s.get(econ_baseline_key))
-            if b is not None:
-                break
-    if b is None:
-        b = _compute_baseline_price_for_display(
-            stations,
-            fuel_code=fuel_code,
-            onroute_max_detour_km=onroute_max_detour_km,
-            onroute_max_detour_min=onroute_max_detour_min,
-        )
-    if b is None:
-        return
-
-    # 2) Backfill per station if missing
-    for s in stations:
-        existing = s.get(econ_breakeven_key)
-        if existing is not None and not _is_missing_number(existing):
-            continue
-
-        # station price: prefer prediction, fallback to current
-        p_station = _as_float(s.get(pred_key))
-        if p_station is None:
-            p_station = _as_float(s.get(curr_key))
-        if p_station is None:
-            continue
-
-        diff = float(b) - float(p_station)
-        if diff <= 0:
-            # Not cheaper than baseline => no meaningful break-even litres
-            continue
-
-        detour_cost = _as_float(s.get(econ_detour_fuel_cost_key))
-        if detour_cost is None:
-            # fallback if only detour liters exist
-            detour_l = _as_float(s.get(econ_detour_fuel_l_key))
-            if detour_l is not None:
-                detour_cost = detour_l * float(p_station)
-
-        time_cost = _as_float(s.get(econ_time_cost_key))
-        if time_cost is None:
-            time_cost = 0.0
-
-        if detour_cost is None:
-            continue
-
-        s[econ_breakeven_key] = max(0.0, (float(detour_cost) + float(time_cost)) / diff)
 
 def _coerce_bool(x: Any) -> Optional[bool]:
     if x is None:
@@ -2364,8 +2286,6 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
     # 4. Full Result Tables 
     # ------------------------------------------------------------------
 
-
-
     # Keep other views empty for now (header + top nav remain visible)
     if analysis_view != "Full Result Tables":
         maybe_persist_state()
@@ -2378,107 +2298,192 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
 
     st.markdown("### **4. Full Table Results**")
 
-    # --- Sub-headline 1: short description (per screenshot) ---
+    # --- Sub-headline 1: explanation (reworked) ---
     st.markdown(
         "#### What this page shows:",
         help=(
-            "Audit view of the full station universe.\n\n"
-            "• Selected stations: passed hard constraints and the soft constraint.\n\n"
-            "• Discarded stations: failed a hard constraint and/or the soft constraint.\n\n"
-            "The tables below focus on the core routing + decision metrics."
+            "This is an audit view of the station decision pipeline as two tables.\n\n"
+            "The system operates in two stages:\n"
+            "1) Hard-feasible stage (non-negotiable): stations must have valid inputs and pass hard constraints\n"
+            "   such as open-at-ETA (if enabled), detour caps, and deduplication.\n"
+            "2) Economic stage (benchmark-based): among hard-feasible stations, a station is considered economically\n"
+            "   viable if its net saving is at least as high as the worst on-route station (reference benchmark).\n\n"
+            "Important: stations removed upstream (e.g., by corridor search scope) are not available in this cached\n"
+            "station list and therefore cannot appear in these tables."
         ),
     )
 
     st.markdown(
-        "- **Table 1 (Selected)**: Selected (green/orange) stations\n"
-        "  - Passed hard constraints (detour distance/time, open at ETA, brand filter)\n"
-        "  - Passed soft constraint (not worse than the worst on-route station) -> >= net saving \n"
-        "- **Table 2 (Discarded)**: Discarded (red) stations\n"
-        "  - Failed hard constraints (detour distance/time, open at ETA, brand filter)\n"
-        "  - Failed soft constraint (worse than the worst on-route station) -> < net saving\n"
+        "- **Table 1 (Selected)** shows stations that are **hard-feasible** and **economically viable**.\n"
+        "  - Hard-feasible: valid prediction inputs, not closed at ETA (if enabled), within detour caps, deduped.\n"
+        "  - Economic viability: net saving **≥ worst on-route net saving** (benchmark).\n"
+        "  - If no on-route benchmark exists, the economic step is **not applicable** and all hard-feasible stations are shown.\n"
+
+        "- **Table 2 (Discarded)** shows stations that were **discarded by hard constraints and/or economics**.\n"
+        "  - Hard-discarded: missing/invalid prediction, closed at ETA (if enabled), failed detour caps, duplicates removed.\n"
+        "  - Economically rejected: hard-feasible but net saving **< worst on-route net saving**.\n"
     )
 
     # -----------------------------
-    # Build selected vs discarded sets
+    # Build selected vs discarded sets (aligned with Section 2 semantics)
     # -----------------------------
     pred_key__p4 = f"pred_price_{fuel_code}"
+    econ_net_key__p4 = f"econ_net_saving_eur_{fuel_code}"
 
-    # Detour caps (derive locally so this block is safe wherever it is placed)
+    # Detour caps (same semantics as Section 2):
+    # - In economics mode, caps default to 10 km / 10 min if unset.
     constraints__p4 = run_summary.get("constraints") or {}
-    cap_km__p4 = constraints__p4.get("max_detour_km")
-    cap_min__p4 = constraints__p4.get("max_detour_min")
+    cap_km_f__p4 = _as_float(constraints__p4.get("max_detour_km"))
+    cap_min_f__p4 = _as_float(constraints__p4.get("max_detour_min"))
 
-    cap_km_f__p4 = float(cap_km__p4) if cap_km__p4 is not None else None
-    cap_min_f__p4 = float(cap_min__p4) if cap_min__p4 is not None else None
+    if bool(use_economics):
+        if cap_km_f__p4 is None:
+            cap_km_f__p4 = 10.0
+        if cap_min_f__p4 is None:
+            cap_min_f__p4 = 10.0
 
-    hard_pass__p4: List[Dict[str, Any]] = []
-    hard_fail__p4: List[Dict[str, Any]] = []
+    should_cap__p4 = (cap_km_f__p4 is not None) or (cap_min_f__p4 is not None)
 
-    for s in stations:
-        # Require a usable prediction
-        p_f = _as_float(s.get(pred_key__p4))
-        if p_f is None or p_f < MIN_VALID_PRICE_EUR_L:
-            hard_fail__p4.append(s)
-            continue
-
-        # Hard constraint: open at ETA (only if enabled + flag exists)
-        if filter_closed_at_eta_enabled and _is_closed_at_eta(s):
-            hard_fail__p4.append(s)
-            continue
-
-        # Hard constraint: detour caps (if set)
-        dk, dm = _detour_metrics(s)
-        if (cap_km_f__p4 is not None and dk > cap_km_f__p4) or (cap_min_f__p4 is not None and dm > cap_min_f__p4):
-            hard_fail__p4.append(s)
-            continue
-
-        hard_pass__p4.append(s)
-
-    # Soft constraint reference: "worst on-route station"
-    # Soft-constraint thresholds (derive locally so this block is safe wherever it is placed)
+    # Soft-constraint thresholds (use filter_log thresholds when present; else defaults)
     filter_log__p4: Dict[str, Any] = cached.get("filter_log") or {}
     filter_thresholds__p4: Dict[str, Any] = filter_log__p4.get("thresholds") or {}
-
     onroute_km__p4 = float(filter_thresholds__p4.get("onroute_max_detour_km", 1.0) or 1.0)
     onroute_min__p4 = float(filter_thresholds__p4.get("onroute_max_detour_min", 5.0) or 5.0)
 
-    onroute_worst_price__p4 = _compute_onroute_worst_price(
-        hard_pass__p4,
-        fuel_code=fuel_code,
-        onroute_max_detour_km=onroute_km__p4,
-        onroute_max_detour_min=onroute_min__p4,
+    # 1) Hard: valid prediction input
+    hard_invalid_pred__p4: List[Dict[str, Any]] = []
+    candidates__p4: List[Dict[str, Any]] = []
+    for s in stations:
+        p_f = _as_float((s or {}).get(pred_key__p4))
+        if p_f is None or p_f < MIN_VALID_PRICE_EUR_L:
+            hard_invalid_pred__p4.append(s)
+        else:
+            candidates__p4.append(s)
+
+    # 2) Hard: open-at-ETA (if enabled)
+    hard_closed_eta__p4: List[Dict[str, Any]] = []
+    open_ok__p4: List[Dict[str, Any]] = []
+    for s in candidates__p4:
+        if filter_closed_at_eta_enabled and _is_closed_at_eta(s):
+            hard_closed_eta__p4.append(s)
+        else:
+            open_ok__p4.append(s)
+
+    # 3) Hard: deduplicate by station_uuid (keep lowest predicted price variant)
+    hard_duplicates_removed__p4: List[Dict[str, Any]] = []
+    deduped__p4: List[Dict[str, Any]] = []
+
+    groups__p4: Dict[str, List[Dict[str, Any]]] = {}
+    no_uuid__p4: List[Dict[str, Any]] = []
+
+    for s in open_ok__p4:
+        u = (s or {}).get("station_uuid")
+        u = str(u).strip() if u is not None else ""
+        if not u:
+            no_uuid__p4.append(s)
+        else:
+            groups__p4.setdefault(u, []).append(s)
+
+    # Keep UUID-missing stations as-is
+    deduped__p4.extend(no_uuid__p4)
+
+    # For UUID groups: keep lowest predicted price station, discard the rest
+    for u, lst in groups__p4.items():
+        if not lst:
+            continue
+        best = lst[0]
+        best_p = _as_float(best.get(pred_key__p4))
+        for s in lst[1:]:
+            p = _as_float((s or {}).get(pred_key__p4))
+            if best_p is None:
+                best, best_p = s, p
+            elif p is not None and p < best_p:
+                best = s
+                best_p = p
+        deduped__p4.append(best)
+        for s in lst:
+            if s is not best:
+                hard_duplicates_removed__p4.append(s)
+
+    # 4) Hard: detour caps
+    hard_cap_failed__p4: List[Dict[str, Any]] = []
+    hard_feasible__p4: List[Dict[str, Any]] = []
+
+    if should_cap__p4:
+        for s in deduped__p4:
+            dk, dm = _detour_metrics(s)
+            cap_fail = False
+            try:
+                if cap_km_f__p4 is not None and dk is not None and float(dk) > float(cap_km_f__p4):
+                    cap_fail = True
+            except Exception:
+                pass
+            try:
+                if cap_min_f__p4 is not None and dm is not None and float(dm) > float(cap_min_f__p4):
+                    cap_fail = True
+            except Exception:
+                pass
+
+            if cap_fail:
+                hard_cap_failed__p4.append(s)
+            else:
+                hard_feasible__p4.append(s)
+    else:
+        hard_feasible__p4 = list(deduped__p4)
+
+    # Economic benchmark: worst on-route net saving (Case 1 handled as N/A)
+    econ_benchmark_available__p4 = False
+    worst_onroute_net__p4: Optional[float] = None
+
+    if bool(use_economics) and hard_feasible__p4:
+        nets: List[float] = []
+        for s in hard_feasible__p4:
+            dk, dm = _detour_metrics(s)
+            if (dk is not None and dm is not None) and (float(dk) <= float(onroute_km__p4)) and (float(dm) <= float(onroute_min__p4)):
+                v = _as_float((s or {}).get(econ_net_key__p4))
+                if v is not None:
+                    nets.append(float(v))
+        if nets:
+            econ_benchmark_available__p4 = True
+            worst_onroute_net__p4 = float(min(nets))
+
+    # Selected vs discarded for tables
+    selected__p4: List[Dict[str, Any]] = []
+    econ_rejected__p4: List[Dict[str, Any]] = []
+
+    if bool(use_economics) and econ_benchmark_available__p4 and (worst_onroute_net__p4 is not None):
+        for s in hard_feasible__p4:
+            net = _as_float((s or {}).get(econ_net_key__p4))
+            if net is None:
+                econ_rejected__p4.append(s)
+                continue
+            try:
+                if float(net) >= float(worst_onroute_net__p4):
+                    selected__p4.append(s)
+                else:
+                    econ_rejected__p4.append(s)
+            except Exception:
+                econ_rejected__p4.append(s)
+    else:
+        # Case 1 (no on-route benchmark) or economics off: economics selection is N/A → pass-through
+        selected__p4 = list(hard_feasible__p4)
+        econ_rejected__p4 = []
+
+    discarded__p4: List[Dict[str, Any]] = (
+        list(hard_invalid_pred__p4)
+        + list(hard_closed_eta__p4)
+        + list(hard_duplicates_removed__p4)
+        + list(hard_cap_failed__p4)
+        + list(econ_rejected__p4)
     )
 
-    selected__p4: List[Dict[str, Any]] = []
-    soft_fail__p4: List[Dict[str, Any]] = []
-
-    if onroute_worst_price__p4 is None:
-        # If we cannot compute an on-route reference, keep the UI usable:
-        # treat all hard-pass candidates as "selected" for this preview table.
-        selected__p4 = list(hard_pass__p4)
-    else:
-        for s in hard_pass__p4:
-            p_f = _as_float(s.get(pred_key__p4))
-            if p_f is None:
-                continue
-            if float(p_f) <= float(onroute_worst_price__p4) + 1e-9:
-                selected__p4.append(s)
-            else:
-                soft_fail__p4.append(s)
-
-    discarded__p4: List[Dict[str, Any]] = list(hard_fail__p4) + list(soft_fail__p4)
-
-    # -----------------------------
-    # Backfill break-even liters for display (only if economics mode is on)
-    # -----------------------------
-    if use_economics:
-        _ensure_breakeven_liters_for_display(selected__p4, fuel_code=fuel_code)
-        _ensure_breakeven_liters_for_display(discarded__p4, fuel_code=fuel_code)
+    # Optional: surface the N/A state explicitly to the user (headline note)
+    if bool(use_economics) and not econ_benchmark_available__p4:
+        st.caption("Economic benchmark: N/A (no on-route stations available) → showing all hard-feasible stations as selected.")
 
     # -----------------------------
     # Table row builder (exact columns per screenshot)
     # -----------------------------
-    econ_be_key__p4 = f"econ_breakeven_liters_{fuel_code}"
 
     def _fmt_fraction__p4(x: Any) -> str:
         v = _as_float(x)
@@ -2509,32 +2514,35 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
 
     def _row__p4(s: Dict[str, Any]) -> Dict[str, Any]:
         dk, dm = _detour_metrics(s)
-        brand = s.get("brand") or ""
+        brand = s.get("brand") or s.get("tk_name") or s.get("station_name") or s.get("name") or "—"
         name = s.get("tk_name") or s.get("osm_name") or s.get("name") or s.get("station_name") or ""
         addr_google = _station_google_address_best_effort(s)
-
-        be_val = s.get(econ_be_key__p4) if use_economics else None
 
         return {
             "Brand": _safe_text(brand),
             "Name": _safe_text(name),
-            "Address (Google)": _safe_text(addr_google),
+            "Address": _safe_text(addr_google),
             "Distance to station": _fmt_dist_to_station__p4(s),
             "Fraction of route": _fmt_fraction__p4(s.get("fraction_of_route")),
             "Detour distance": _format_km(dk),
             "Detour time": _format_min(dm),
             "Time at ETA": _fmt_eta_local__p4(s),
             "Minutes until arrival": _fmt_minutes_until_arrival__p4(s),
-            "Break-even liters": _format_liters(be_val) if use_economics else "—",
         }
 
     # --- Sub-headline 2: Selected table ---
     st.markdown(
-        "#### Selected stations:",
+        "#### Selected stations (hard-feasible + economically viable):",
         help=(
-            "Stations that passed the hard constraints and the soft constraint.\n\n"
-            "Hard constraints include: detour caps and (if enabled) open-at-ETA filtering.\n"
-            "Soft constraint uses the 'worst on-route' reference computed from on-route stations."
+            "Selected stations are those that the system would realistically consider for the recommendation.\n\n"
+            "Hard-feasible means:\n"
+            "- Valid prediction inputs\n"
+            "- Not closed at ETA (if enabled)\n"
+            "- Within detour caps\n"
+            "- Deduplicated by station UUID\n\n"
+            "Economic viability (only in economics mode):\n"
+            "- Net saving ≥ worst on-route net saving (benchmark).\n"
+            "- If no on-route benchmark exists, the economic step is N/A and all hard-feasible stations appear here."
         ),
     )
 
@@ -2546,12 +2554,16 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
 
     # --- Sub-headline 3: Discarded table ---
     st.markdown(
-        "#### Discarded stations:",
+        "#### Discarded stations (hard and/or economic):",
         help=(
-            "Stations that failed a hard constraint and/or the soft constraint.\n\n"
-            "This includes stations missing a valid prediction, failing detour caps, "
-            "and (if enabled) being closed at ETA, as well as stations that are worse than the "
-            "worst on-route reference."
+            "Discarded stations include everything that is not selected.\n\n"
+            "Hard-discarded examples:\n"
+            "- Missing/invalid prediction\n"
+            "- Closed at ETA (if enabled)\n"
+            "- Failed detour caps\n"
+            "- Duplicate station variants removed during deduplication\n\n"
+            "Economic rejection (only when an on-route benchmark exists):\n"
+            "- Hard-feasible but net saving < worst on-route net saving."
         ),
     )
 
@@ -2563,6 +2575,20 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
 
     # Keep the existing content below (A/B sections, existing tables) for now.
     st.markdown("---")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
     ranked: List[Dict[str, Any]] = cached.get("ranked") or []
@@ -2673,7 +2699,6 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
         econ_gross_key = f"econ_gross_saving_eur_{fuel_code}"
         econ_detour_fuel_cost_key = f"econ_detour_fuel_cost_eur_{fuel_code}"
         econ_time_cost_key = f"econ_time_cost_eur_{fuel_code}"
-        econ_breakeven_key = f"econ_breakeven_liters_{fuel_code}"
         econ_baseline_key = f"econ_baseline_price_{fuel_code}"
 
         km, _mins = _detour_metrics(best_station)
@@ -2704,18 +2729,6 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
             d3.metric("Detour fuel cost", _fmt_eur(best_station.get(econ_detour_fuel_cost_key)))
             d4.metric("Time cost", _fmt_eur(best_station.get(econ_time_cost_key)))
             d5.metric("Net saving (model)", _fmt_eur(best_station.get(econ_net_key)))
-
-            # Ensure break-even litres is present for display (defensive)
-            _ensure_breakeven_liters_for_display(
-                [best_station],
-                fuel_code=fuel_code,
-                onroute_max_detour_km=float(filter_thresholds.get("onroute_max_detour_km", 1.0) or 1.0),
-                onroute_max_detour_min=float(filter_thresholds.get("onroute_max_detour_min", 5.0) or 5.0),
-            )
-
-            be = _as_float(best_station.get(econ_breakeven_key))
-            if be is not None:
-                st.caption(f"Break-even litres: {be:.1f} L")
 
         with st.expander("How the predicted price is chosen (price basis)", expanded=False):
             st.write(
@@ -2900,10 +2913,6 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
             if p_f <= float(onroute_worst_price) + 1e-9:
                 value_view.append(s)
 
-        # Backfill break-even liters (mainly for older cached runs or partial station dicts).
-        if use_economics and value_view:
-            _ensure_breakeven_liters_for_display(value_view, fuel_code=fuel_code)
-
         if value_view:
             # Sort with the same primary logic as the decision layer (when available).
             if use_economics:
@@ -2946,9 +2955,6 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
     # B2. Ranked table
     st.markdown("#### Ranked stations (comparison table)")
     if ranked:
-        # Backfill break-even litres for display (defensive for older caches / partial station dicts)
-        if use_economics:
-            _ensure_breakeven_liters_for_display(ranked, fuel_code=fuel_code)
 
         ranked_df = build_ranking_dataframe(ranked, fuel_code=fuel_code, debug_mode=debug_mode)
 
