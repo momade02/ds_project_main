@@ -236,25 +236,49 @@ def update_prices():
         # Handle NaN values
         df = df.where(pd.notnull(df), None)
         
-        # === DELETION STEP 1: Old data (>14 days) ===
-        cutoff_date = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d %H:%M:%S')
-        logger.info(f"Deleting prices older than {cutoff_date}...")
+        # === DELETION STEP 1: Old data (>14 days) - BATCHED BY HOUR ===
+        cutoff_date = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
+        logger.info(f"Deleting prices older than {cutoff_date} (batched by hour)...")
         
         deletion_success = False
+        total_deleted_hours = 0
         try:
-            supabase.table('prices').delete().lt('date', cutoff_date).execute()
-            logger.info(f"✓ Old price records deleted (older than 14 days)")
-            deletion_success = True
+            # Find oldest date in database
+            oldest_result = supabase.table('prices').select('date').order('date', desc=False).limit(1).execute()
+            
+            if oldest_result.data:
+                oldest_date_str = oldest_result.data[0]['date'][:10]  # Extract YYYY-MM-DD
+                oldest_date = datetime.strptime(oldest_date_str, '%Y-%m-%d')
+                cutoff_dt = datetime.strptime(cutoff_date, '%Y-%m-%d')
+                
+                # Delete hour by hour (oldest first)
+                current_dt = oldest_date
+                while current_dt < cutoff_dt:
+                    hour_start = current_dt.strftime('%Y-%m-%d %H:00:00')
+                    hour_end = current_dt.strftime('%Y-%m-%d %H:59:59')
+                    
+                    try:
+                        supabase.table('prices').delete().gte('date', hour_start).lte('date', hour_end).execute()
+                        total_deleted_hours += 1
+                        if total_deleted_hours % 24 == 0:  # Log every day (24 hours)
+                            logger.info(f"  Deleted {total_deleted_hours} hours ({total_deleted_hours // 24} days) so far...")
+                    except Exception as hour_error:
+                        logger.warning(f"  Could not delete {hour_start}: {hour_error}")
+                    
+                    current_dt += timedelta(hours=1)
+                
+                logger.info(f"✓ Old price records deleted ({total_deleted_hours} hours = {total_deleted_hours // 24} days removed)")
+                deletion_success = True
+            else:
+                logger.info("✓ No old data to delete")
+                deletion_success = True
+                
         except Exception as e:
             error_msg = str(e)
             logger.error("=" * 80)
             logger.error("❌ CRITICAL: DELETION FAILED!")
             logger.error("=" * 80)
-            if 'statement timeout' in error_msg.lower() or '57014' in error_msg:
-                logger.error(f"Error type: STATEMENT TIMEOUT")
-                logger.error(f"Fix: CREATE INDEX idx_prices_date ON prices(date);")
-            else:
-                logger.error(f"Error: {e}")
+            logger.error(f"Error: {e}")
             logger.error("⚠️ Old data WILL ACCUMULATE!")
             logger.error("=" * 80)
             # Continue anyway to keep app functional

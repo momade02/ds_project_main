@@ -302,8 +302,11 @@ def get_historical_prices_batch(
     station_uuids: List[str], target_date: datetime, target_cell: int
 ) -> Dict[str, FuelPriceDict]:
     """
-    Fetches prices for multiple stations at a specific date/time in ONE query.
+    Fetches prices for multiple stations at a specific date in ONE query.
     Uses Supabase `.in_()` filtering for efficiency.
+    
+    NOTE: We search the WHOLE DAY and take the latest price, not just up to target_cell.
+    This ensures we get data even when ETA is shortly after midnight.
     """
     from supabase import create_client  # type: ignore
 
@@ -311,13 +314,12 @@ def get_historical_prices_batch(
         return {}
 
     client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
-    _, end_time = get_cell_time_range(target_cell)
     date_str = target_date.strftime("%Y-%m-%d")
 
-    # Range: Start of day -> End of target 30-min window
-    # We want the *latest* price change within this window.
+    # Search the WHOLE DAY - take latest available price
+    # This fixes the bug where ETA after midnight caused empty lag data
     range_start = f"{date_str} 00:00:00"
-    range_end = f"{date_str} {end_time}"
+    range_end = f"{date_str} 23:59:59"
 
     try:
         # Query: Get all prices in range for these stations
@@ -529,12 +531,14 @@ def integrate_route_with_prices(
     # Step 5: Current Prices (Realtime vs Proxy)
     if use_realtime:
         live_data = get_realtime_prices_batch(uuids)
+        # Fallback to 1d lag if realtime fails or returns empty for a station
         for s in final_stations:
             uid = s["station_uuid"]
             info = live_data.get(uid, {})
-            s["price_current_e5"] = info.get("e5")
-            s["price_current_e10"] = info.get("e10")
-            s["price_current_diesel"] = info.get("diesel")
+            # Use realtime price if available, otherwise fallback to 1d lag
+            s["price_current_e5"] = info.get("e5") if info.get("e5") is not None else s.get("price_lag_1d_e5")
+            s["price_current_e10"] = info.get("e10") if info.get("e10") is not None else s.get("price_lag_1d_e10")
+            s["price_current_diesel"] = info.get("diesel") if info.get("diesel") is not None else s.get("price_lag_1d_diesel")
             s["is_open"] = info.get("is_open")
     else:
         # Fallback: Use yesterday's price (1d lag) as current proxy
@@ -663,8 +667,8 @@ if __name__ == "__main__":
             stations, meta = get_fuel_prices_for_route(
                 start_locality="Tübingen",
                 end_locality="Reutlingen",
-                start_address="WilhelmstraÃŸe 7",
-                end_address="CharlottenstraÃŸe 45",
+                start_address="Wilhelmstraße 7",
+                end_address="Charlottenstraße 45",
             )
             print(f"\nSuccess! Found {len(stations)} valid stations.")
             if stations:
