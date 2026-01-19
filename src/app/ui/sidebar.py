@@ -38,6 +38,9 @@ class SidebarState:
     value_of_time_eur_per_hour: float
     max_detour_km: float
     max_detour_min: float
+    # Distance along-route filters (km)
+    min_distance_km: float
+    max_distance_km: float
     min_net_saving_eur: float
 
     # Diagnostics
@@ -99,6 +102,8 @@ def _read_cached_values_for_non_action() -> SidebarState:
         debug_mode=bool(_ss("debug_mode", True)),
         filter_closed_at_eta=bool(_ss("filter_closed_at_eta", True)),
         brand_filter_selected=list(_ss("brand_filter_selected", [])),
+        min_distance_km=float(_ss("min_distance_km", 0.0)),
+        max_distance_km=float(_ss("max_distance_km", 750.0)),
     )
 
 
@@ -403,6 +408,38 @@ def _render_trip_planner_action() -> SidebarState:
         ),
     )
 
+    max_distance_km = st.sidebar.number_input(
+        "Maximum distance to station (km)",
+        min_value=1.0,
+        max_value=1000.0,
+        step=1.0,
+        value=float(_canonical("max_distance_km", 750.0)),
+        key=_w("max_distance_km"),
+        help=(
+            "The maximum distance from the starting point to a station. Stations farther than this distance are excluded."
+        ),
+    )
+
+    min_distance_km = st.sidebar.number_input(
+        "Minimum distance to station (km)",
+        min_value=0.0,
+        max_value=1000.0,
+        step=1.0,
+        value=float(_canonical("min_distance_km", 0.0)),
+        key=_w("min_distance_km"),
+        help=(
+            "The minimum distance from the starting point to a station. Stations closer than this distance are excluded."
+        ),
+    )
+    # Validierung: min_distance_km <= max_distance_km
+    if min_distance_km > max_distance_km:
+        st.sidebar.error(
+            "Minimum distance cannot be greater than maximum distance. "
+            "Please adjust the values."
+        )
+        
+
+
     # Sync widget values back into canonical persisted keys
     for k in (
         "start_locality",
@@ -415,6 +452,8 @@ def _render_trip_planner_action() -> SidebarState:
         "max_detour_km",
         "max_detour_min",
         "min_net_saving_eur",
+        "min_distance_km",
+        "max_distance_km",
         "filter_closed_at_eta",
         "brand_filter_selected",
     ):
@@ -430,6 +469,8 @@ def _render_trip_planner_action() -> SidebarState:
     value_of_time_eur_per_hour = float(_canonical("value_of_time_eur_per_hour", value_of_time_eur_per_hour))
     max_detour_km = float(_canonical("max_detour_km", max_detour_km))
     max_detour_min = float(_canonical("max_detour_min", max_detour_min))
+    min_distance_km = float(_canonical("min_distance_km", min_distance_km))
+    max_distance_km = float(_canonical("max_distance_km", max_distance_km))
     min_net_saving_eur = float(_canonical("min_net_saving_eur", min_net_saving_eur))
     filter_closed_at_eta = bool(_canonical("filter_closed_at_eta", filter_closed_at_eta))
     brand_filter_selected = list(_canonical("brand_filter_selected", brand_filter_selected))
@@ -449,6 +490,8 @@ def _render_trip_planner_action() -> SidebarState:
         value_of_time_eur_per_hour=float(value_of_time_eur_per_hour),
         max_detour_km=float(max_detour_km),
         max_detour_min=float(max_detour_min),
+        min_distance_km=float(min_distance_km),
+        max_distance_km=float(max_distance_km),
         min_net_saving_eur=float(min_net_saving_eur),
         debug_mode=bool(_ss("debug_mode", True)),
         filter_closed_at_eta=bool(filter_closed_at_eta),
