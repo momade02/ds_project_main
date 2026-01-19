@@ -306,11 +306,11 @@ def update_prices():
         
         for i in range(0, len(data), batch_size):
             batch = data[i:i+batch_size]
+            batch_num = i//batch_size + 1
             try:
                 supabase.table('prices').insert(batch).execute()
                 inserted_count += len(batch)
                 
-                batch_num = i//batch_size + 1
                 if batch_num % 100 == 0 or batch_num == total_batches:
                     logger.info(f"  Progress: {batch_num}/{total_batches} batches ({inserted_count:,} records)")
                     
