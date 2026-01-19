@@ -1516,7 +1516,7 @@ def main() -> None:
             "after_h_discarded": 0,
 
             # Chart 2 block
-            "before_chart_discarded": 0.10,
+            "before_chart_discarded": 0,
             "after_chart_discarded": 0.5,
         }
 
@@ -1696,7 +1696,6 @@ def main() -> None:
         constraints = run_summary.get("constraints") or {}
         cap_km = constraints.get("max_detour_km")
         cap_min = constraints.get("max_detour_min")
-        min_net_saving_eur = constraints.get("min_net_saving_eur") if use_economics else None
 
         pred_key = f"pred_price_{fuel_code}"
         econ_net_key = f"econ_net_saving_eur_{fuel_code}"
@@ -1707,47 +1706,214 @@ def main() -> None:
 
         # "Stations" in cache are AFTER upstream removals (if those are applied upstream).
         candidates_in_cache_n = len(stations)
-        ranked_n = len(ranked)
 
         # Reconstruct "total found" for accuracy (includes upstream removals)
         total_found_n = max(0, candidates_in_cache_n + eta_upstream_n + brand_upstream_n)
-        discarded_total_n = max(0, total_found_n - ranked_n)
-
-        # Build excluded list based on UUIDs, so we can reason about observable exclusions
-        ranked_uuid_set = {_station_uuid(s) for s in ranked}
-        excluded_in_cache: List[Dict[str, Any]] = [s for s in stations if _station_uuid(s) not in ranked_uuid_set]
-
-        # Optional: compute on-route "worst" predicted price (used only for interpretability)
-        onroute_worst_price = _compute_onroute_worst_price(ranked, fuel_code=fuel_code)
 
         # -----------------------------
-        # SECTION: Selected vs Discarded
+        # SECTION: Stations funnel (Found → Hard-feasible → Economically selected)
         # -----------------------------
+
+        # --- Reconstruct "hard-feasible" universe (mirrors recommender hard filters) ---
+        # Hard-feasible means:
+        #   - upstream filters already applied (closed-at-ETA if enabled, brand filter if enabled)
+        #   - valid predicted price (>= MIN_VALID_PRICE_EUR_L)
+        #   - deduplicated by station_uuid (keep lowest predicted)
+        #   - detour caps applied when relevant (economics mode OR user provided caps)
+        def _is_valid_price_local(v: Any, *, min_price: float = MIN_VALID_PRICE_EUR_L) -> bool:
+            if _is_missing_number(v):
+                return False
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                return False
+            if f != f:  # NaN
+                return False
+            return f >= float(min_price)
+
+        def _dedupe_key(s: Dict[str, Any]) -> Optional[str]:
+            u = (s or {}).get("station_uuid")
+            if u is None:
+                return None
+            try:
+                return str(u)
+            except Exception:
+                return None
+
+        # 1) Valid-price candidates (in-cache, after upstream filters)
+        valid_candidates: List[Dict[str, Any]] = []
+        invalid_or_missing_pred_n = 0
+        for s in stations:
+            p = (s or {}).get(pred_key)
+            if _is_valid_price_local(p):
+                valid_candidates.append(s)
+            else:
+                invalid_or_missing_pred_n += 1
+
+        # 2) Dedupe by station_uuid (keep lowest predicted)
+        deduped: List[Dict[str, Any]] = []
+        duplicates_removed_n = 0
+        by_uuid: Dict[str, Dict[str, Any]] = {}
+        dup_counts: Dict[str, int] = {}
+
+        for s in valid_candidates:
+            k = _dedupe_key(s)
+            if not k:
+                # No UUID -> treat as unique (do not dedupe)
+                deduped.append(s)
+                continue
+
+            dup_counts[k] = dup_counts.get(k, 0) + 1
+            existing = by_uuid.get(k)
+            if existing is None:
+                by_uuid[k] = s
+            else:
+                # keep lowest predicted price variant
+                try:
+                    if float(s.get(pred_key)) < float(existing.get(pred_key)):
+                        by_uuid[k] = s
+                except Exception:
+                    pass
+
+        for k, n in dup_counts.items():
+            if n > 1:
+                duplicates_removed_n += (n - 1)
+
+        deduped.extend(list(by_uuid.values()))
+
+        # 3) Apply detour caps (same high-level semantics as recommender)
+        # In economics mode, caps are mandatory and default to the recommender defaults if unset.
+        cap_km_eff = _as_float(cap_km)
+        cap_min_eff = _as_float(cap_min)
+        if bool(use_economics):
+            if cap_km_eff is None:
+                cap_km_eff = 10.0
+            if cap_min_eff is None:
+                cap_min_eff = 10.0
+
+        should_cap = (cap_km_eff is not None) or (cap_min_eff is not None)
+        cap_failed_n = 0
+
+        hard_feasible: List[Dict[str, Any]] = []
+        if should_cap:
+            for s in deduped:
+                km, mins = _detour_metrics(s)
+                cap_fail = False
+                try:
+                    if cap_km_eff is not None and km is not None and float(km) > float(cap_km_eff):
+                        cap_fail = True
+                except Exception:
+                    pass
+                try:
+                    if cap_min_eff is not None and mins is not None and float(mins) > float(cap_min_eff):
+                        cap_fail = True
+                except Exception:
+                    pass
+
+                if cap_fail:
+                    cap_failed_n += 1
+                else:
+                    hard_feasible.append(s)
+        else:
+            hard_feasible = list(deduped)
+
+        hard_feasible_n = len(hard_feasible)
+
+        # Hard-discarded = total found - hard feasible
+        hard_discarded_n = max(0, total_found_n - hard_feasible_n)
+
+        # --- Economic selection benchmark: "worst on-route" net saving ---
+        econ_benchmark_available = False
+        worst_onroute_net: Optional[float] = None
+
+        if use_economics and hard_feasible:
+            onroute_nets: List[float] = []
+            for s in hard_feasible:
+                km, mins = _detour_metrics(s)
+                if km <= 1.0 and mins <= 5.0:
+                    net = _as_float((s or {}).get(econ_net_key))
+                    if net is not None:
+                        onroute_nets.append(float(net))
+
+            if onroute_nets:
+                econ_benchmark_available = True
+                worst_onroute_net = float(min(onroute_nets))
+
+        # Economic selection rule:
+        # - If benchmark exists: selected iff net_saving >= worst_onroute_net
+        # - If no on-route exists: benchmark is N/A -> pass-through all hard-feasible
+        econ_selected: List[Dict[str, Any]] = []
+        econ_rejected: List[Dict[str, Any]] = []
+
+        if use_economics and hard_feasible and econ_benchmark_available and worst_onroute_net is not None:
+            for s in hard_feasible:
+                net = _as_float((s or {}).get(econ_net_key))
+                if net is None:
+                    # Unexpected in proper economics runs; keep it visible as rejected for auditability.
+                    econ_rejected.append(s)
+                    continue
+                try:
+                    if float(net) >= float(worst_onroute_net):
+                        econ_selected.append(s)
+                    else:
+                        econ_rejected.append(s)
+                except Exception:
+                    econ_rejected.append(s)
+        else:
+            # Case 1 (and also "economics off"): benchmark not applicable.
+            econ_selected = list(hard_feasible)
+            econ_rejected = []
+
+        econ_selected_n = len(econ_selected)
+        econ_rejected_n = len(econ_rejected)
+
+        # Final discarded definition for this view:
+        # discarded = hard discarded + economic rejected
+        discarded_total_n = max(0, total_found_n - econ_selected_n)
+
+        # -----------------------------
+        # Headline + cards
+        # -----------------------------
+        
         st.markdown(
-            """
-            <h4 style="margin-top: -2.5rem; margin-bottom: 0rem;">
-                Stations selected/discarded:
-            </h4>
-            """,
-            unsafe_allow_html=True,
+            "#### Stations funnel \n\n"
+            "(Found → Hard-feasible → Economically selected)",
+            help="""This section reports the station selection pipeline in two stages:
+
+1) Hard-feasible: stations that remain after non-negotiable constraints are applied (e.g., upstream filters like brand and closed-at-ETA, valid predicted price, deduplication, detour caps).
+
+2) Economically selected: among hard-feasible stations, a station is considered economically viable if its net saving is at least as high as the worst on-route station (benchmark).
+
+If no on-route stations exist, the benchmark is not applicable and the economics stage is skipped (all hard-feasible stations are counted as economically selected).""",
         )
 
         _gap(P02_S["after_h_selected"])
 
+        econ_selected_display = f"{econ_selected_n:,}"
+        if not econ_benchmark_available:
+            econ_selected_display = f"{econ_selected_n:,} (N/A)"
+
         render_card_grid(
             [
                 ("Stations found", f"{total_found_n:,}"),
-                ("Stations ranked", f"{ranked_n:,}"),
-                ("Stations discarded", f"{discarded_total_n:,}"),
+                ("Hard-feasible", f"{hard_feasible_n:,}"),
+                ("Economically selected", econ_selected_display),
             ],
             cols=3,
         )
 
         _gap(P02_S["after_cards_selected"])
 
+        # -----------------------------
+        # Chart 1: Funnel segments (3 slices)
+        # -----------------------------
         _donut_chart(
             "",
-            {"Selected": ranked_n, "Discarded": discarded_total_n},
+            {
+                "Hard discarded": hard_discarded_n,
+                "Economically rejected": econ_rejected_n,
+                "Economically selected": econ_selected_n,
+            },
             center_text=f"{total_found_n}",
             height=340,
             space_top=P02_S["before_chart_selected"],
@@ -1755,106 +1921,49 @@ def main() -> None:
         )
 
         # -----------------------------
-        # SECTION: Discarded reasons
+        # SECTION: Discarded reasons (hard vs economics)
         # -----------------------------
         _gap(P02_S["before_h_discarded"])
 
         st.markdown(
-            "<h4 style='margin-top: 0rem; margin-bottom: -2rem;'>Stations discarded:</h4>",
-            unsafe_allow_html=True,
+            "#### Discarded reasons",
+            help="""Discarded stations are explained using the same two-stage pipeline:
+
+- Hard discards: stations removed by upstream filters or hard constraints (brand filter, closed at ETA, invalid/missing predicted price, detour caps, duplicate removal).
+
+- Economic rejection: stations that are hard-feasible but do not meet the benchmark (net saving below the worst on-route station).
+
+Counts reconcile to: Discarded = Found − Economically selected.""",
         )
 
         _gap(P02_S["after_h_discarded"])
 
-
-        # Reason bucketing (mutually exclusive; priority order avoids double-counting)
         reasons: Dict[str, int] = {
             "Brand filter": 0,
             "Closed at ETA": 0,
-            "Missing prediction": 0,
-            "Failed economics (< worst on-route)": 0,
+            "Missing/invalid prediction": 0,
+            "Duplicate station removed": 0,
             "Failed detour caps (time/distance)": 0,
+            "Economically rejected (below worst on-route)": 0,
             "Other / unclassified": 0,
         }
 
-        # 1) Upstream brand-filtered stations
+        # 1) Upstream removals
         reasons["Brand filter"] += max(0, brand_upstream_n)
+        reasons["Closed at ETA"] += max(0, eta_upstream_n)
 
-        # 2) Observable excluded reasons among cached stations
-        closed_in_cache_n = 0
-        missing_pred_n = 0
-        cap_failed_n = 0
-        econ_failed_n = 0
-        other_n = 0
+        # 2) In-cache hard discards (derived)
+        reasons["Missing/invalid prediction"] += max(0, int(invalid_or_missing_pred_n))
+        reasons["Duplicate station removed"] += max(0, int(duplicates_removed_n))
+        reasons["Failed detour caps (time/distance)"] += max(0, int(cap_failed_n))
 
-        for s in excluded_in_cache:
-            # (a) Missing prediction
-            p = s.get(pred_key)
-            if _is_missing_number(p):
-                missing_pred_n += 1
-                continue
+        # 3) Economics rejections (benchmark-based)
+        if econ_benchmark_available:
+            reasons["Economically rejected (below worst on-route)"] += max(0, int(econ_rejected_n))
 
-            # (b) Closed at ETA (only meaningful if enabled)
-            if filter_closed_at_eta_enabled and _is_closed_at_eta(s):
-                closed_in_cache_n += 1
-                continue
-
-            # (c) Detour caps (hard constraints)
-            km, mins = _detour_metrics(s)
-            cap_fail = False
-            try:
-                if cap_km is not None and km is not None and float(km) > float(cap_km):
-                    cap_fail = True
-            except Exception:
-                pass
-            try:
-                if cap_min is not None and mins is not None and float(mins) > float(cap_min):
-                    cap_fail = True
-            except Exception:
-                pass
-            if cap_fail:
-                cap_failed_n += 1
-                continue
-
-            # (d) Economics failure
-            # In economics mode, prefer the actual net-saving threshold if present.
-            # Additionally, for interpretability, classify as "failed economics" when a station
-            # is not cheaper than the worst on-route option (if that reference exists).
-            econ_fail = False
-            if use_economics:
-                if min_net_saving_eur is not None:
-                    net = s.get(econ_net_key)
-                    if not _is_missing_number(net):
-                        try:
-                            if float(net) < float(min_net_saving_eur):
-                                econ_fail = True
-                        except Exception:
-                            pass
-            # "Value view" style reference: not better than worst on-route price (optional)
-            if (not econ_fail) and (onroute_worst_price is not None):
-                try:
-                    if (not _is_missing_number(p)) and float(p) >= float(onroute_worst_price):
-                        econ_fail = True
-                except Exception:
-                    pass
-
-            if econ_fail:
-                econ_failed_n += 1
-                continue
-
-            other_n += 1
-
-        # Closed at ETA total includes upstream removals + in-cache flags
-        reasons["Closed at ETA"] += max(0, eta_upstream_n) + max(0, closed_in_cache_n)
-        reasons["Missing prediction"] += max(0, missing_pred_n)
-        reasons["Failed detour caps (time/distance)"] += max(0, cap_failed_n)
-        reasons["Failed economics (< worst on-route)"] += max(0, econ_failed_n)
-        reasons["Other / unclassified"] += max(0, other_n)
-
-        # Ensure the reasons sum to the discarded total (important for auditability)
+        # Reconcile totals (important for auditability)
         known_sum = sum(int(v) for v in reasons.values())
         if known_sum != discarded_total_n:
-            # Reconcile safely: adjust "Other / unclassified"
             delta = int(discarded_total_n - known_sum)
             reasons["Other / unclassified"] = max(0, int(reasons["Other / unclassified"]) + delta)
 
@@ -2025,128 +2134,225 @@ def main() -> None:
             "instead of a forecast (e.g., very short time-to-arrival)."
         )
 
-        # Fourth headline 
+        # Fourth headline
         st.markdown(
             "#### Input/output values:",
-            help="Reserved for a compact overview of the key inputs and outputs used by the prediction layer.",
+            help=(
+                "This table is meant to make the prediction layer auditable.\n\n"
+                "**Which stations are included?**\n"
+                "By default, the table shows the **Hard-feasible** station universe (same semantics as Section 2):\n"
+                "1) Upstream filters already applied in the cached run (e.g., brand filter, closed-at-ETA filter).\n"
+                "2) **Valid predicted-price field** available (guards against missing/corrupt values).\n"
+                "3) **Deduplicated by station UUID** (keeps the variant with the lowest predicted price).\n"
+                "4) **Detour caps applied** if configured; in Economics mode, missing caps default to 10 km / 10 min.\n\n"
+                "**Why not show all found stations?**\n"
+                "Stations that fail hard constraints or have invalid prediction inputs typically produce incomplete rows and do not reflect\n"
+                "what the system actually considers when computing the recommendation.\n\n"
+                "**Interpretation tip**\n"
+                "Use this table to verify ETA/time-cell mapping, horizon selection, and whether the system used realtime prices vs. a forecast."
+            ),
         )
 
         # -----------------------------
-        # Input/Output table (ALL stations found - no exclusions)
+        # Input/Output table (Hard-feasible stations; aligned with Section 2)
         # -----------------------------
         ft = str(fuel_code or "e5").lower()
         ft_label = ft.upper()
 
-        # Try to identify "all found stations" from the cached run
-        stations_all: List[Dict[str, Any]] = []
-        for k in ("ranked", "stations", "stations_all", "all_stations", "candidates"):
+        pred_key = f"pred_price_{ft}"
+
+        # Base candidate set (prefer cached 'stations' universe; fallback to other known keys if needed)
+        base_candidates: List[Dict[str, Any]] = []
+        for k in ("stations", "stations_all", "all_stations", "candidates", "ranked"):
             v = cached.get(k)
             if isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
-                stations_all = v
+                base_candidates = v
                 break
 
-        if not stations_all:
+        if not base_candidates:
             st.info("No stations found in the cached run (no station list available).")
         else:
-            # ---- Times (best-effort, consistent with cached run) ----
-            now_local = _parse_any_dt_to_berlin(cached.get("computed_at")) or _parse_any_dt_to_berlin(datetime.now())
-            time_now_str = now_local.strftime("%Y-%m-%d %H:%M:%S") if now_local else "—"
-            cell_now = _time_cell_48(now_local)
+            # --- Build Hard-feasible universe (local reconstruction; does not modify Redis state) ---
+            def _is_valid_price_local(v: Any, *, min_price: float = MIN_VALID_PRICE_EUR_L) -> bool:
+                if _is_missing_number(v):
+                    return False
+                try:
+                    f = float(v)
+                except (TypeError, ValueError):
+                    return False
+                if f != f:  # NaN
+                    return False
+                return f >= float(min_price)
 
-            rows: List[Dict[str, Any]] = []
-
-            for s in stations_all:
+            # 1) Require usable predicted price
+            valid_candidates: List[Dict[str, Any]] = []
+            for s in base_candidates:
                 if not isinstance(s, dict):
                     continue
+                if _is_valid_price_local(s.get(pred_key)):
+                    valid_candidates.append(s)
 
-                # Station metadata
-                brand = s.get("brand") or s.get("station_name") or s.get("name") or "—"
-                addr_google = _station_google_address_best_effort(s)
+            # 2) Deduplicate by station UUID (keep lowest predicted price)
+            by_uuid: Dict[str, Dict[str, Any]] = {}
+            no_uuid: List[Dict[str, Any]] = []
 
-                # ETA parsing (multiple possible fields depending on run/version)
-                eta_raw = (
-                    s.get("eta")
-                    or s.get(f"debug_{ft}_eta_utc")
-                    or s.get("eta_utc")
-                )
-                eta_local_dt = _parse_any_dt_to_berlin(eta_raw)
-                time_eta_str = (
-                    eta_local_dt.strftime("%Y-%m-%d %H:%M:%S")
-                    if eta_local_dt
-                    else _format_eta_local_for_display(eta_raw)
-                )
-                cell_eta = _time_cell_48(eta_local_dt)
+            for s in valid_candidates:
+                u = s.get("station_uuid")
+                u = str(u) if u is not None else None
 
-                # Use pipeline-provided deltas when available; otherwise compute from cells (including day wrap)
-                minutes_to_arrival = (
-                    s.get(f"debug_{ft}_minutes_to_arrival")
-                    or s.get(f"debug_{ft}_minutes_ahead")
-                )
-                cells_ahead = (
-                    s.get(f"debug_{ft}_cells_ahead_raw")
-                    or s.get(f"debug_{ft}_cells_ahead")
-                )
+                if not u:
+                    no_uuid.append(s)
+                    continue
 
-                if cells_ahead is None and (now_local is not None) and (eta_local_dt is not None) and (cell_now is not None) and (cell_eta is not None):
-                    try:
-                        day_now = now_local.date().toordinal()
-                        day_eta = eta_local_dt.date().toordinal()
-                        cells_ahead = (day_eta - day_now) * 48 + (cell_eta - cell_now)
-                    except Exception:
-                        cells_ahead = None
-
-                # Model/basis
-                used_current = _coerce_bool(s.get(f"debug_{ft}_used_current_price"))
-                horizon_used = s.get(f"debug_{ft}_horizon_used")
-
-                if used_current is True:
-                    price_basis = "Realtime (Tankerkönig) — no forecast"
-                elif used_current is False:
-                    price_basis = f"Forecast (ARDL) — lags: 1d/2d/3d/7d ({ft_label})"
+                existing = by_uuid.get(u)
+                if existing is None:
+                    by_uuid[u] = s
                 else:
-                    price_basis = f"Forecast/Realtime (best-effort) — lags: 1d/2d/3d/7d ({ft_label})"
+                    try:
+                        if float(s.get(pred_key)) < float(existing.get(pred_key)):
+                            by_uuid[u] = s
+                    except Exception:
+                        pass
 
-                if horizon_used not in (None, "", 0):
-                    price_basis = f"{price_basis} — horizon={horizon_used}"
+            deduped: List[Dict[str, Any]] = no_uuid + list(by_uuid.values())
 
-                # Prices (+ fallbacks for older run variants)
-                curr_key = f"price_current_{ft}"
-                pred_key = f"pred_price_{ft}"
+            # 3) Apply detour caps (economics mode defaults to 10 km / 10 min if unset)
+            constraints = run_summary.get("constraints") or {}
+            cap_km = _as_float(constraints.get("max_detour_km"))
+            cap_min = _as_float(constraints.get("max_detour_min"))
 
-                current_price = s.get(curr_key)
-                if current_price is None:
-                    current_price = s.get("price") or s.get(f"price_{ft}")
+            if bool(use_economics):
+                if cap_km is None:
+                    cap_km = 10.0
+                if cap_min is None:
+                    cap_min = 10.0
 
-                pred_price = s.get(pred_key)
+            should_cap = (cap_km is not None) or (cap_min is not None)
 
-                lag1 = s.get(f"price_lag_1d_{ft}")
-                lag2 = s.get(f"price_lag_2d_{ft}")
-                lag3 = s.get(f"price_lag_3d_{ft}")
-                lag7 = s.get(f"price_lag_7d_{ft}")
+            hard_feasible: List[Dict[str, Any]] = []
+            if should_cap:
+                for s in deduped:
+                    dk, dm = _detour_metrics(s)
+                    cap_fail = False
+                    try:
+                        if cap_km is not None and dk is not None and float(dk) > float(cap_km):
+                            cap_fail = True
+                    except Exception:
+                        pass
+                    try:
+                        if cap_min is not None and dm is not None and float(dm) > float(cap_min):
+                            cap_fail = True
+                    except Exception:
+                        pass
 
-                rows.append({
-                    "Brand/Name": _safe_text(brand),
-                    "Address": _safe_text(addr_google),
-                    "UTC+1 (now)": _safe_text(time_now_str),
-                    "Time cell (now)": cell_now if cell_now is not None else "—",
-                    "Time at ETA": _safe_text(time_eta_str),
-                    "Minutes until arrival": minutes_to_arrival if minutes_to_arrival is not None else "—",
-                    "Time cells ahead": cells_ahead if cells_ahead is not None else "—",
-                    "Time cell at ETA": cell_eta if cell_eta is not None else "—",
-                    "Horizon": horizon_used if horizon_used is not None else "—",
-                    "Price basis (which model → lags)": _safe_text(price_basis),
-                    "Current price": _fmt_price(current_price),
-                    f"Lag1d ({ft_label})": _fmt_price(lag1),
-                    f"Lag2d ({ft_label})": _fmt_price(lag2),
-                    f"Lag3d ({ft_label})": _fmt_price(lag3),
-                    f"Lag7d ({ft_label})": _fmt_price(lag7),
-                    "Predicted price": _fmt_price(pred_price),
-                })
+                    if not cap_fail:
+                        hard_feasible.append(s)
+            else:
+                hard_feasible = list(deduped)
 
-            df_io = pd.DataFrame(rows)
+            if not hard_feasible:
+                st.info("No hard-feasible stations available for the prediction audit table (all candidates failed hard/data constraints).")
+            else:
+                # ---- Times (best-effort, consistent with cached run) ----
+                now_local = _parse_any_dt_to_berlin(cached.get("computed_at")) or _parse_any_dt_to_berlin(datetime.now())
+                time_now_str = now_local.strftime("%Y-%m-%d %H:%M:%S") if now_local else "—"
+                cell_now = _time_cell_48(now_local)
 
-            # Normal Streamlit table (wide; horizontal scroll if needed)
-            st.dataframe(df_io, use_container_width=True, hide_index=True)
+                rows: List[Dict[str, Any]] = []
+
+                for s in hard_feasible:
+                    if not isinstance(s, dict):
+                        continue
+
+                    # Station metadata
+                    brand = s.get("brand") or s.get("tk_name") or s.get("station_name") or s.get("name") or "—"
+                    
+                    addr_google = _station_google_address_best_effort(s)
+
+                    # ETA parsing (multiple possible fields depending on run/version)
+                    eta_raw = (
+                        s.get("eta")
+                        or s.get(f"debug_{ft}_eta_utc")
+                        or s.get("eta_utc")
+                    )
+                    eta_local_dt = _parse_any_dt_to_berlin(eta_raw)
+                    time_eta_str = (
+                        eta_local_dt.strftime("%Y-%m-%d %H:%M:%S")
+                        if eta_local_dt
+                        else _format_eta_local_for_display(eta_raw)
+                    )
+                    cell_eta = _time_cell_48(eta_local_dt)
+
+                    # Use pipeline-provided deltas when available; otherwise compute from cells (including day wrap)
+                    minutes_to_arrival = (
+                        s.get(f"debug_{ft}_minutes_to_arrival")
+                        or s.get(f"debug_{ft}_minutes_ahead")
+                    )
+                    cells_ahead = (
+                        s.get(f"debug_{ft}_cells_ahead_raw")
+                        or s.get(f"debug_{ft}_cells_ahead")
+                    )
+
+                    if cells_ahead is None and (now_local is not None) and (eta_local_dt is not None) and (cell_now is not None) and (cell_eta is not None):
+                        try:
+                            day_now = now_local.date().toordinal()
+                            day_eta = eta_local_dt.date().toordinal()
+                            cells_ahead = (day_eta - day_now) * 48 + (cell_eta - cell_now)
+                        except Exception:
+                            cells_ahead = None
+
+                    # Model/basis
+                    used_current = _coerce_bool(s.get(f"debug_{ft}_used_current_price"))
+                    horizon_used = s.get(f"debug_{ft}_horizon_used")
+
+                    if used_current is True:
+                        price_basis = "Realtime (Tankerkönig) — no forecast"
+                    elif used_current is False:
+                        price_basis = f"Forecast (ARDL) — lags: 1d/2d/3d/7d ({ft_label})"
+                    else:
+                        price_basis = f"Forecast/Realtime (best-effort) — lags: 1d/2d/3d/7d ({ft_label})"
+
+                    if horizon_used not in (None, "", 0):
+                        price_basis = f"{price_basis} — horizon={horizon_used}"
+
+                    # Prices (+ fallbacks for older run variants)
+                    curr_key = f"price_current_{ft}"
+                    pred_key_local = f"pred_price_{ft}"
+
+                    current_price = s.get(curr_key)
+                    if current_price is None:
+                        current_price = s.get("price") or s.get(f"price_{ft}")
+
+                    pred_price = s.get(pred_key_local)
+
+                    lag1 = s.get(f"price_lag_1d_{ft}")
+                    lag2 = s.get(f"price_lag_2d_{ft}")
+                    lag3 = s.get(f"price_lag_3d_{ft}")
+                    lag7 = s.get(f"price_lag_7d_{ft}")
+
+                    rows.append({
+                        "Brand/Name": _safe_text(brand),
+                        "Address": _safe_text(addr_google),
+                        "UTC+1 (now)": _safe_text(time_now_str),
+                        "Time cell (now)": cell_now if cell_now is not None else "—",
+                        "Time at ETA": _safe_text(time_eta_str),
+                        "Minutes until arrival": minutes_to_arrival if minutes_to_arrival is not None else "—",
+                        "Time cells ahead": cells_ahead if cells_ahead is not None else "—",
+                        "Time cell at ETA": cell_eta if cell_eta is not None else "—",
+                        "Horizon": horizon_used if horizon_used is not None else "—",
+                        "Price basis (which model → lags)": _safe_text(price_basis),
+                        "Current price": _fmt_price(current_price),
+                        f"Lag1d ({ft_label})": _fmt_price(lag1),
+                        f"Lag2d ({ft_label})": _fmt_price(lag2),
+                        f"Lag3d ({ft_label})": _fmt_price(lag3),
+                        f"Lag7d ({ft_label})": _fmt_price(lag7),
+                        "Predicted price": _fmt_price(pred_price),
+                    })
+
+                df_io = pd.DataFrame(rows)
+
+                # Normal Streamlit table (wide; horizontal scroll if needed)
+                st.dataframe(df_io, use_container_width=True, hide_index=True)
 
         maybe_persist_state()
         return

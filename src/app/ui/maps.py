@@ -730,7 +730,7 @@ def create_mapbox_gl_html(
         }}
         if (cat === "best" || isBest) {{
           fill = "#00C800";     // best = green
-          stroke = "#FFFFFF";
+          stroke = "#000000";
         }}
 
         const el = document.createElement("div");
