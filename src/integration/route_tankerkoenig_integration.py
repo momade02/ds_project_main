@@ -358,27 +358,6 @@ def get_historical_prices_batch(
         print(f"Batch query failed: {e}. Falling back...")
         return {uuid: {"e5": None, "e10": None, "diesel": None} for uuid in station_uuids}
 
-        for row in res.data:
-            uuid = row["station_uuid"]
-            if uuid not in seen:
-                prices_map[uuid] = {
-                    "e5": row.get("e5"),
-                    "e10": row.get("e10"),
-                    "diesel": row.get("diesel"),
-                }
-                seen.add(uuid)
-
-        # Fill missing with None
-        for uuid in station_uuids:
-            if uuid not in prices_map:
-                prices_map[uuid] = {"e5": None, "e10": None, "diesel": None}
-
-        return prices_map
-
-    except Exception as e:
-        print(f"Batch query failed: {e}. Falling back...")
-        return {uuid: {"e5": None, "e10": None, "diesel": None} for uuid in station_uuids}
-
 
 def get_realtime_prices_batch(station_uuids: List[str]) -> Dict[str, Dict[str, Any]]:
     """
