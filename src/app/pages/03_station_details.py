@@ -40,7 +40,7 @@ try:
 except Exception:
     ZoneInfo = None
 
-from ui.sidebar import render_sidebar_shell, render_station_selector, render_comparison_selector, _render_help_action
+from ui.sidebar import render_sidebar_shell, render_station_selector, render_comparison_selector, _render_help_station
 
 # Path setup
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -1226,7 +1226,7 @@ def main():
     # =========================================================================
     # SIDEBAR - WITH TRIP SETTINGS IN ACTION TAB AND HELP CONTENT
     # =========================================================================
-    render_sidebar_shell(action_renderer=_render_trip_settings, help_renderer=_render_help_action)
+    render_sidebar_shell(action_renderer=_render_trip_settings, help_renderer=_render_help_station)
     
     # Station selectors are now rendered inside _render_trip_settings() for faster sidebar switching
     last_run = st.session_state.get("last_run") or {}

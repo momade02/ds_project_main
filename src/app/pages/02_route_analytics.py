@@ -61,7 +61,7 @@ from services.presenters import build_ranking_dataframe
 
 from ui.styles import apply_app_css
 
-from ui.sidebar import render_sidebar_shell
+from ui.sidebar import render_sidebar_shell, _render_help_action
 
 from config.settings import ensure_persisted_state_defaults
 from services.session_store import init_session_context, restore_persisted_state, maybe_persist_state
@@ -1160,7 +1160,7 @@ def main() -> None:
     st.session_state["debug_mode"] = True
 
     # Render standardized shell (Action/Help/Settings/Profile) with Page-02 Action content
-    render_sidebar_shell(action_renderer=_render_page02_sidebar_action)
+    render_sidebar_shell(action_renderer=_render_page02_sidebar_action, help_renderer=_render_help_action)
 
     cached = _get_last_run()
     if not cached:
