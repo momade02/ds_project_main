@@ -506,13 +506,9 @@ def _parse_any_dt_to_berlin(dt_any: Any, tz_name: str = "Europe/Berlin") -> Opti
     except Exception:
         return None
 
-    # If naive, assume it is already local (computed_at is written as local time on Page 01)
+    # If naive, assume UTC (safer for containers); then convert to Berlin below.
     if dt is not None and dt.tzinfo is None:
-        if ZoneInfo is not None:
-            try:
-                dt = dt.replace(tzinfo=ZoneInfo(tz_name))
-            except Exception:
-                dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=timezone.utc)
 
     if dt is None:
         return None
@@ -2194,28 +2190,32 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
         st.markdown(
             "#### Input/output values:",
             help=(
-                "This table is meant to make the prediction layer auditable.\n\n"
+                "This table is meant to make the prediction and economics layer auditable.\n\n"
                 "**Which stations are included?**\n"
-                "By default, the table shows the **Hard-feasible** station universe (same semantics as Section 2):\n"
-                "1) Upstream filters already applied in the cached run (e.g., brand filter, closed-at-ETA filter).\n"
-                "2) **Valid predicted-price field** available (guards against missing/corrupt values).\n"
-                "3) **Deduplicated by station UUID** (keeps the variant with the lowest predicted price).\n"
-                "4) **Detour caps applied** if configured; in Economics mode, missing caps default to 10 km / 10 min.\n\n"
-                "**Why not show all found stations?**\n"
-                "Stations that fail hard constraints or have invalid prediction inputs typically produce incomplete rows and do not reflect\n"
-                "what the system actually considers when computing the recommendation.\n\n"
-                "**Interpretation tip**\n"
-                "Use this table to verify ETA/time-cell mapping, horizon selection, and whether the system used realtime prices vs. a forecast."
+                "- The table shows **all stations available in the cached run payload** (no hard-constraint filtering, no deduplication).\n"
+                "- This includes stations that would normally be excluded by the decision layer (e.g., invalid forecast inputs, detour caps, distance window).\n"
+                "- **Limitation:** stations that were filtered upstream *before* the run was cached (e.g., earlier pipeline filters) cannot be shown here.\n\n"
+                "**Default ordering**\n"
+                "- The table is **sorted by Net savings (descending)**.\n"
+                "- Stations without a net-savings value appear at the bottom.\n\n"
+                "**How to read missing values (\"—\")**\n"
+                "- Missing fields typically mean the station did not have the required inputs at that stage (e.g., missing lag prices, no ETA, no prediction output).\n"
+                "- These stations are shown intentionally for transparency; they may not be eligible for recommendation under strict constraints.\n\n"
+                "**Interpretation tips**\n"
+                "- Use the time fields (\"UTC+1 (now)\", ETA, time cells) to verify timezone conversion and ETA-to-horizon mapping.\n"
+                "- Use \"Price basis\" to verify whether the system used realtime price vs. a forecast for the selected fuel.\n"
+                "- Use \"Net savings\" to compare the economic outcome across all cached stations, including those that would otherwise be filtered out."
             ),
         )
 
         # -----------------------------
-        # Input/Output table (Hard-feasible stations; aligned with Section 2)
+        # Input/Output table (ALL cached stations; no hard-constraint filtering)
         # -----------------------------
         ft = str(fuel_code or "e5").lower()
         ft_label = ft.upper()
 
         pred_key = f"pred_price_{ft}"
+        net_key = f"econ_net_saving_eur_{ft}"
 
         # Base candidate set (prefer cached 'stations' universe; fallback to other known keys if needed)
         base_candidates: List[Dict[str, Any]] = []
@@ -2228,204 +2228,142 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
         if not base_candidates:
             st.info("No stations found in the cached run (no station list available).")
         else:
-            # --- Build Hard-feasible universe (local reconstruction; does not modify Redis state) ---
-            def _is_valid_price_local(v: Any, *, min_price: float = MIN_VALID_PRICE_EUR_L) -> bool:
-                if _is_missing_number(v):
-                    return False
-                try:
-                    f = float(v)
-                except (TypeError, ValueError):
-                    return False
-                if f != f:  # NaN
-                    return False
-                return f >= float(min_price)
+            # NOTE:
+            # - This table intentionally shows ALL stations available in the cached run.
+            # - Stations that would fail hard constraints (invalid prediction inputs, detour caps, distance window, etc.)
+            #   will still appear, but some fields may be missing ("—").
+            # - Stations removed upstream on Page 01 (before caching) cannot be shown here, because they are not in the cached list.
 
-            # 1) Require usable predicted price
-            valid_candidates: List[Dict[str, Any]] = []
+            # ---- Times (best-effort, consistent with cached run) ----
+            now_local = (
+                _parse_any_dt_to_berlin(cached.get("computed_at"))
+                or _parse_any_dt_to_berlin(datetime.now(timezone.utc))
+            )
+            time_now_str = now_local.strftime("%Y-%m-%d %H:%M:%S") if now_local else "—"
+            cell_now = _time_cell_48(now_local)
+
+            def _net_saving_best_effort(s: Dict[str, Any]) -> Optional[float]:
+                # Primary key used in Section 4 tables
+                v = _as_float((s or {}).get(net_key))
+                if v is not None:
+                    return v
+
+                # Backward-compatible fallbacks (older variants)
+                for k in (
+                    "econ_net_saving_eur",
+                    f"net_saving_eur_{ft}",
+                    "net_saving_eur",
+                    "net_saving",
+                ):
+                    v = _as_float((s or {}).get(k))
+                    if v is not None:
+                        return v
+                return None
+
+            rows: List[Dict[str, Any]] = []
+
             for s in base_candidates:
                 if not isinstance(s, dict):
                     continue
-                if _is_valid_price_local(s.get(pred_key)):
-                    valid_candidates.append(s)
 
-            # 2) Deduplicate by station UUID (keep lowest predicted price)
-            by_uuid: Dict[str, Dict[str, Any]] = {}
-            no_uuid: List[Dict[str, Any]] = []
+                # Station metadata
+                brand = s.get("brand") or s.get("tk_name") or s.get("station_name") or s.get("name") or "—"
+                addr_google = _station_google_address_best_effort(s)
 
-            for s in valid_candidates:
-                u = s.get("station_uuid")
-                u = str(u) if u is not None else None
+                # ETA parsing (multiple possible fields depending on run/version)
+                eta_raw = (
+                    s.get("eta")
+                    or s.get(f"debug_{ft}_eta_utc")
+                    or s.get("eta_utc")
+                )
+                eta_local_dt = _parse_any_dt_to_berlin(eta_raw)
+                time_eta_str = (
+                    eta_local_dt.strftime("%Y-%m-%d %H:%M:%S")
+                    if eta_local_dt
+                    else _format_eta_local_for_display(eta_raw)
+                )
+                cell_eta = _time_cell_48(eta_local_dt)
 
-                if not u:
-                    no_uuid.append(s)
-                    continue
+                # Use pipeline-provided deltas when available; otherwise compute from cells (including day wrap)
+                minutes_to_arrival = (
+                    s.get(f"debug_{ft}_minutes_to_arrival")
+                    or s.get(f"debug_{ft}_minutes_ahead")
+                )
+                cells_ahead = (
+                    s.get(f"debug_{ft}_cells_ahead_raw")
+                    or s.get(f"debug_{ft}_cells_ahead")
+                )
 
-                existing = by_uuid.get(u)
-                if existing is None:
-                    by_uuid[u] = s
+                if cells_ahead is None and (now_local is not None) and (eta_local_dt is not None) and (cell_now is not None) and (cell_eta is not None):
+                    try:
+                        day_now = now_local.date().toordinal()
+                        day_eta = eta_local_dt.date().toordinal()
+                        cells_ahead = (day_eta - day_now) * 48 + (cell_eta - cell_now)
+                    except Exception:
+                        cells_ahead = None
+
+                # Model/basis
+                used_current = _coerce_bool(s.get(f"debug_{ft}_used_current_price"))
+                horizon_used = s.get(f"debug_{ft}_horizon_used")
+
+                if used_current is True:
+                    price_basis = "Realtime (Tankerkönig) — no forecast"
+                elif used_current is False:
+                    price_basis = f"Forecast (ARDL) — lags: 1d/2d/3d/7d ({ft_label})"
                 else:
-                    try:
-                        if float(s.get(pred_key)) < float(existing.get(pred_key)):
-                            by_uuid[u] = s
-                    except Exception:
-                        pass
+                    price_basis = f"Forecast/Realtime (best-effort) — lags: 1d/2d/3d/7d ({ft_label})"
 
-            deduped: List[Dict[str, Any]] = no_uuid + list(by_uuid.values())
+                if horizon_used not in (None, "", 0):
+                    price_basis = f"{price_basis} — horizon={horizon_used}"
 
-            # 3) Apply detour caps (economics mode defaults to 10 km / 10 min if unset)
-            constraints = run_summary.get("constraints") or {}
-            cap_km = _as_float(constraints.get("max_detour_km"))
-            cap_min = _as_float(constraints.get("max_detour_min"))
+                # Prices (+ fallbacks for older run variants)
+                curr_key = f"price_current_{ft}"
+                pred_key_local = f"pred_price_{ft}"
 
-            if bool(use_economics):
-                if cap_km is None:
-                    cap_km = 10.0
-                if cap_min is None:
-                    cap_min = 10.0
+                current_price = s.get(curr_key)
+                if current_price is None:
+                    current_price = s.get("price") or s.get(f"price_{ft}")
 
-            should_cap = (cap_km is not None) or (cap_min is not None)
+                pred_price = s.get(pred_key_local)
 
-            hard_feasible: List[Dict[str, Any]] = []
-            if should_cap:
-                for s in deduped:
-                    dk, dm = _detour_metrics(s)
-                    cap_fail = False
-                    try:
-                        if cap_km is not None and dk is not None and float(dk) > float(cap_km):
-                            cap_fail = True
-                    except Exception:
-                        pass
-                    try:
-                        if cap_min is not None and dm is not None and float(dm) > float(cap_min):
-                            cap_fail = True
-                    except Exception:
-                        pass
+                lag1 = s.get(f"price_lag_1d_{ft}")
+                lag2 = s.get(f"price_lag_2d_{ft}")
+                lag3 = s.get(f"price_lag_3d_{ft}")
+                lag7 = s.get(f"price_lag_7d_{ft}")
 
-                    if not cap_fail:
-                        hard_feasible.append(s)
-            else:
-                hard_feasible = list(deduped)
+                net_saving_val = _net_saving_best_effort(s)
 
-            # 4) Distance window (min/max distance) — NEW hard constraints
-            min_distance_km = _as_float(constraints.get("min_distance_km"))
-            max_distance_km = _as_float(constraints.get("max_distance_km"))
+                rows.append({
+                    "Brand/Name": _safe_text(brand),
+                    "Address": _safe_text(addr_google),
+                    "UTC+1 (now)": _safe_text(time_now_str),
+                    "Time cell (now)": cell_now if cell_now is not None else "—",
+                    "ETA": _safe_text(time_eta_str),
+                    "Minutes until arrival": minutes_to_arrival if minutes_to_arrival is not None else "—",
+                    "Time cells ahead": cells_ahead if cells_ahead is not None else "—",
+                    "Time cell at ETA": cell_eta if cell_eta is not None else "—",
+                    "Horizon": horizon_used if horizon_used is not None else "—",
+                    "Price basis (which model → lags)": _safe_text(price_basis),
+                    "Current price": _fmt_price(current_price),
+                    f"Lag1d ({ft_label})": _fmt_price(lag1),
+                    f"Lag2d ({ft_label})": _fmt_price(lag2),
+                    f"Lag3d ({ft_label})": _fmt_price(lag3),
+                    f"Lag7d ({ft_label})": _fmt_price(lag7),
+                    "Predicted price": _fmt_price(pred_price),
 
-            if hard_feasible and ((min_distance_km is not None) or (max_distance_km is not None)):
-                tmp: List[Dict[str, Any]] = []
-                for s in hard_feasible:
-                    dist_km = _distance_along_km(s)
+                    # Sorting helper (numeric) + displayed column (formatted)
+                    "__net_saving_sort": net_saving_val,
+                    "Net savings": "—" if net_saving_val is None else _fmt_eur(net_saving_val),
+                })
 
-                    if min_distance_km is not None and dist_km < float(min_distance_km):
-                        continue
-                    if max_distance_km is not None and dist_km > float(max_distance_km):
-                        continue
+            df_io = pd.DataFrame(rows)
 
-                    tmp.append(s)
-                hard_feasible = tmp
+            # Default ordering: Net savings DESC (missing values at bottom)
+            if "__net_saving_sort" in df_io.columns:
+                df_io = df_io.sort_values(by="__net_saving_sort", ascending=False, na_position="last")
+                df_io = df_io.drop(columns=["__net_saving_sort"])
 
-            if not hard_feasible:
-                st.info("No hard-feasible stations available for the prediction audit table (all candidates failed hard/data constraints).")
-            else:
-                # ---- Times (best-effort, consistent with cached run) ----
-                now_local = _parse_any_dt_to_berlin(cached.get("computed_at")) or _parse_any_dt_to_berlin(datetime.now())
-                time_now_str = now_local.strftime("%Y-%m-%d %H:%M:%S") if now_local else "—"
-                cell_now = _time_cell_48(now_local)
-
-                rows: List[Dict[str, Any]] = []
-
-                for s in hard_feasible:
-                    if not isinstance(s, dict):
-                        continue
-
-                    # Station metadata
-                    brand = s.get("brand") or s.get("tk_name") or s.get("station_name") or s.get("name") or "—"
-                    
-                    addr_google = _station_google_address_best_effort(s)
-
-                    # ETA parsing (multiple possible fields depending on run/version)
-                    eta_raw = (
-                        s.get("eta")
-                        or s.get(f"debug_{ft}_eta_utc")
-                        or s.get("eta_utc")
-                    )
-                    eta_local_dt = _parse_any_dt_to_berlin(eta_raw)
-                    time_eta_str = (
-                        eta_local_dt.strftime("%Y-%m-%d %H:%M:%S")
-                        if eta_local_dt
-                        else _format_eta_local_for_display(eta_raw)
-                    )
-                    cell_eta = _time_cell_48(eta_local_dt)
-
-                    # Use pipeline-provided deltas when available; otherwise compute from cells (including day wrap)
-                    minutes_to_arrival = (
-                        s.get(f"debug_{ft}_minutes_to_arrival")
-                        or s.get(f"debug_{ft}_minutes_ahead")
-                    )
-                    cells_ahead = (
-                        s.get(f"debug_{ft}_cells_ahead_raw")
-                        or s.get(f"debug_{ft}_cells_ahead")
-                    )
-
-                    if cells_ahead is None and (now_local is not None) and (eta_local_dt is not None) and (cell_now is not None) and (cell_eta is not None):
-                        try:
-                            day_now = now_local.date().toordinal()
-                            day_eta = eta_local_dt.date().toordinal()
-                            cells_ahead = (day_eta - day_now) * 48 + (cell_eta - cell_now)
-                        except Exception:
-                            cells_ahead = None
-
-                    # Model/basis
-                    used_current = _coerce_bool(s.get(f"debug_{ft}_used_current_price"))
-                    horizon_used = s.get(f"debug_{ft}_horizon_used")
-
-                    if used_current is True:
-                        price_basis = "Realtime (Tankerkönig) — no forecast"
-                    elif used_current is False:
-                        price_basis = f"Forecast (ARDL) — lags: 1d/2d/3d/7d ({ft_label})"
-                    else:
-                        price_basis = f"Forecast/Realtime (best-effort) — lags: 1d/2d/3d/7d ({ft_label})"
-
-                    if horizon_used not in (None, "", 0):
-                        price_basis = f"{price_basis} — horizon={horizon_used}"
-
-                    # Prices (+ fallbacks for older run variants)
-                    curr_key = f"price_current_{ft}"
-                    pred_key_local = f"pred_price_{ft}"
-
-                    current_price = s.get(curr_key)
-                    if current_price is None:
-                        current_price = s.get("price") or s.get(f"price_{ft}")
-
-                    pred_price = s.get(pred_key_local)
-
-                    lag1 = s.get(f"price_lag_1d_{ft}")
-                    lag2 = s.get(f"price_lag_2d_{ft}")
-                    lag3 = s.get(f"price_lag_3d_{ft}")
-                    lag7 = s.get(f"price_lag_7d_{ft}")
-
-                    rows.append({
-                        "Brand/Name": _safe_text(brand),
-                        "Address": _safe_text(addr_google),
-                        "UTC+1 (now)": _safe_text(time_now_str),
-                        "Time cell (now)": cell_now if cell_now is not None else "—",
-                        "ETA": _safe_text(time_eta_str),
-                        "Minutes until arrival": minutes_to_arrival if minutes_to_arrival is not None else "—",
-                        "Time cells ahead": cells_ahead if cells_ahead is not None else "—",
-                        "Time cell at ETA": cell_eta if cell_eta is not None else "—",
-                        "Horizon": horizon_used if horizon_used is not None else "—",
-                        "Price basis (which model → lags)": _safe_text(price_basis),
-                        "Current price": _fmt_price(current_price),
-                        f"Lag1d ({ft_label})": _fmt_price(lag1),
-                        f"Lag2d ({ft_label})": _fmt_price(lag2),
-                        f"Lag3d ({ft_label})": _fmt_price(lag3),
-                        f"Lag7d ({ft_label})": _fmt_price(lag7),
-                        "Predicted price": _fmt_price(pred_price),
-                    })
-
-                df_io = pd.DataFrame(rows)
-
-                # Normal Streamlit table (wide; horizontal scroll if needed)
-                st.dataframe(df_io, use_container_width=True, hide_index=True)
+            st.dataframe(df_io, use_container_width=True, hide_index=True)
 
         maybe_persist_state()
         return
@@ -3092,466 +3030,8 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
     else:
         st.caption("No discarded stations to display.")
 
-
-
-
-
-
-
-
-
-
-
-
-
-    # Keep the existing content below (A/B sections, existing tables) for now.
-    st.markdown("--- EVERYTHING BELOW WILL BE DELETED SOON ---")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    ranked: List[Dict[str, Any]] = cached.get("ranked") or []
-    best_station: Optional[Dict[str, Any]] = cached.get("best_station")
-    route_info: Dict[str, Any] = cached.get("route_info") or {}
-
-    # If Page 01 already computed the "value view" set, keep it available here as well.
-    value_view_stations = cached.get("value_view_stations") or []
-    value_view_meta = cached.get("value_view_meta") or {}
-
-    # Constraints (from Page 1 run_summary; fall back to None when missing)
-    constraints = run_summary.get("constraints") or {}
-    cap_km = constraints.get("max_detour_km")
-    cap_min = constraints.get("max_detour_min")
-    min_net_saving = constraints.get("min_net_saving_eur") if use_economics else None
-
-    # Advanced filter: "open at ETA" (may be absent in older cached runs)
-    filter_closed_at_eta_enabled: bool = bool(
-        run_summary.get("filter_closed_at_eta")
-        or cached.get("filter_closed_at_eta")
-        or (run_summary.get("advanced_settings") or {}).get("filter_closed_at_eta")
-        or (cached.get("advanced_settings") or {}).get("filter_closed_at_eta")
-    )
-    closed_at_eta_filtered_n = (
-        run_summary.get("closed_at_eta_filtered_n")
-        or cached.get("closed_at_eta_filtered_n")
-        or (run_summary.get("advanced_settings") or {}).get("closed_at_eta_filtered_n")
-        or (cached.get("advanced_settings") or {}).get("closed_at_eta_filtered_n")
-    )
-
-    # ------------------------------------------------------------------
-    # Optional exact filter diagnostics (emitted by decision layer)
-    # ------------------------------------------------------------------
-    filter_log: Dict[str, Any] = cached.get("filter_log") or {}
-    primary_reason_by_uuid: Dict[str, str] = filter_log.get("primary_reason_by_uuid") or {}
-    filter_counts: Dict[str, int] = filter_log.get("counts") or {}
-    filter_notes: List[str] = filter_log.get("notes") or []
-    filter_thresholds: Dict[str, Any] = filter_log.get("thresholds") or {}
-
-    # ------------------------------------------------------------------
-    # SECTION A — Your route & recommendation
-    # ------------------------------------------------------------------
-    st.subheader("A) Your route and the recommended decision")
-
-    # A1. Run summary
-    total_n = len(stations)
-    ranked_n = len(ranked)
-    excluded_n = max(0, total_n - ranked_n)
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Stations (total)", f"{total_n}")
-    c2.metric("Stations (ranked)", f"{ranked_n}")
-    c3.metric("Stations (excluded)", f"{excluded_n}")
-    c4.metric("Economics mode", "On" if use_economics else "Off")
-
-    # Route metadata (best-effort)
-    start_lbl = route_info.get("start_label") or ""
-    end_lbl = route_info.get("end_label") or ""
-    route_km = route_info.get("route_km")
-    route_min = route_info.get("route_min")
-
-    meta_left, meta_right = st.columns([2, 1])
-    with meta_left:
-        if start_lbl or end_lbl:
-            st.write(f"**Route:** {_safe_text(start_lbl)} → {_safe_text(end_lbl)}")
-        else:
-            st.write("**Route:** (labels unavailable in cache)")
-
-        constraints_lines = []
-        if cap_km is not None:
-            constraints_lines.append(f"Max detour distance: **{float(cap_km):.1f} km**")
-        if cap_min is not None:
-            constraints_lines.append(f"Max detour time: **{float(cap_min):.0f} min**")
-        if use_economics and (min_net_saving is not None):
-            constraints_lines.append(f"Minimum net saving: **{float(min_net_saving):.2f} €**")
-        if constraints_lines:
-            st.write("**Constraints:** " + " · ".join(constraints_lines))
-
-    with meta_right:
-        if route_km is not None:
-            try:
-                st.metric("Route length", f"{float(route_km):.1f} km")
-            except (TypeError, ValueError):
-                st.metric("Route length", "—")
-        else:
-            st.metric("Route length", "—")
-
-        if route_min is not None:
-            try:
-                st.metric("Route duration", f"{float(route_min):.0f} min")
-            except (TypeError, ValueError):
-                st.metric("Route duration", "—")
-        else:
-            st.metric("Route duration", "—")
-
-    st.markdown("")
-
-    # A2. Recommended station audit
-    if best_station:
-        st.markdown("#### Recommended station (audit)")
-
-        onroute_worst = _compute_onroute_worst_price(ranked, fuel_code)
-        net_vs_worst = _compute_net_vs_onroute_worst(best_station, onroute_worst, fuel_code, litres_to_refuel)
-
-        pred_key = f"pred_price_{fuel_code}"
-        curr_key = f"price_current_{fuel_code}"
-        econ_net_key = f"econ_net_saving_eur_{fuel_code}"
-        econ_gross_key = f"econ_gross_saving_eur_{fuel_code}"
-        econ_detour_fuel_cost_key = f"econ_detour_fuel_cost_eur_{fuel_code}"
-        econ_time_cost_key = f"econ_time_cost_eur_{fuel_code}"
-        econ_baseline_key = f"econ_baseline_price_{fuel_code}"
-
-        km, _mins = _detour_metrics(best_station)
-        dist_m = best_station.get("distance_along_m")
-
-        # Headline metrics (match your Page 1 set)
-        m1, m2, m3 = st.columns(3)
-        m1.metric(f"Predicted {fuel_code.upper()} price", _fmt_price(best_station.get(pred_key)))
-        m2.metric(f"Current {fuel_code.upper()} price", _fmt_price(best_station.get(curr_key)))
-        if dist_m is None:
-            m3.metric("Distance along route", "—")
-        else:
-            try:
-                m3.metric("Distance along route", f"{float(dist_m)/1000.0:.1f} km")
-            except (TypeError, ValueError):
-                m3.metric("Distance along route", "—")
-
-        m4, m5, m6 = st.columns(3)
-        m4.metric("On-route worst price", "—" if onroute_worst is None else _fmt_price(onroute_worst))
-        m5.metric("Net saving vs on-route worst", "—" if net_vs_worst is None else _fmt_eur(net_vs_worst))
-        m6.metric("Detour distance", _fmt_km(km))
-
-        if use_economics:
-            st.markdown("**Economics decomposition**")
-            d1, d2, d3, d4, d5 = st.columns(5)
-            d1.metric("Baseline price used", _fmt_price(best_station.get(econ_baseline_key)))
-            d2.metric("Gross saving", _fmt_eur(best_station.get(econ_gross_key)))
-            d3.metric("Detour fuel cost", _fmt_eur(best_station.get(econ_detour_fuel_cost_key)))
-            d4.metric("Time cost", _fmt_eur(best_station.get(econ_time_cost_key)))
-            d5.metric("Net saving (model)", _fmt_eur(best_station.get(econ_net_key)))
-
-        with st.expander("How the predicted price is chosen (price basis)", expanded=False):
-            st.write(
-                "The app may use either the station's current price or a forecasted price depending on the "
-                "ETA-to-station and the model horizon selected for that ETA. The table below shows the "
-                "debug fields used to decide this for the recommended station. If some fields are missing, "
-                "the run did not populate them and the UI falls back gracefully."
-            )
-            basis_df = _price_basis_table([best_station], fuel_code=fuel_code, limit=1)
-            st.dataframe(basis_df, hide_index=True, use_container_width=True)
-
-            if ranked:
-                st.caption("Top ranked stations — price basis snapshot")
-                st.dataframe(_price_basis_table(ranked, fuel_code=fuel_code, limit=10), hide_index=True, use_container_width=True)
-
-            action_col1, action_col2 = st.columns([1, 3])
-            with action_col1:
-                if st.button("Open Station Details", use_container_width=True):
-                    st.session_state["selected_station_uuid"] = _station_uuid(best_station)
-                    st.session_state["selected_station_data"] = best_station
-                    st.switch_page("pages/03_station_details.py")
-            with action_col2:
-                st.caption("Use Station Details for the full station profile (prices, prediction basis, debugging).")
-
-    else:
-        st.warning("No recommended station available in cache (likely no stations passed filters).")
-
-    st.markdown("---")
-
-    # ------------------------------------------------------------------
-    # SECTION B — Station universe & exclusions
-    # ------------------------------------------------------------------
-    st.subheader("B) All stations and why some were excluded")
-    
-    ranked_uuids = {_station_uuid(s) for s in ranked if _station_uuid(s)}
-    excluded = [s for s in stations if (_station_uuid(s) not in ranked_uuids)]
-
-    funnel = _compute_funnel_counts(
-        stations=stations,
-        ranked=ranked,
-        excluded=excluded,
-        fuel_code=fuel_code,
-        use_economics=use_economics,
-        cap_detour_km=cap_km,
-        cap_detour_min=cap_min,
-        min_net_saving_eur=min_net_saving,
-        filter_closed_at_eta_enabled=filter_closed_at_eta_enabled,
-        closed_at_eta_filtered_n=closed_at_eta_filtered_n,
-        min_distance_km=_as_float((constraints or {}).get("min_distance_km")),
-        max_distance_km=_as_float((constraints or {}).get("max_distance_km")),
-    )
-
-    st.markdown("#### Filtering funnel (high-level)")
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("Candidates", str(funnel["candidates_total"]))
-    c2.metric("Missing prediction", str(funnel["missing_prediction"]))
-    c3.metric("Closed at ETA", str(funnel["closed_at_eta"]) if filter_closed_at_eta_enabled else "—")
-    c4.metric("Failed detour caps", str(funnel["failed_detour_caps"]))
-    c5.metric("Failed economics", str(funnel["failed_economics"]) if use_economics else "—")
-    c6.metric("Ranked", str(funnel["ranked"]))
-    with st.expander("Funnel details (counts)", expanded=False):
-        funnel_df = pd.DataFrame([funnel])
-        st.dataframe(funnel_df, hide_index=True, use_container_width=True)
-
-    if filter_thresholds or filter_notes:
-        with st.expander("Filter diagnostics (exact)", expanded=False):
-            if filter_thresholds:
-                st.markdown("**Thresholds used**")
-                st.json(filter_thresholds, expanded=False)
-            if filter_notes:
-                st.markdown("**Notes**")
-                for n in filter_notes:
-                    st.write(f"- {n}")
-            if filter_counts:
-                st.markdown("**Counts (as emitted by decision layer)**")
-                st.json(filter_counts, expanded=False)
-
-    # B1. Exclusion breakdown
-    if excluded:
-        # Prefer exact primary reasons from filter_log if available
-        if primary_reason_by_uuid:
-            reasons = [primary_reason_by_uuid.get(_station_uuid(s), "Not ranked (other)") for s in excluded]
-        else:
-            reasons = [
-                _exclusion_reason(
-                    s,
-                    fuel_code=fuel_code,
-                    use_economics=use_economics,
-                    cap_km=float(cap_km) if cap_km is not None else None,
-                    cap_min=float(cap_min) if cap_min is not None else None,
-                    min_net_saving=float(min_net_saving) if min_net_saving is not None else None,
-                    filter_closed_at_eta_enabled=filter_closed_at_eta_enabled,
-                    min_distance_km=_as_float((constraints or {}).get("min_distance_km")),
-                    max_distance_km=_as_float((constraints or {}).get("max_distance_km")),
-                )
-                for s in excluded
-            ]
-
-        reason_counts = pd.Series(reasons).value_counts()
-
-        # Integrate upstream filters (stations removed before caching)
-        if filter_closed_at_eta_enabled and closed_at_eta_filtered_n > 0:
-            reason_counts.loc["Filtered upstream: Closed at ETA (Google)"] = int(closed_at_eta_filtered_n)
-
-        if brand_filter_selected and brand_filtered_out_n > 0:
-            reason_counts.loc["Filtered upstream: Brand filter"] = int(brand_filtered_out_n)
-
-        left, right = st.columns([1, 2])
-        with left:
-            st.markdown("**Exclusion breakdown**")
-            for reason, cnt in reason_counts.items():
-                st.write(f"- {reason}: **{int(cnt)}**")
-            if brand_filter_selected:
-                st.caption(f"Brand whitelist: {', '.join(brand_filter_selected)}")
-                # Optional transparency: show aliases used
-                if isinstance(brand_filter_aliases, dict) and brand_filter_aliases:
-                    st.caption(
-                        "Alias matching: "
-                        + "; ".join(f"{k}: {', '.join(v)}" for k, v in brand_filter_aliases.items() if isinstance(v, list))
-                    )
-                st.caption("Note: stations with unknown/missing brand are excluded when the brand filter is active.")
-        with right:
-            chart_df = reason_counts.reset_index()
-            chart_df.columns = ["Reason", "Count"]
-            st.bar_chart(chart_df.set_index("Reason"))
-    else:
-        st.info("No stations were excluded (all candidates appear in the ranked list).")
-
-    st.markdown("")
-
-    # B2a. Value view: stations not worse than the worst on-route option
-    # This is a display-only table intended to be more consistent for end users.
-    st.markdown("#### Stations better than the worst on-route option (value view)")
-
-    pred_key = f"pred_price_{fuel_code}"
-
-    # Reconstruct the "hard-pass" candidate set (what the decision layer would consider before the min-net-saving soft filter).
-    cap_km_f = float(cap_km) if cap_km is not None else None
-    cap_min_f = float(cap_min) if cap_min is not None else None
-    min_distance_km_f = _as_float((constraints or {}).get("min_distance_km"))
-    max_distance_km_f = _as_float((constraints or {}).get("max_distance_km"))
-
-    hard_pass: List[Dict[str, Any]] = []
-    for s in stations:
-        # Require a usable prediction for the selected fuel.
-        p = s.get(pred_key)
-        try:
-            p_f = float(p) if p is not None else None
-        except (TypeError, ValueError):
-            p_f = None
-        if p_f is None or p_f < MIN_VALID_PRICE_EUR_L:
-            continue
-
-        # Require passing detour caps (hard constraints).
-        km, mins = _detour_metrics(s)
-        if (cap_km_f is not None and km > cap_km_f) or (cap_min_f is not None and mins > cap_min_f):
-            continue
-
-        # Enforce distance window (hard constraints)
-        dist_km = _distance_along_km(s)
-        if (min_distance_km_f is not None) and (dist_km < float(min_distance_km_f)):
-            continue
-        if (max_distance_km_f is not None) and (dist_km > float(max_distance_km_f)):
-            continue
-
-        hard_pass.append(s)
-
-    # Compute the on-route worst price within the hard-pass set.
-    onroute_km = float(filter_thresholds.get("onroute_max_detour_km", 1.0) or 1.0)
-    onroute_min = float(filter_thresholds.get("onroute_max_detour_min", 5.0) or 5.0)
-
-    onroute_worst_price = _compute_onroute_worst_price(
-        hard_pass,
-        fuel_code=fuel_code,
-        onroute_max_detour_km=onroute_km,
-        onroute_max_detour_min=onroute_min,
-    )
-
-    if onroute_worst_price is None:
-        st.info(
-            "Could not compute the on-route worst price (no stations qualify as on-route under the current thresholds)."
-        )
-    else:
-        # Keep stations whose predicted price is not worse than the on-route worst predicted price.
-        value_view: List[Dict[str, Any]] = []
-        for s in hard_pass:
-            p = s.get(pred_key)
-            try:
-                p_f = float(p) if p is not None else None
-            except (TypeError, ValueError):
-                p_f = None
-            if p_f is None:
-                continue
-
-            if p_f <= float(onroute_worst_price) + 1e-9:
-                value_view.append(s)
-
-        if value_view:
-            # Sort with the same primary logic as the decision layer (when available).
-            if use_economics:
-                econ_net_key = f"econ_net_saving_eur_{fuel_code}"
-
-                def _net_sort_key(sta: Dict[str, Any]) -> Tuple:
-                    net = sta.get(econ_net_key)
-                    try:
-                        net_f = float(net) if net is not None else float("-inf")
-                    except (TypeError, ValueError):
-                        net_f = float("-inf")
-                    return (
-                        -net_f,
-                        sta.get("fraction_of_route", float("inf")),
-                        sta.get("distance_along_m", float("inf")),
-                    )
-
-                value_view_sorted = sorted(value_view, key=_net_sort_key)
-            else:
-                value_view_sorted = sorted(
-                    value_view,
-                    key=lambda x: (
-                        x.get(pred_key, float("inf")),
-                        x.get("fraction_of_route", float("inf")),
-                        x.get("distance_along_m", float("inf")),
-                    ),
-                )
-
-            value_df = build_ranking_dataframe(value_view_sorted, fuel_code=fuel_code, debug_mode=debug_mode)
-            st.dataframe(value_df, use_container_width=True, hide_index=True)
-            st.caption(
-                f"Filter used: predicted price ≤ on-route worst predicted price ({float(onroute_worst_price):.3f} €/L), "
-                "within the same detour caps as the decision."
-            )
-        else:
-            st.info("No stations are better than the on-route worst price under the current detour caps.")
-
-    st.markdown("")
-
-    # B2. Ranked table
-    st.markdown("#### Ranked stations (comparison table)")
-    if ranked:
-
-        ranked_df = build_ranking_dataframe(ranked, fuel_code=fuel_code, debug_mode=debug_mode)
-
-        st.dataframe(ranked_df, use_container_width=True, hide_index=True)
-    else:
-        st.error("No stations were ranked. Use the exclusion section above to see why.")
-
-    # B3. Excluded table
-    st.markdown("#### Excluded stations (audit table)")
-    if excluded:
-        rows = []
-        pred_key = f"pred_price_{fuel_code}"
-        curr_key = f"price_current_{fuel_code}"
-        econ_net_key = f"econ_net_saving_eur_{fuel_code}"
-
-        for s in excluded:
-            km, mins = _detour_metrics(s)
-            uid = _station_uuid(s)
-            reason = primary_reason_by_uuid.get(uid) if primary_reason_by_uuid else None
-            if not reason:
-                reason = _exclusion_reason(
-                    s,
-                    fuel_code=fuel_code,
-                    use_economics=use_economics,
-                    cap_km=float(cap_km) if cap_km is not None else None,
-                    cap_min=float(cap_min) if cap_min is not None else None,
-                    min_net_saving=float(min_net_saving) if min_net_saving is not None else None,
-                    filter_closed_at_eta_enabled=filter_closed_at_eta_enabled,
-                )
-            rows.append(
-                {
-                    "Brand": s.get("brand") or "",
-                    "Name": s.get("tk_name") or s.get("osm_name") or s.get("name") or "",
-                    "City": s.get("city") or "",
-                    "Detour distance [km]": km,
-                    "Detour time [min]": mins,
-                    f"Predicted {fuel_code.upper()} price": s.get(pred_key),
-                    f"Current {fuel_code.upper()} price": s.get(curr_key),
-                    "Net saving (if available)": s.get(econ_net_key) if use_economics else None,
-                    "Open at ETA": _open_at_eta_flag(s),
-                    "Reason": reason,
-                    "UUID": uid,
-                }
-            )
-
-        excluded_df = pd.DataFrame(rows)
-        st.dataframe(excluded_df, use_container_width=True, hide_index=True)
-    else:
-        st.caption("No excluded stations to display.")
-
     maybe_persist_state()
-        
+    return
 
 if __name__ == "__main__":
     main()
