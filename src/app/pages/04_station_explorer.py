@@ -459,7 +459,7 @@ def main() -> None:
 
         st.markdown(
             """
-    Use this page to **browse fuel stations around any location** and quickly compare **realtime prices**.
+    Use this page to **browse fuel stations around any location** in Germany and quickly compare **realtime prices**.
 
     **What you can do**
     - Search stations around a **city, ZIP, or full address**
