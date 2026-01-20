@@ -1201,17 +1201,32 @@ def main() -> None:
 
     analysis_view = str(st.session_state.get("route_analytics_view") or "").strip()
 
-    # Default landing: no selection => show welcome info below the top nav
+    # Default landing: no selection => show welcome content below the top nav
     if not analysis_view:
-        st.info(
-            "Welcome to Route Analytics.\n\n"
-            "Use the sidebar to select an analysis view:\n"
-            "- Recommended Route\n"
-            "- Recommended Stations\n"
-            "- Prediction Algorithm\n"
-            "- Full Result Tables\n\n"
-            "Tip: Start on “Full Result Tables” to review the current end-to-end output."
+        st.markdown(
+            """
+    ### Welcome to Route Analytics
+
+    This page is the **analysis layer** for your last recommender run. It lets you inspect the route result end-to-end:
+    from the chosen route, to the ranked stations, to the price prediction logic that drives the ranking.
+
+    #### Page structure (sections)
+    - **Recommended Route**  
+    Visualizes the final route and key route settings used for the run.
+
+    - **Recommended Stations**  
+    Summarizes the top recommendations and key KPIs (including gross/net logic when economics is enabled).
+
+    - **Prediction Algorithm**  
+    Station-level audit trail for the price prediction pipeline (Spot vs Forecast decision, horizon selection, model inputs, and explainability).
+
+    - **Full Result Tables**  
+    Complete result tables for all stations (best for validating the final output and filtering/sorting by metrics).
+    """
         )
+
+        st.info("Get started: open the sidebar and select one of the analysis views to display its section.")
+
         maybe_persist_state()
         return
 
@@ -2004,12 +2019,20 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
     # SECTION: Important results (lightweight summary, no logic changes)
     # -----------------------------
         st.markdown(
-            """
-            <h4 style="margin-top: -2.5rem; margin-bottom: 0.25rem;">
-                Important results:
-            </h4>
-            """,
-            unsafe_allow_html=True,
+            "#### Important results",
+            help=(
+                "**What these cards show (top block):**\n\n"
+                "**Prices (€/L)**\n"
+                "- **Best (pred):** lowest *predicted* arrival price among the stations considered for ranking.\n"
+                "- **Best (current):** lowest *current realtime* price among the same candidate set.\n\n"
+                "**Detour & time costs (€)**\n"
+                "- **Detour fuel:** estimated fuel cost caused by the detour distance/time.\n"
+                "- **Time cost:** monetized time penalty for the detour (if time valuation is enabled; otherwise 0).\n\n"
+                "**Net savings (€)**\n"
+                "- **Net vs median:** net savings compared to the median station (savings after detour/time costs).\n"
+                "- **Net vs worst:** net savings compared to the most expensive station (after detour/time costs).\n\n"
+                "**General:** Net savings = (reference cost - chosen station cost) - detour costs - time cost."
+            )
         )
 
         # --- Pull best-station + benchmark prices (display-only computations) ---
@@ -2117,11 +2140,20 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
         # Benchmarks
         st.markdown(
             """
-            <h5 style="margin-top: 0.25rem; margin-bottom: 0.25rem;">
-                Benchmarks (on-route, predicted):
-            </h5>
+            #### Benchmarks (on-route, predicted):
             """,
+            help=(
+                "**What these benchmark prices mean:**\n\n"
+                "These are *predicted arrival prices* for stations that are **on-route** (minimal/no detour), used as a reference distribution.\n\n"
+                "- **On-route best:** lowest predicted price among on-route stations.\n"
+                "- **On-route median:** median predicted price among on-route stations.\n"
+                "- **On-route worst:** highest predicted price among on-route stations.\n\n"
+                "**How to use them:**\n"
+                "- They provide context for whether the recommended station is meaningfully cheaper than typical on-route options.\n"
+                "- They are *price-only* benchmarks; detour/time costs are handled separately in the net savings cards."
+            ),
             unsafe_allow_html=True,
+
         )
         benchmark_cards: List[Tuple[str, str]] = [
             ("On-route best", "N/A" if not onroute_benchmark_available else _fmt_price_or_dash(on_best)),
@@ -2158,37 +2190,818 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
         # Headline in the same style as the other sections
         st.markdown("### **3. Prediction Algorithm**")
 
-        # Use standard sub-headlines (same pattern as other pages)
         st.markdown(
-            "#### Placeholder headline 1:",
-            help="Reserved for the first explanatory block of the prediction pipeline.",
-        )
-        st.info(
-            "Placeholder content. This section will explain the high-level prediction flow "
-            "(data inputs, model selection, and how predicted prices are produced)."
+            """
+            For **every station** found along your route, the **system predicts** a price that is used on the map and in the ranking.
+            This happens in a **consistent, station-level pipeline**:
+            """
         )
 
+        with st.expander("High-level pipeline"):
+            st.markdown(
+                """
+            **What happens for each station on the route;**  
+            The system runs a consistent, station-level prediction pipeline. The goal is to produce one **expected price at arrival** per station.
+
+
+            #### 1) ETA is computed per station
+            - The system combines:
+                - the **base route travel time**, and
+                - the station’s **detour time**
+            - -> **ETA (arrival time)** for every station.
+            - The ETA determines **whether** a forecast is needed and **which forecast horizon** applies.
+
+
+            #### 2) Spot vs Forecast decision
+            - If **ETA ≤ 10 minutes** → **Spot mode**
+                - **No model** is used.
+                - **Predicted price = current realtime price**.
+            - If **ETA > 10 minutes** → **Forecast mode**
+                - System uses a trained model to estimate the **expected price at arrival**.
+
+            This prevents “fake forecasting” for stations that will be reached almost immediately.
+
+            
+            #### 3) Time-cell mapping (Forecast mode only)
+            To keep forecasting consistent across times of day, the system maps time to fixed buckets:
+            - A day is split into **48 time cells** (each cell = **30 minutes**).
+            - The system derives:
+                - **Now cell** (current local time bucket),
+                - **ETA cell** (arrival time bucket),
+                - **Cells ahead** = how many 30-minute buckets lie between Now and ETA.
+
+            This turns an ETA timestamp into a discrete horizon choice.
+
+            
+            #### 4) Horizon selection and which model is used
+            **Forecast mode selects one of the trained horizon models** based on how far the station lies in the future:
+
+            - Short horizons (**intraday**):  
+                - **h1 / h2 / h3 / h4** correspond to roughly **30 / 60 / 90 / 120 minutes** ahead  
+                - Used when the ETA is “close enough” that intraday structure matters
+            - Longer horizons (**daily**):  
+                - **h0_daily** is used when the ETA is farther out (beyond the short intraday horizons)
+
+            Result:
+            - Every station in Forecast mode is paired with exactly one model:
+            - `fuel_price_model_ARDL_<fuel>_h{1..4}_<...>.joblib` or  
+            - `fuel_price_model_ARDL_<fuel>_h0_daily.joblib`
+
+            
+            #### 5) What the model uses as inputs
+
+            **Future price at arrival ≈ historical price at comparable times + an intraday anchor (for short horizons)**
+
+            Inputs at runtime match the training feature set:
+
+            - **Historical daily lags** (same time-of-day cell on prior days):
+                - `price_lag_1d`, `price_lag_2d`, `price_lag_3d`, `price_lag_7d`
+            - **Intraday anchor** (only for h1–h4):
+                - a horizon-specific intraday feature (e.g., `price_lag_1cell`, `price_lag_2cell`, …)
+
+            Connection between training and runtime:
+            - During training:
+                - fitting of **separate models per fuel type and horizon** so each model can learn a stable mapping for that lookahead.
+            - During prediction:
+                - reproduction of the same feature schema and then selection of the corresponding horizon model based on the station’s ETA.
+            - This is why there are **15 models total** (3 fuels × 5 horizons):  
+                -> each one is specialized for its forecast horizon and fuel type.
+
+
+            #### 6) Output: one expected arrival price 
+            For each station, the pipeline yields exactly one value:
+            - **Spot mode** → expected price = current realtime price
+            - **Forecast mode** → expected price = model forecast at ETA
+        
+            """
+            )
+
+        # -----------------------------
+        # A–D: User-facing explanation (keep lightweight; no ranking logic changes)
+        # -----------------------------
+
+        # Prefer the full station universe ("stations") over any ranked/filtered subset ("ranked")
+        stations_for_explain: List[Dict[str, Any]] = []
+
+        v_all = (cached or {}).get("stations")
+        if isinstance(v_all, list) and v_all and isinstance(v_all[0], dict):
+            stations_for_explain = v_all
+        else:
+            v_ranked = (cached or {}).get("ranked")
+            if isinstance(v_ranked, list) and v_ranked and isinstance(v_ranked[0], dict):
+                stations_for_explain = v_ranked
+
+        best_station = (cached or {}).get("best_station")
+        best_uuid = _station_uuid(best_station) if isinstance(best_station, dict) else ""
+
+        def _station_label(s: Dict[str, Any]) -> str:
+            brand = s.get("brand") or s.get("tk_name") or s.get("station_name") or s.get("name") or "Station"
+            addr = _station_google_address_best_effort(s)
+            short_addr = addr.replace(", Deutschland", "").strip() if isinstance(addr, str) else "—"
+            return f"{_safe_text(brand)} — {_safe_text(short_addr)}"
+
+        explained_station: Optional[Dict[str, Any]] = None
+        if stations_for_explain:
+            default_idx = 0
+            if best_uuid:
+                for i, s in enumerate(stations_for_explain):
+                    if _station_uuid(s) == best_uuid:
+                        default_idx = i
+                        break
+
+            explained_station = st.selectbox(
+                "Use the **selector below** to choose a station and see how its price was predicted:",
+                options=stations_for_explain,
+                index=default_idx,
+                format_func=_station_label,
+            )
+
+        # --- Compute station-level explanation fields (best-effort, never raise) ---
+        ft = str((cached or {}).get("fuel_code") or (cached or {}).get("fuel_type") or fuel_code or "diesel").lower().strip()
+        ft_label = ft.upper() if ft != "diesel" else "Diesel"
+
+        # "Now" anchor: prefer cached timestamp (this page is an audit view of a past run)
+        now_local = _parse_any_dt_to_berlin((cached or {}).get("computed_at") or (cached or {}).get("ts") or (cached or {}).get("timestamp"))
+        now_str = now_local.strftime("%Y-%m-%d %H:%M:%S") if now_local else "—"
+        cell_now = _time_cell_48(now_local)
+
+        def _read_station_explain_payload(s: Dict[str, Any]) -> Dict[str, Any]:
+            # ETA (multiple possible representations depending on run/version)
+            eta_raw = s.get("eta") or s.get(f"debug_{ft}_eta_utc") or s.get("eta_utc")
+            eta_local_dt = _parse_any_dt_to_berlin(eta_raw)
+            eta_str = (
+                eta_local_dt.strftime("%Y-%m-%d %H:%M:%S")
+                if eta_local_dt
+                else _format_eta_local_for_display(eta_raw)
+            )
+            cell_eta = _time_cell_48(eta_local_dt)
+
+            # Predictor-produced debug values (preferred)
+            minutes_to_arrival = s.get(f"debug_{ft}_minutes_to_arrival") or s.get(f"debug_{ft}_minutes_ahead")
+            cells_ahead = s.get(f"debug_{ft}_cells_ahead_raw") or s.get(f"debug_{ft}_cells_ahead")
+
+            # Compute cells ahead if missing (handles day wrap)
+            if cells_ahead is None and (now_local is not None) and (eta_local_dt is not None) and (cell_now is not None) and (cell_eta is not None):
+                try:
+                    day_now = now_local.date().toordinal()
+                    day_eta = eta_local_dt.date().toordinal()
+                    cells_ahead = (day_eta - day_now) * 48 + (cell_eta - cell_now)
+                except Exception:
+                    cells_ahead = None
+
+            # Forecast-basis flags set by predictor
+            used_current = _coerce_bool(s.get(f"debug_{ft}_used_current_price"))
+            horizon_used = s.get(f"debug_{ft}_horizon_used")
+
+            # Prices (+ fallbacks)
+            curr_key = f"price_current_{ft}"
+            pred_key_local = f"pred_price_{ft}"
+
+            current_price = s.get(curr_key)
+            if current_price is None:
+                current_price = s.get("price") or s.get(f"price_{ft}")
+
+            pred_price = s.get(pred_key_local)
+
+            lag1 = s.get(f"price_lag_1d_{ft}")
+            lag2 = s.get(f"price_lag_2d_{ft}")
+            lag3 = s.get(f"price_lag_3d_{ft}")
+            lag7 = s.get(f"price_lag_7d_{ft}")
+
+            # Human-readable "price basis" string (keep aligned with table)
+            if used_current is True:
+                price_basis = "Realtime (Tankerkönig) — no forecast"
+            elif used_current is False:
+                price_basis = f"Forecast (ARDL) — lags: 1d/2d/3d/7d ({ft_label})"
+            else:
+                price_basis = f"Forecast/Realtime (best-effort) — lags: 1d/2d/3d/7d ({ft_label})"
+
+            if horizon_used not in (None, "", 0):
+                price_basis = f"{price_basis} — horizon={horizon_used}"
+
+            # Mode label
+            if used_current is True:
+                mode = "Spot (ETA < 10 min)"
+            elif used_current is False:
+                mode = "Forecast (ETA ≥ 10 min)"
+            else:
+                mode = "Best-effort (mixed / missing flags)"
+
+            return {
+                "eta_str": eta_str,
+                "eta_local_dt": eta_local_dt,
+                "cell_eta": cell_eta,
+                "minutes_to_arrival": minutes_to_arrival,
+                "cells_ahead": cells_ahead,
+                "used_current": used_current,
+                "horizon_used": horizon_used,
+                "price_basis": price_basis,
+                "mode": mode,
+                "current_price": current_price,
+                "pred_price": pred_price,
+                "lag1": lag1,
+                "lag2": lag2,
+                "lag3": lag3,
+                "lag7": lag7,
+            }
+
+        explain = _read_station_explain_payload(explained_station) if isinstance(explained_station, dict) else None
+
+        # -----------------------------
+        # A) Spot vs Forecast decision
+        # -----------------------------
         st.markdown(
-            "#### Placeholder headline 2:",
-            help="Reserved for the second explanatory block (e.g., horizon logic / ETA mapping / time cells).",
-        )
-        st.info(
-            "Placeholder content. This section will explain how the forecast horizon is chosen "
-            "based on your ETA and how time cells are mapped for prediction."
+            "#### A) Spot vs Forecast decision",
+            help=(
+                "Station-level rule from the predictor:\n"
+                "- If the station is reachable within 10 minutes and a realtime price exists, the system uses **current price** = **predicted price**.\n"
+                "- Otherwise it uses Forecast mode and selects a horizon model.\n"
+            ),
         )
 
+        # Cards below (still next to each other)
+        # --- A) Spot vs Forecast: tight layout (single HTML block) ---
+        if explain:
+            _mode = _safe_text(explain.get("mode"))
+            _now = _safe_text(now_str)
+            _eta = _safe_text(explain.get("eta_str"))
+        else:
+            _mode, _now, _eta = "—", "—", "—"
+
         st.markdown(
-            "#### Placeholder headline 3:",
-            help="Reserved for the third explanatory block (e.g., current-price fallback logic and edge cases).",
+            f"""
+            <style>
+            .p02-a-wrap {{
+                margin-top: -0.6rem;
+                margin-bottom: 0.8rem;
+            }}
+            .p02-a-wrap ul {{
+                margin: 0 0 0.35rem 1.1rem;   /* controls spacing BELOW bullets */
+                padding: 0;
+            }}
+            .p02-a-cards {{
+                display: flex;
+                flex-wrap: wrap;
+                gap: 0.2rem;                /* horizontal/vertical gap between cards */
+                margin: 0;                   /* no extra top margin */
+            }}
+            .p02-a-card {{
+                flex: 1 1 260px;             /* responsive: 3 on desktop, stacks on mobile */
+                width: 100%;
+                padding: 0.5rem 1.0rem;
+                border: 2px solid rgba(49, 51, 63, 0.3);
+                border-radius: 0.9rem;
+                text-align: center;
+            }}
+            .p02-a-card-label {{
+                font-size: 0.9rem;
+                opacity: 0.78;
+                margin: 0 0 0.25rem 0;
+                line-height: 1.15;
+            }}
+            .p02-a-card-value {{
+                font-size: 1.3rem;
+                font-weight: 750;
+                margin: 0;
+                line-height: 1.15;
+            }}
+            </style>
+
+            <div class="p02-a-wrap">
+            <ul>
+                <li><b>Spot mode:</b> Predicted price = current realtime price → <b>no forecast</b></li>
+                <li><b>Forecast mode:</b> Use ARDL model with an ETA-dependent horizon</li>
+            </ul>
+
+            <div class="p02-a-cards">
+                <div class="p02-a-card">
+                <div class="p02-a-card-label">Now (local)</div>
+                <div class="p02-a-card-value">{_now}</div>
+                </div>
+                <div class="p02-a-card">
+                <div class="p02-a-card-label">ETA (local)</div>
+                <div class="p02-a-card-value">{_eta}</div>
+                </div>
+                <div class="p02-a-card">
+                <div class="p02-a-card-label">Mode</div>
+                <div class="p02-a-card-value">{_mode}</div>
+                </div>
+            </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
-        st.info(
-            "Placeholder content. This section will explain when and why the system uses current prices "
-            "instead of a forecast (e.g., very short time-to-arrival)."
+
+
+        # -----------------------------
+        # B) Horizon selection & time cells
+        # -----------------------------
+        st.markdown(
+            "#### B) Horizon selection",
+            help=(
+                "The predictor uses minutes-to-arrival (preferred) and time-cell deltas (fallback) to pick a horizon:\n"
+                "- h1..h4 for 30..120 minutes ahead\n"
+                "- h0_daily for longer lookaheads or if intraday inputs are unavailable\n"
+                "Time cells are 0..47 in 30-minute buckets (local timezone)."
+            ),
         )
+
+        # --- B) Horizon selection: tight layout (single HTML block) ---
+        if explain:
+            derived_h = explain.get("horizon_used")
+            derived_h_str = "h0_daily" if (derived_h in (None, "", 0)) else f"h{derived_h}"
+
+            now_cell_str = "—" if cell_now is None else str(cell_now)
+            eta_cell = explain.get("cell_eta")
+            eta_cell_str = "—" if eta_cell is None else str(eta_cell)
+
+            cells_ahead = explain.get("cells_ahead")
+            cells_ahead_str = "—" if cells_ahead is None else str(cells_ahead)
+
+            minutes_ahead = explain.get("minutes_to_arrival")
+
+            if minutes_ahead is None:
+                minutes_ahead_str = "—"
+            else:
+                try:
+                    minutes_ahead_str = f"{float(minutes_ahead):.2f}"
+                except Exception:
+                    minutes_ahead_str = str(minutes_ahead)
+
+            st.markdown(
+                f"""
+                <style>
+                .p02-b-wrap {{
+                    margin-top: -0.4rem;
+                }}
+                .p02-b-cards {{
+                    display: flex;
+                    flex-wrap: wrap;
+                    gap: 0.2rem;
+                    margin: 0 0 0.35rem 0;   /* spacing below cards */
+                }}
+                .p02-b-card {{
+                    flex: 1 1 210px;         /* responsive */
+                    padding: 0.55rem 0.9rem;
+                    border: 2px solid rgba(49, 51, 63, 0.3);
+                    border-radius: 0.9rem;
+                    text-align: center;
+                }}
+                .p02-b-label {{
+                    font-size: 0.9rem;
+                    opacity: 0.78;
+                    margin: 0 0 0.25rem 0;
+                    line-height: 1.1;
+                }}
+                .p02-b-value {{
+                    font-size: 1.25rem;
+                    font-weight: 750;
+                    margin: 0;
+                    line-height: 1.15;
+                }}
+                details.p02-b-details > summary {{
+                    cursor: pointer;
+                    font-weight: 650;
+                    margin-top: 0.1rem;
+                }}
+                details.p02-b-details {{
+                    margin-top: 0.2rem;
+                }}
+                .p02-b-rules {{
+                    margin: 0.35rem 0 0 1.1rem;
+                }}
+                .p02-b-rules li {{
+                    margin: 0.15rem 0;
+                }}
+                code.p02-code {{
+                    padding: 0.1rem 0.3rem;
+                    border-radius: 0.35rem;
+                    background: rgba(49, 51, 63, 0.06);
+                    border: 1px solid rgba(49, 51, 63, 0.12);
+                    font-size: 0.9em;
+                }}
+                </style>
+
+                <div class="p02-b-wrap">
+                <div class="p02-b-cards">
+                    <div class="p02-b-card">
+                    <div class="p02-b-label">Now cell</div>
+                    <div class="p02-b-value">{_safe_text(now_cell_str)}</div>
+                    </div>
+                    <div class="p02-b-card">
+                    <div class="p02-b-label">ETA cell</div>
+                    <div class="p02-b-value">{_safe_text(eta_cell_str)}</div>
+                    </div>
+                    <div class="p02-b-card">
+                    <div class="p02-b-label">Cells ahead</div>
+                    <div class="p02-b-value">{_safe_text(cells_ahead_str)}</div>
+                    </div>
+                    <div class="p02-b-card">
+                    <div class="p02-b-label">Minutes ahead</div>
+                    <div class="p02-b-value">{_safe_text(minutes_ahead_str)}</div>
+                    </div>
+                    <div class="p02-b-card">
+                    <div class="p02-b-label">Selected model</div>
+                    <div class="p02-b-value">{_safe_text(derived_h_str)}</div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True)
+
+            st.markdown(
+                "- If **minutes to arrival ≤ 10** and realtime price exists → **Spot mode**\n"
+                "- Else, **minutes to arrival / 30 min** gives a raw horizon bucket:\n"
+                "  - **1 to 4 → h1..h4**\n"
+                "  - **>4 → only daily price inputs (historical)**\n"
+                "- If **current prices** are **unavailable**, only **historical** prices are used\n"
+            )
+
+        # -----------------------------
+        # C) What information goes into the forecast?
+        # -----------------------------
+        st.markdown(
+            "#### C) Inputs used by the model",
+            help=(
+                "ARDL uses daily lag features (1d/2d/3d/7d at the same time cell). "
+                "For intraday horizons h1..h4, the current realtime price acts as the intraday anchor. "
+                "The resulting output is the station’s expected price at arrival."
+            ),
+        )
+
+        if explain:
+            # Baselines (simple, user-readable)
+            avg_123 = None
+            try:
+                vals = [float(explain.get("lag1")), float(explain.get("lag2")), float(explain.get("lag3"))]
+                avg_123 = sum(vals) / 3.0
+            except Exception:
+                avg_123 = None
+
+            # Show compact comparison
+            compare_rows = [
+                {"Signal": "Realtime price", "Value": _fmt_price(explain.get("current_price"))},
+                { "Signal": f"Lag 1 day ({ft_label})", "Value": _fmt_price(explain.get("lag1")) },
+                { "Signal": f"Lag 2 days ({ft_label})", "Value": _fmt_price(explain.get("lag2")) },
+                { "Signal": f"Lag 3 days ({ft_label})", "Value": _fmt_price(explain.get("lag3")) },
+                { "Signal": f"Lag 7 days ({ft_label})", "Value": _fmt_price(explain.get("lag7")) },
+                { "Signal": "Output: predicted price", "Value": _fmt_price(explain.get("pred_price")) },
+            ]
+            st.dataframe(pd.DataFrame(compare_rows), hide_index=True, use_container_width=True)
+
+        # -----------------------------
+        # D) Why did it predict that? (always visible)
+        # -----------------------------
+        st.markdown(
+            "#### D) Why did it predict that?",
+            help="This section explains the prediction using contribution tables. Open the expander below for details on the concept and interpretation.",
+        )
+
+        with st.expander("How to interpret these tables (concept + guidance)", expanded=False):
+            st.markdown(
+                """
+        This section provides *model-based explainability* for the selected station in **Forecast mode**.
+
+        ##### 1) Concept (what is being explained?)
+        The forecast models used here are **linear ARDL regressions**.
+        A linear model can be written as:
+
+        **Predicted price = Intercept + Σ (coefficientᵢ × inputᵢ)**
+
+        Because the model is additive, the prediction can be broken down into **per-input contributions** that sum exactly to the predicted €/L.
+
+        ##### 2) Data foundation (why this is reliable)
+        For this station, the system loads:
+        - the **same horizon model** that was used during prediction (**h1–h4** or **h0_daily**), and
+        - the **exact feature vector** that was actually passed into the model, stored by the predictor per station:
+        - `debug_<fuel>_feature_cols`
+        - `debug_<fuel>_feature_values`
+
+        The coefficients are translated back to the original €/L scale before computing contributions.
+        This ensures the numbers are interpretable in the same units as the prices shown on screen.
+
+        ##### 3) “Absolute contributions”
+        This table answers: **“How does the model add up to the final predicted price?”**
+
+        - **Intercept**: constant offset of the model (after accounting for scaling).
+        - **Each feature row**: additive contribution in **€/L**.
+        - **Running sum**: cumulative total; the last row equals the predicted price.
+
+        Practical reading:
+        - Large positive contributions indicate inputs that push the prediction upward.
+        - Large negative contributions indicate inputs that pull it downward.
+        - For intraday horizons (**h1–h4**), the intraday anchor feature (e.g., `price_lag_1cell`) often dominates by design.
+
+        ##### 4) “Baseline-relative contributions” (why above/below a baseline?)
+        This table answers: **“Why is the prediction higher/lower than a simple reference?”**
+
+        Baseline used:
+        - Prefer **Lag 1 day** (`price_lag_1d`) as baseline level.
+        - If lag1d is missing, fallback to **Avg(1d,2d,3d)**.
+
+        The table shows, per feature:
+        - **Δ input vs baseline**: how far this input is above/below the baseline level (€/L).
+        - **Δ contribution**: how much that difference changes the prediction (€/L).
+        - **Running Δ**: sums to the total deviation vs baseline.
+
+        Interpretation:
+        - If the baseline-relative Δ is small, the model prediction is close to the baseline.
+        - If the Δ is large, you can see *which inputs* are responsible (often the intraday anchor for short horizons).
+
+        ##### 5) Safety / limitations
+        - **Spot mode (ETA ≤ 10 min)**: no model is called; the shown price is the realtime price → no decomposition is shown.
+        - If the feature-vector snapshot keys are missing, the decomposition cannot be computed reliably.
+        - Minor differences between “Δ sum” and “Predicted − baseline” can occur due to rounding/float precision in displayed values.
+        """
+            )
+
+        if not explain or not isinstance(explained_station, dict):
+            st.info("No station selected (or no explain payload available).")
+        else:
+            # Rule requested: if ETA is <10 minutes, show info instead of a table
+            mta = _as_float(explain.get("minutes_to_arrival"))
+            if mta is not None and mta <= 10.0:
+                st.info(
+                    "Spot mode (ETA ≤ 10 min): the shown price is the current realtime price. "
+                    "No forecasting model was called, so there is no coefficient decomposition."
+                )
+            else:
+                try:
+                    from src.modeling.model import load_model_for_horizon  # type: ignore
+
+                    # Horizon/model used
+                    horizon_used = explain.get("horizon_used")
+                    h_int = 0
+                    try:
+                        h_int = int(horizon_used) if horizon_used not in (None, "", 0) else 0
+                    except Exception:
+                        h_int = 0
+
+                    model_obj = load_model_for_horizon(ft, h_int)
+
+                    # Exact feature vector from predictor (persisted in predict.py)
+                    debug_fc_key = f"debug_{ft}_feature_cols"
+                    debug_fv_key = f"debug_{ft}_feature_values"
+
+                    cols = explained_station.get(debug_fc_key)
+                    vals = explained_station.get(debug_fv_key)
+
+                    if not isinstance(cols, list) or not isinstance(vals, list) or not cols or len(cols) != len(vals):
+                        st.info(
+                            "No reliable feature-vector snapshot is available for this station. "
+                            "To enable exact explainability, ensure predict.py persists:\n"
+                            f"- {debug_fc_key}\n"
+                            f"- {debug_fv_key}"
+                        )
+                    else:
+                        # Build X exactly as used in prediction
+                        X = pd.DataFrame([vals], columns=cols)
+
+                        def _try_linear_decompose(m: Any, X_row: pd.DataFrame) -> Optional[pd.DataFrame]:
+                            """
+                            Attempt to compute a clean linear contribution breakdown.
+                            Works when model is sklearn Pipeline: StandardScaler -> linear estimator (coef_).
+                            Returns a small DataFrame or None if not possible.
+                            """
+                            pipe = m
+                            scaler = None
+                            estimator = None
+
+                            # Pipeline-like
+                            if hasattr(pipe, "named_steps"):
+                                for step in pipe.named_steps.values():
+                                    if scaler is None and hasattr(step, "mean_") and hasattr(step, "scale_"):
+                                        scaler = step
+                                    if hasattr(step, "coef_"):
+                                        estimator = step
+                                if estimator is None:
+                                    estimator = list(pipe.named_steps.values())[-1]
+
+                            # Non-pipeline
+                            if estimator is None and hasattr(pipe, "coef_"):
+                                estimator = pipe
+
+                            if estimator is None or not hasattr(estimator, "coef_"):
+                                return None
+
+                            coef = getattr(estimator, "coef_", None)
+                            intercept = float(getattr(estimator, "intercept_", 0.0) or 0.0)
+                            if coef is None:
+                                return None
+
+                            # Flatten coef for single-target regression
+                            try:
+                                coef_vec = list(coef.ravel())  # type: ignore[attr-defined]
+                            except Exception:
+                                coef_vec = list(coef) if isinstance(coef, (list, tuple)) else None
+                            if not coef_vec:
+                                return None
+
+                            cols_local = list(X_row.columns)
+                            if len(coef_vec) != len(cols_local):
+                                return None
+
+                            # Read X row as floats
+                            x_vals = []
+                            for c in cols_local:
+                                try:
+                                    x_vals.append(float(X_row.iloc[0][c]))
+                                except Exception:
+                                    return None
+
+                            # If we have a scaler, translate contributions back to original feature units
+                            if scaler is not None:
+                                mean = list(getattr(scaler, "mean_", []))
+                                scale = list(getattr(scaler, "scale_", []))
+                                if len(mean) == len(cols_local) and len(scale) == len(cols_local):
+                                    eff_beta = [(coef_vec[i] / scale[i]) for i in range(len(cols_local))]
+                                    eff_intercept = intercept - sum(
+                                        (coef_vec[i] * mean[i] / scale[i]) for i in range(len(cols_local))
+                                    )
+                                    contrib = [eff_beta[i] * x_vals[i] for i in range(len(cols_local))]
+                                    base = eff_intercept
+                                else:
+                                    contrib = [coef_vec[i] * x_vals[i] for i in range(len(cols_local))]
+                                    base = intercept
+                            else:
+                                contrib = [coef_vec[i] * x_vals[i] for i in range(len(cols_local))]
+                                base = intercept
+
+                            rows = [{"Component": "Intercept", "Contribution (€/L)": base}]
+                            for i, c in enumerate(cols_local):
+                                rows.append({"Component": c, "Contribution (€/L)": contrib[i]})
+
+                            df = pd.DataFrame(rows)
+                            df["Contribution (€/L)"] = df["Contribution (€/L)"].astype(float)
+                            df["Running sum (€/L)"] = df["Contribution (€/L)"].cumsum()
+                            return df
+
+                        # ---- Table A: absolute contributions ----
+                        st.markdown("##### Absolute contribution breakdown")
+
+                        df_contrib = _try_linear_decompose(model_obj, X)
+
+                        if df_contrib is None:
+                            st.info(
+                                "This model does not expose a compatible (scaler + linear-coef) structure for decomposition. "
+                                "The cached prediction is still valid; only the coefficient breakdown is unavailable."
+                            )
+                        else:
+                            # Force expected columns + order (prevents accidental single-column rendering)
+                            expected_cols = ["Component", "Contribution (€/L)", "Running sum (€/L)"]
+                            if all(c in df_contrib.columns for c in expected_cols):
+                                df_show = df_contrib[expected_cols].copy()
+                                for c in ("Contribution (€/L)", "Running sum (€/L)"):
+                                    df_show[c] = pd.to_numeric(df_show[c], errors="coerce").round(4)
+                            else:
+                                df_show = df_contrib.copy()
+                                st.warning(f"Unexpected columns in contribution table: {list(df_contrib.columns)}")
+
+                            st.dataframe(df_show, hide_index=True, use_container_width=True)
+
+                            # Sanity check: compare decomposition to cached prediction (belongs under Table A)
+                            cached_pred = _as_float(explain.get("pred_price"))
+                            approx_pred = _as_float(df_contrib["Running sum (€/L)"].iloc[-1]) if not df_contrib.empty else None
+                            if cached_pred is not None and approx_pred is not None:
+                                st.caption(
+                                    f"Decomposition sum: {approx_pred:.4f} €/L · Cached predicted price: {cached_pred:.4f} €/L"
+                                )
+
+                            # ---- Table B: baseline-relative (delta) explanation ----
+                            st.markdown("##### Baseline-relative breakdown (why above/below yesterday)")
+
+                            # Determine a baseline level (€/L) to compare against:
+                            # Prefer Lag 1d, fallback to Avg(1d,2d,3d)
+                            baseline_level = None
+                            try:
+                                if "price_lag_1d" in X.columns:
+                                    baseline_level = float(X.loc[0, "price_lag_1d"])
+                            except Exception:
+                                baseline_level = None
+
+                            baseline_name = "Lag 1d"
+                            if baseline_level is None:
+                                try:
+                                    cands = []
+                                    for c in ("price_lag_1d", "price_lag_2d", "price_lag_3d"):
+                                        if c in X.columns:
+                                            cands.append(float(X.loc[0, c]))
+                                    if len(cands) == 3:
+                                        baseline_level = sum(cands) / 3.0
+                                        baseline_name = "Avg(1d,2d,3d)"
+                                except Exception:
+                                    baseline_level = None
+
+                            if baseline_level is None:
+                                st.info("Baseline-relative explanation unavailable (missing lag inputs).")
+                            else:
+                                # Recompute effective betas in original €/L scale so delta contributions are correct.
+                                pipe = model_obj
+                                scaler = None
+                                estimator = None
+
+                                if hasattr(pipe, "named_steps"):
+                                    for step in pipe.named_steps.values():
+                                        if scaler is None and hasattr(step, "mean_") and hasattr(step, "scale_"):
+                                            scaler = step
+                                        if hasattr(step, "coef_"):
+                                            estimator = step
+                                    if estimator is None:
+                                        estimator = list(pipe.named_steps.values())[-1]
+
+                                if estimator is None and hasattr(pipe, "coef_"):
+                                    estimator = pipe
+
+                                if estimator is None or not hasattr(estimator, "coef_"):
+                                    st.info("Baseline-relative explanation unavailable (model has no accessible coefficients).")
+                                else:
+                                    coef = getattr(estimator, "coef_", None)
+                                    if coef is None:
+                                        st.info("Baseline-relative explanation unavailable (missing coefficients).")
+                                    else:
+                                        try:
+                                            coef_vec = list(coef.ravel())  # type: ignore[attr-defined]
+                                        except Exception:
+                                            coef_vec = list(coef) if isinstance(coef, (list, tuple)) else None
+
+                                        if not coef_vec or len(coef_vec) != len(X.columns):
+                                            st.info("Baseline-relative explanation unavailable (coefficient shape mismatch).")
+                                        else:
+                                            cols_local = list(X.columns)
+
+                                            # Effective betas in original units (if scaler exists)
+                                            if scaler is not None:
+                                                mean = list(getattr(scaler, "mean_", []))
+                                                scale = list(getattr(scaler, "scale_", []))
+                                                if len(mean) == len(cols_local) and len(scale) == len(cols_local):
+                                                    eff_beta = [(coef_vec[i] / scale[i]) for i in range(len(cols_local))]
+                                                else:
+                                                    eff_beta = list(coef_vec)
+                                            else:
+                                                eff_beta = list(coef_vec)
+
+                                            rows_delta = []
+                                            running = 0.0
+
+                                            for i, c in enumerate(cols_local):
+                                                try:
+                                                    x_i = float(X.loc[0, c])
+                                                except Exception:
+                                                    continue
+
+                                                dx = x_i - baseline_level
+                                                dcontrib = eff_beta[i] * dx
+                                                running += dcontrib
+
+                                                rows_delta.append(
+                                                    {
+                                                        "Component": c,
+                                                        "Δ input vs baseline": dx,
+                                                        "Δ contribution (€/L)": dcontrib,
+                                                        "Running Δ (€/L)": running,
+                                                    }
+                                                )
+
+                                            df_delta = pd.DataFrame(rows_delta)
+
+                                            st.markdown(
+                                                f"Baseline: **{baseline_level:.3f} €/L** ({baseline_name}). "
+                                            )
+                                            st.dataframe(df_delta, hide_index=True, use_container_width=True)
+
+                                            cached_pred = _as_float(explain.get("pred_price"))
+                                            if cached_pred is not None:
+                                                st.caption(
+                                                    f"Δ decomposition sum: {running:.4f} €/L · "
+                                                    f"Predicted − baseline: {(cached_pred - baseline_level):.4f} €/L"
+                                                )
+
+                except Exception as e:
+                    st.info(
+                        "Explainability is best-effort and can fail safely for some model variants. "
+                        f"Details: {type(e).__name__}: {e}"
+                    )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
         # Fourth headline
         st.markdown(
-            "#### Input/output values:",
+            "#### E) Full input/output values:",
             help=(
                 "This table is meant to make the prediction and economics layer auditable.\n\n"
                 "**Which stations are included?**\n"
