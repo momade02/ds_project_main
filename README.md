@@ -10,3 +10,4 @@ We build a route-aware refueling recommender for Germany that forecasts station-
 | 5    | Zelle 5.2      | Zelle 5.3     | Zelle 5.4      | Zelle 5.5            |
 
 
+![Overview of the project structure](./structure_graphs/workflow.drawio.svg)
