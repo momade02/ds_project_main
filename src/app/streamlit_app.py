@@ -1020,9 +1020,13 @@ def main() -> None:
         st.switch_page(target)
 
 
-    # Show info box on fresh load (hide after first run)
+    # Show welcome+video only when there is no cached run.
+    # Redis restore happens above, so after a hard refresh we can reliably detect prior usage.
+    have_cached_run = st.session_state.get("last_run") is not None
+
+    # Initialize only once per in-memory session; on cold start/refresh, this will become True if last_run exists.
     if "has_run_once" not in st.session_state:
-        st.session_state["has_run_once"] = False
+        st.session_state["has_run_once"] = bool(have_cached_run)
 
     # ----------------------------------------------------------------------
     # Sidebar (standardized)
@@ -1061,27 +1065,40 @@ def main() -> None:
 
     # Show introduction message only on first load (before any run)
     if not st.session_state.get("has_run_once", False):
-        st.markdown("""
-            #### Welcome to the Fuel Station Recommender!
+        st.markdown(
+            """
+        ### Welcome to the Fuel Station Recommender!
 
-            This application helps you find the **best-value fuel stop** along your driving route in Germany :de:. It predicts prices ahead and factors in detours to save you money without wasting your time.
+        This tool helps you plan a refueling stop that is economically optimal **for your exact route**.
+        It combines real-time fuel prices with short-horizon price forecasts and evaluates candidate stations by **net savings** after detour effort (distance/time) and your selected constraints.
+        Use it when you want a recommendation that balances price, detour, and practicality—without manual map hopping.
 
-            **To get started:** Set your parameter preferences in the **sidebar**.
-            - Enter a :gray-badge[**starting point**] and a :gray-badge[**destination**] (city or full address).
-            - Select your :gray-badge[**fuel type**] from the dropdown.
-            - Click :green-badge[**Run recommender**] to calculate your route and get a recommendation.
-            - You can further customize the recommendation by adjusting the other parameters in the sidebar.
+        ##### How to use this page
+        - Start in the sidebar with the **main settings at the top** (route inputs, fuel type, and the most important constraints).
+        - Enter a **starting point** and **destination** (city or full address).
+        - Select your **fuel type** and optionally refine constraints (e.g., maximum detour, minimum net saving).
+        - Click **Run recommender** to compute the route and rank stations along it.
 
-            **Need help?**
-            - Hover over the $\\text{\\textcircled ?}$ info buttons in the sidebar to receive guidance.
-            - In addition an **introduction video** is available below ↓.
-            - You can also open the $\\text{\\textcircled ?}$ section at the top of the sidebar for more detailed information.
+        ##### What you will get
+        - A **compact savings summary** for the best option.
+        - A **recommended station** with the **key numbers** (prices, position on route, expected detour).
+        - A **map** of your **planned route** plus the **stations considered** by the system.
 
-            **What you will see as an output:**
-            - Your maximum potential savings.
-            - The recommended station with key details (current/predicted price, distance along the route and expected detour).
-            - A map showing your planned route and the stations found along it.
-            """)
+        ##### How to continue from there
+        - For deeper transparency: open **Route Analytics** for the full result tables and model/pipeline explanations.
+        - For a station-focused view: open **Station Details** to inspect one recommendation in depth.
+        - For exploration and comparison: use **Station Explorer** to browse and filter stations interactively.
+        - If you want a different outcome: adjust constraints in the sidebar and re-run.
+
+        ##### Help and guidance
+        - Hover the **“?”** info icons next to sidebar controls for quick explanations.
+        - Click/open the **Info section at the top of the sidebar** for a more complete overview of the system and settings.
+        - Use the **main settings block at the top of the sidebar** as your default starting point for every run.
+        - If you want persistent defaults (e.g., preferred constraints or routes), create/manage a **profile** via the profile button at the top of the sidebar.
+
+        An **introduction video** is available below.
+            """
+        )
 
         # --- YouTube intro video shown only before first run ---
         st.markdown("### Introduction video")
