@@ -1061,25 +1061,27 @@ def main() -> None:
 
     # Show introduction message only on first load (before any run)
     if not st.session_state.get("has_run_once", False):
-        st.info(
-            "**Welcome to the Fuel Station Recommender!**\n\n"
-            "This application helps you find the **best-value fuel stop** along your driving route in Germany :de:. It predicts prices ahead and factors in detours to save you money without wasting your time.\n\n"
-            "**To get started:** Set your parameter preferences in the **sidebar**."
-            "\n\n"
-            "\n- Enter a :gray-badge[**starting point**] and a :gray-badge[**destination**] (city or full address)."
-            "\n- Select your :gray-badge[**fuel type**] from the dropdown."
-            "\n- Click :green-badge[**Run recommender**] to calculate your route and get a recommendation.\n\n"
-            "\n- You can further customize the recommendation by adjusting the other parameters in the sidebar."
-            "\n\n"
-            "**Need help?**"
-            "\n- Hover over the $\\text{\\textcircled ?}$ info buttons in the sidebar to receive guidance."
-            "\n- In addition an **introduction video** is available below ↓.\n\n"            
-            "\n- You can also open the $\\text{\\textcircled ?}$ section at the top of the sidebar for a more detailed explanation of the system components.\n\n"
-            "**What you will see as an output:**"
-            "\n- Your maximum potential savings."
-            "\n- The recommended station with key details (current/predicted price, distance along the route and expected detour)."
-            "\n- A map showing your planned route and the stations found along it."
-        )
+        st.markdown("""
+            #### Welcome to the Fuel Station Recommender!
+
+            This application helps you find the **best-value fuel stop** along your driving route in Germany :de:. It predicts prices ahead and factors in detours to save you money without wasting your time.
+
+            **To get started:** Set your parameter preferences in the **sidebar**.
+            - Enter a :gray-badge[**starting point**] and a :gray-badge[**destination**] (city or full address).
+            - Select your :gray-badge[**fuel type**] from the dropdown.
+            - Click :green-badge[**Run recommender**] to calculate your route and get a recommendation.
+            - You can further customize the recommendation by adjusting the other parameters in the sidebar.
+
+            **Need help?**
+            - Hover over the $\\text{\\textcircled ?}$ info buttons in the sidebar to receive guidance.
+            - In addition an **introduction video** is available below ↓.
+            - You can also open the $\\text{\\textcircled ?}$ section at the top of the sidebar for more detailed information.
+
+            **What you will see as an output:**
+            - Your maximum potential savings.
+            - The recommended station with key details (current/predicted price, distance along the route and expected detour).
+            - A map showing your planned route and the stations found along it.
+            """)
 
         # --- YouTube intro video shown only before first run ---
         st.markdown("### Introduction video")
