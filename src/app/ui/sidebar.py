@@ -649,6 +649,8 @@ def _render_help_explorer():
     # Station Explorer Overview
     with st.sidebar.popover("Why is the number of Stations open vs. with current price sometimes different?"):
         st.markdown("""
+            The data for prices and opening times is pulled from Tankerkönig. The difference is already in the raw data.
+            Stations which have at least one information missing (either price or opening times) will be labeled as red on the map.
             """)
 
     # Return a SidebarState compatible object (keep cached values, only change view)
