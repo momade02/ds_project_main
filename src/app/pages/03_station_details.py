@@ -1719,9 +1719,8 @@ def main():
         else:
             # Closed but no opening time known
             st.error(f"Opening hours: {day_prefix}CLOSED")
-    
-    st.markdown("---")
-    
+
+
     # =========================================================================
     # SAVINGS CALCULATOR / PRICE COMPARISON
     # =========================================================================
@@ -1847,7 +1846,6 @@ def main():
             else:
                 st.info("Same price as worst on-route")
             
-            st.markdown("---")
             
             # Fuel amount slider
             slider_value = st.slider(
@@ -1962,7 +1960,6 @@ def main():
             # Rounding disclaimer
             st.caption("**Note:** Small differences (a few cents) may occur because calculations use full precision while displayed prices are rounded to 3 decimals. See Help for details.")
     
-    st.markdown("---")
     
     # SMART PRICE ALERT
     # =========================================================================
@@ -2043,7 +2040,6 @@ def main():
     else:
         st.info("Not enough historical data to show hourly patterns.")
     
-    st.markdown("---")
     
     # =========================================================================
     # PRICE TREND (7 DAYS - NO DOTS)
@@ -2217,7 +2213,7 @@ def main():
     # Historical Comparison Chart
     # Only show divider if we had content above (Trip Planner mode with boxes)
     if not is_from_explorer:
-        st.markdown("---")
+        pass
     
     st.markdown("#### Historical Price Comparison (7 Days)")
     
