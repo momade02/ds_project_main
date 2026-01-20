@@ -534,7 +534,7 @@ def create_price_trend_chart(df: pd.DataFrame, fuel_type: str) -> Tuple[go.Figur
         )
         fig.update_layout(
             title="",
-            height=300,
+            height=250,
         )
         return fig, ""
 
@@ -844,6 +844,7 @@ def create_weekday_hour_heatmap(df: pd.DataFrame, fuel_type: str) -> Optional[go
             ),
             yaxis=dict(
                 fixedrange=True,
+                autorange="reversed",  # Mo on top, So on bottom
             ),
         )
         
@@ -951,7 +952,7 @@ def create_comparison_chart(
         xaxis_title=None,
         yaxis_title=None,
         hovermode="x unified",
-        height=320,  # Slightly taller to accommodate legend
+        height=280,  # Compact with legend
         showlegend=True,
         legend=dict(
             orientation="h",
@@ -1063,7 +1064,7 @@ def _render_trip_settings():
             route_station_count = len(list(last_run.get("stations") or []))
             # Use HTML with explicit margin to prevent overlap
             st.sidebar.markdown(
-                f'<p style="margin-top: 0.5rem; font-size: 0.85rem; color: #6b7280;">ℹ️ Trip Planner data also available ({route_station_count} route stations)</p>',
+                f'<p style="margin-top: 0.5rem; font-size: 0.85rem; color: #6b7280;">Trip Planner data also available ({route_station_count} route stations)</p>',
                 unsafe_allow_html=True
             )
         
@@ -1187,6 +1188,34 @@ def main():
         st.session_state["map_style_mode"] = _preserve_map_style_mode
     
     apply_app_css()
+    
+    # Reduce vertical spacing for tighter layout (similar to page 02)
+    st.markdown("""
+    <style>
+        /* Reduce gap between elements */
+        .stMarkdown { margin-bottom: 0.25rem !important; }
+        .stMetric { padding: 0.5rem 0 !important; }
+        
+        /* Tighter section headers */
+        h3 { margin-top: 1rem !important; margin-bottom: 0.5rem !important; }
+        h4 { margin-top: 0.75rem !important; margin-bottom: 0.25rem !important; }
+        
+        /* Reduce chart container padding */
+        .stPlotlyChart { margin-bottom: 0.5rem !important; }
+        
+        /* Reduce expander padding */
+        .streamlit-expanderHeader { padding: 0.5rem 0 !important; }
+        
+        /* Tighter info boxes */
+        .stAlert { padding: 0.5rem !important; margin: 0.25rem 0 !important; }
+        
+        /* Reduce column gaps */
+        [data-testid="column"] { padding: 0.25rem !important; }
+        
+        /* Tighter captions */
+        .stCaption { margin-top: 0 !important; margin-bottom: 0.25rem !important; }
+    </style>
+    """, unsafe_allow_html=True)
     
     st.title("Station Details & Analysis")
     st.caption("##### Deep-dive into individual station data and price patterns.")
@@ -1589,13 +1618,22 @@ def main():
     # MISSING PREDICTION WARNING (if using current price as fallback)
     # =========================================================================
     if using_current_as_fallback:
-        st.warning(
-            "**Using live price (no forecast)**: No prediction available for this station at your arrival time. "
-            "The displayed price is the current real-time price, not a forecast.",
-            icon="⚠️"
-        )
-        with st.expander("Why is the prediction missing?", expanded=False):
-            st.markdown("""
+        if is_from_explorer:
+            # Explorer mode: predictions are NEVER available (no route = no ETA)
+            st.info(
+                "**Showing live price**: Explorer searches show current prices, not predictions. "
+                "Predictions require a route with an estimated arrival time.",
+                icon=None
+            )
+        else:
+            # Trip Planner mode: prediction failed for some reason
+            st.warning(
+                "**Using live price (no forecast)**: No prediction available for this station at your arrival time. "
+                "The displayed price is the current real-time price, not a forecast.",
+                icon="⚠️"
+            )
+            with st.expander("Why is the prediction missing?", expanded=False):
+                st.markdown("""
             **Possible reasons:**
             - The station may have limited historical price data
             - The model could not generate a reliable forecast for this specific time
@@ -1798,7 +1836,7 @@ def main():
                     label="Worst on-route",
                     value=f"€{worst_onroute_price:.3f}/L",
                     delta=None,
-                    help="Most expensive station requiring ≤1km and ≤5min detour. Assumption: Negligible detour cost for on-route stations."
+                    help="Most expensive station directly on your route (≤1km, ≤5min). We assume no detour needed for this station."
                 )
             
             # Show price difference
@@ -1815,7 +1853,7 @@ def main():
             slider_value = st.slider(
                 "Refuel amount (liters)",
                 min_value=1.0,
-                max_value=1000.0,
+                max_value=200.0,
                 value=float(litres_to_refuel),
                 step=1.0,
                 key="savings_calc_slider",
@@ -2011,14 +2049,14 @@ def main():
     # PRICE TREND (7 DAYS - NO DOTS)
     # =========================================================================
     
-    with st.expander("Price Trend (7 days)", expanded=False):
-        history_df_7d = _cached_get_station_price_history(station_uuid, fuel_code, days=7)
-        if history_df_7d is not None and not history_df_7d.empty:
-            fig, stats_text = create_price_trend_chart(history_df_7d, fuel_code)
-            st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
-            st.caption(stats_text)
-        else:
-            st.info("No historical data available.")
+    st.markdown("### Price Trend (7 days)")
+    history_df_7d = _cached_get_station_price_history(station_uuid, fuel_code, days=7)
+    if history_df_7d is not None and not history_df_7d.empty:
+        fig, stats_text = create_price_trend_chart(history_df_7d, fuel_code)
+        st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+        st.caption(stats_text)
+    else:
+        st.info("No historical data available.")
     
     # =========================================================================
     # COMPARE STATIONS
@@ -2037,273 +2075,273 @@ def main():
     
     is_from_explorer = (station_source == "explorer")
     
-    with st.expander("Compare Stations", expanded=False):
-        # In Explorer mode, skip the automatic station boxes since there's no ranking
-        # Go directly to Historical Price Comparison
+    st.markdown("### Compare Stations")
+    # In Explorer mode, skip the automatic station boxes since there's no ranking
+    # Go directly to Historical Price Comparison
+    if is_from_explorer:
+        compare_list = []  # Empty - no automatic comparison for Explorer
+        show_ranking = False
+    elif ranked:
+        st.caption("Top ranked stations from your route")
+        compare_list = ranked
+        show_ranking = True
+    elif stations:
+        st.caption("Stations along your route")
+        compare_list = stations
+        show_ranking = False
+    else:
+        compare_list = []
+        show_ranking = False
+    
+    # Only show comparison boxes for Trip Planner mode (not Explorer)
+    if not is_from_explorer and len(compare_list) >= 1 and display_price is not None:
+        # Current station card
+        # Format ETA for current station
+        eta_display = ""
+        eta_str = station.get("eta")
+        if eta_str:
+            try:
+                if isinstance(eta_str, str):
+                    eta_dt = datetime.fromisoformat(eta_str.replace("Z", "+00:00"))
+                else:
+                    eta_dt = eta_str
+                eta_display = f" • ETA: {eta_dt.strftime('%H:%M')}"
+            except Exception:
+                pass
+        
+        # Detour info (only relevant for Trip Planner mode)
         if is_from_explorer:
-            compare_list = []  # Empty - no automatic comparison for Explorer
-            show_ranking = False
-        elif ranked:
-            st.caption("Top ranked stations from your route")
-            compare_list = ranked
-            show_ranking = True
-        elif stations:
-            st.caption("Stations along your route")
-            compare_list = stations
-            show_ranking = False
+            detour_text = ""
         else:
-            compare_list = []
-            show_ranking = False
+            detour_text = "On route" if detour_min < 0.5 else f"+{detour_min:.0f} min detour"
         
-        # Only show comparison boxes for Trip Planner mode (not Explorer)
-        if not is_from_explorer and len(compare_list) >= 1 and display_price is not None:
-            # Current station card
-            # Format ETA for current station
-            eta_display = ""
-            eta_str = station.get("eta")
-            if eta_str:
-                try:
-                    if isinstance(eta_str, str):
-                        eta_dt = datetime.fromisoformat(eta_str.replace("Z", "+00:00"))
-                    else:
-                        eta_dt = eta_str
-                    eta_display = f" • ETA: {eta_dt.strftime('%H:%M')}"
-                except Exception:
-                    pass
-            
-            # Detour info (only relevant for Trip Planner mode)
-            if is_from_explorer:
-                detour_text = ""
-            else:
-                detour_text = "On route" if detour_min < 0.5 else f"+{detour_min:.0f} min detour"
-            
-            # Add city to current station name for disambiguation
-            current_display_name = name
-            if city:
-                current_display_name += f" · {city}"
-            
-            # Build info line for current station
-            current_info_parts = []
-            if detour_text:
-                current_info_parts.append(detour_text)
-            if eta_display:
-                current_info_parts.append(eta_display.lstrip(" • "))
-            current_info_line = " • ".join(current_info_parts) if current_info_parts else ""
-            
-            st.markdown(f"""
-            <div style='background: #e0f2fe; border-left: 4px solid #0284c7; padding: 1rem; border-radius: 0.5rem; margin-bottom: 1rem;'>
-                <div style='font-weight: 700; font-size: 1.1rem; color: #0c4a6e;'>{current_display_name} (Current)</div>
-                <div style='margin-top: 0.5rem; color: #075985;'>
-                    <span style='font-size: 1.3rem; font-weight: 700;'>€{display_price:.3f}</span> / L
-                </div>
-                {f"<div style='margin-top: 0.3rem; color: #0369a1; font-size: 0.9rem;'>{current_info_line}</div>" if current_info_line else ""}
+        # Add city to current station name for disambiguation
+        current_display_name = name
+        if city:
+            current_display_name += f" · {city}"
+        
+        # Build info line for current station
+        current_info_parts = []
+        if detour_text:
+            current_info_parts.append(detour_text)
+        if eta_display:
+            current_info_parts.append(eta_display.lstrip(" • "))
+        current_info_line = " • ".join(current_info_parts) if current_info_parts else ""
+        
+        st.markdown(f"""
+        <div style='background: #e0f2fe; border-left: 4px solid #0284c7; padding: 0.75rem; border-radius: 0.5rem; margin-bottom: 0.5rem;'>
+            <div style='font-weight: 700; font-size: 1.1rem; color: #0c4a6e;'>{current_display_name} (Current)</div>
+            <div style='margin-top: 0.5rem; color: #075985;'>
+                <span style='font-size: 1.3rem; font-weight: 700;'>€{display_price:.3f}</span> / L
             </div>
-            """, unsafe_allow_html=True)
+            {f"<div style='margin-top: 0.3rem; color: #0369a1; font-size: 0.9rem;'>{current_info_line}</div>" if current_info_line else ""}
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Show other stations from the list (up to 3)
+        shown_count = 0
+        for idx, s in enumerate(compare_list, start=1):
+            if shown_count >= 3:
+                break
+                
+            s_uuid = _station_uuid(s)
+            if s_uuid == station_uuid:
+                continue  # Skip current station
             
-            # Show other stations from the list (up to 3)
-            shown_count = 0
-            for idx, s in enumerate(compare_list, start=1):
-                if shown_count >= 3:
-                    break
-                    
-                s_uuid = _station_uuid(s)
-                if s_uuid == station_uuid:
-                    continue  # Skip current station
-                
-                s_name = _station_name(s)
-                s_city = _station_city(s)
-                
-                # For Explorer stations, try current price; for Trip stations, use predicted
-                if is_from_explorer:
-                    s_price = _safe_float(s.get(f"price_current_{fuel_code}")) or _safe_float(s.get(pred_key))
-                else:
-                    s_price = _safe_float(s.get(pred_key))
-                
-                s_detour = _safe_float(s.get("detour_duration_min"))
-                
-                # Build display name with city for disambiguation
-                s_display_name = s_name
-                if s_city:
-                    s_display_name += f" · {s_city}"
-                
-                # Format ETA for this station (only for Trip Planner)
-                s_eta_display = ""
-                if not is_from_explorer:
-                    s_eta_str = s.get("eta")
-                    if s_eta_str:
-                        try:
-                            if isinstance(s_eta_str, str):
-                                s_eta_dt = datetime.fromisoformat(s_eta_str.replace("Z", "+00:00"))
-                            else:
-                                s_eta_dt = s_eta_str
-                            s_eta_display = f" • ETA: {s_eta_dt.strftime('%H:%M')}"
-                        except Exception:
-                            pass
-                
-                # Detour info (only for Trip Planner)
-                if is_from_explorer:
-                    s_detour_text = ""
-                else:
-                    s_detour_text = "On route" if (s_detour or 0) < 0.5 else f"+{s_detour:.0f} min detour"
-                
-                # Build info line
-                s_info_parts = []
-                if s_detour_text:
-                    s_info_parts.append(s_detour_text)
-                if s_eta_display:
-                    s_info_parts.append(s_eta_display.lstrip(" • "))
-                s_info_line = " • ".join(s_info_parts) if s_info_parts else ""
-                
-                # Display name with or without ranking
-                if show_ranking:
-                    card_title = f"#{idx} {s_display_name}"
-                else:
-                    card_title = s_display_name
-                
-                if s_price:
-                    st.markdown(f"""
-                    <div style='background: #f3f4f6; border-left: 4px solid #9ca3af; padding: 1rem; border-radius: 0.5rem; margin-bottom: 0.8rem;'>
-                        <div style='font-weight: 600; font-size: 1rem; color: #374151;'>{card_title}</div>
-                        <div style='margin-top: 0.5rem; color: #1f2937;'>
-                            <span style='font-size: 1.2rem; font-weight: 700;'>€{s_price:.3f}</span> / L
-                        </div>
-                        {f"<div style='margin-top: 0.3rem; color: #6b7280; font-size: 0.9rem;'>{s_info_line}</div>" if s_info_line else ""}
-                    </div>
-                    """, unsafe_allow_html=True)
-                    shown_count += 1
-                    
-        elif not is_from_explorer and len(compare_list) < 1:
-            # Only show this message for Trip Planner mode - Explorer already has its caption
-            st.info("Run Trip Planner to see station comparison.")
-        
-        # Historical Comparison Chart
-        # Only show divider if we had content above (Trip Planner mode with boxes)
-        if not is_from_explorer:
-            st.markdown("---")
-        
-        st.markdown("#### Historical Price Comparison (7 Days)")
-        
-        comp_uuids = st.session_state.get("comparison_station_uuids")
-        if not isinstance(comp_uuids, list):
-            comp_uuids = []
-        
-        if not station_uuid:
-            st.caption("Station UUID missing.")
-        elif not comp_uuids:
-            st.caption("Select comparison stations in the sidebar to see price history chart.")
-        else:
-            with st.spinner("Loading comparison data..."):
-                stations_data: Dict[str, pd.DataFrame] = {}
-                
-                # Build current station label with city for consistency
-                current_label = name
-                if city:
-                    current_label += f" · {city}"
-                
-                # Use cached data access
-                current_df = _cached_get_station_price_history(station_uuid, fuel_code, days=7)
-                if current_df is not None and not current_df.empty:
-                    stations_data[f"{current_label} (Current)"] = current_df
-                
-                # Map UUIDs to readable labels using _station_name
-                # Search ranked, stations, AND explorer_results lists to find all station names
-                label_by_uuid: Dict[str, str] = {}
-                
-                # First check ranked list
-                for i, s in enumerate(ranked, start=1):
-                    u = _station_uuid(s)
-                    if not u:
-                        continue
-                    s_name = _station_name(s)
-                    s_brand = _station_brand(s)
-                    s_city = _station_city(s)
-                    label = f"#{i} {s_name}"
-                    if s_brand and s_brand != s_name:
-                        label += f" ({s_brand})"
-                    if s_city:
-                        label += f" · {s_city}"
-                    label_by_uuid[u] = label
-                
-                # Also check stations list (might have different stations)
-                for i, s in enumerate(stations, start=1):
-                    u = _station_uuid(s)
-                    if not u or u in label_by_uuid:  # Don't overwrite if already found
-                        continue
-                    s_name = _station_name(s)
-                    s_brand = _station_brand(s)
-                    s_city = _station_city(s)
-                    label = f"#{i} {s_name}"
-                    if s_brand and s_brand != s_name:
-                        label += f" ({s_brand})"
-                    if s_city:
-                        label += f" · {s_city}"
-                    label_by_uuid[u] = label
-                
-                # Also check explorer_results (for Explorer mode comparisons)
-                for s in explorer_results:
-                    u = _station_uuid(s)
-                    if not u or u in label_by_uuid:  # Don't overwrite if already found
-                        continue
-                    s_name = _station_name(s)
-                    s_brand = _station_brand(s)
-                    s_city = _station_city(s)
-                    label = s_name
-                    if s_brand and s_brand != s_name:
-                        label += f" ({s_brand})"
-                    if s_city:
-                        label += f" · {s_city}"
-                    label_by_uuid[u] = label
-                
-                for u in comp_uuids[:1]:  # Only 1 comparison for cleaner mobile view
-                    if not u or u == station_uuid:
-                        continue
-                    # Use cached data access
-                    df = _cached_get_station_price_history(u, fuel_code, days=7)
-                    if df is not None and not df.empty:
-                        label = label_by_uuid.get(u, f"Station {u[:8]}...")
-                        stations_data[label] = df
+            s_name = _station_name(s)
+            s_city = _station_city(s)
             
-            if len(stations_data) < 2:
-                st.caption("Not enough historical data to compare.")
+            # For Explorer stations, try current price; for Trip stations, use predicted
+            if is_from_explorer:
+                s_price = _safe_float(s.get(f"price_current_{fuel_code}")) or _safe_float(s.get(pred_key))
             else:
-                fig, current_full_name, comparison_full_name = create_comparison_chart(
-                    stations_data, fuel_code, current_station_name=name
-                )
-                st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+                s_price = _safe_float(s.get(pred_key))
+            
+            s_detour = _safe_float(s.get("detour_duration_min"))
+            
+            # Build display name with city for disambiguation
+            s_display_name = s_name
+            if s_city:
+                s_display_name += f" · {s_city}"
+            
+            # Format ETA for this station (only for Trip Planner)
+            s_eta_display = ""
+            if not is_from_explorer:
+                s_eta_str = s.get("eta")
+                if s_eta_str:
+                    try:
+                        if isinstance(s_eta_str, str):
+                            s_eta_dt = datetime.fromisoformat(s_eta_str.replace("Z", "+00:00"))
+                        else:
+                            s_eta_dt = s_eta_str
+                        s_eta_display = f" • ETA: {s_eta_dt.strftime('%H:%M')}"
+                    except Exception:
+                        pass
+            
+            # Detour info (only for Trip Planner)
+            if is_from_explorer:
+                s_detour_text = ""
+            else:
+                s_detour_text = "On route" if (s_detour or 0) < 0.5 else f"+{s_detour:.0f} min detour"
+            
+            # Build info line
+            s_info_parts = []
+            if s_detour_text:
+                s_info_parts.append(s_detour_text)
+            if s_eta_display:
+                s_info_parts.append(s_eta_display.lstrip(" • "))
+            s_info_line = " • ".join(s_info_parts) if s_info_parts else ""
+            
+            # Display name with or without ranking
+            if show_ranking:
+                card_title = f"#{idx} {s_display_name}"
+            else:
+                card_title = s_display_name
+            
+            if s_price:
+                st.markdown(f"""
+                <div style='background: #f3f4f6; border-left: 4px solid #9ca3af; padding: 0.75rem; border-radius: 0.5rem; margin-bottom: 0.5rem;'>
+                    <div style='font-weight: 600; font-size: 1rem; color: #374151;'>{card_title}</div>
+                    <div style='margin-top: 0.5rem; color: #1f2937;'>
+                        <span style='font-size: 1.2rem; font-weight: 700;'>€{s_price:.3f}</span> / L
+                    </div>
+                    {f"<div style='margin-top: 0.3rem; color: #6b7280; font-size: 0.9rem;'>{s_info_line}</div>" if s_info_line else ""}
+                </div>
+                """, unsafe_allow_html=True)
+                shown_count += 1
                 
-                # Show full station names below chart
-                st.markdown(
-                    f"""<div style="font-size: 0.85rem; color: #555; margin-top: -0.5rem;">
-                    <span style="color: #16a34a;">●</span> <b>Your station:</b> {current_full_name}<br>
-                    <span style="color: #2563eb;">●</span> <b>Comparison:</b> {comparison_full_name}
-                    </div>""",
-                    unsafe_allow_html=True
-                )
-                
-                # Quick insight: average price difference over the period
-                try:
-                    current_avg = stations_data.get(f"{current_label} (Current)", pd.DataFrame())["price"].mean()
-                    if pd.notna(current_avg):
-                        # Get comparison station name and average
-                        for label, df in stations_data.items():
-                            if "(Current)" in label or df.empty:
-                                continue
-                            alt_avg = df["price"].mean()
-                            if pd.notna(alt_avg):
-                                diff = float(alt_avg) - float(current_avg)
-                                
-                                if diff > 0:
-                                    st.success(f"Your station is **€{diff:.3f}/L cheaper** on average")
-                                elif diff < 0:
-                                    st.warning(f"Your station is **€{abs(diff):.3f}/L more expensive** on average")
-                                else:
-                                    st.info("Prices match on average")
-                                
-                                # Show calculation breakdown
-                                st.caption(f"Based on 7-day history: Your avg €{float(current_avg):.3f}/L vs Comparison €{float(alt_avg):.3f}/L")
-                                break  # Only 1 comparison
-                except Exception:
-                    pass
+    elif not is_from_explorer and len(compare_list) < 1:
+        # Only show this message for Trip Planner mode - Explorer already has its caption
+        st.info("Run Trip Planner to see station comparison.")
+    
+    # Historical Comparison Chart
+    # Only show divider if we had content above (Trip Planner mode with boxes)
+    if not is_from_explorer:
+        st.markdown("---")
+    
+    st.markdown("#### Historical Price Comparison (7 Days)")
+    
+    comp_uuids = st.session_state.get("comparison_station_uuids")
+    if not isinstance(comp_uuids, list):
+        comp_uuids = []
+    
+    if not station_uuid:
+        st.caption("Station UUID missing.")
+    elif not comp_uuids:
+        st.caption("Select comparison stations in the sidebar to see price history chart.")
+    else:
+        with st.spinner("Loading comparison data..."):
+            stations_data: Dict[str, pd.DataFrame] = {}
+            
+            # Build current station label with city for consistency
+            current_label = name
+            if city:
+                current_label += f" · {city}"
+            
+            # Use cached data access
+            current_df = _cached_get_station_price_history(station_uuid, fuel_code, days=7)
+            if current_df is not None and not current_df.empty:
+                stations_data[f"{current_label} (Current)"] = current_df
+            
+            # Map UUIDs to readable labels using _station_name
+            # Search ranked, stations, AND explorer_results lists to find all station names
+            label_by_uuid: Dict[str, str] = {}
+            
+            # First check ranked list
+            for i, s in enumerate(ranked, start=1):
+                u = _station_uuid(s)
+                if not u:
+                    continue
+                s_name = _station_name(s)
+                s_brand = _station_brand(s)
+                s_city = _station_city(s)
+                label = f"#{i} {s_name}"
+                if s_brand and s_brand != s_name:
+                    label += f" ({s_brand})"
+                if s_city:
+                    label += f" · {s_city}"
+                label_by_uuid[u] = label
+            
+            # Also check stations list (might have different stations)
+            for i, s in enumerate(stations, start=1):
+                u = _station_uuid(s)
+                if not u or u in label_by_uuid:  # Don't overwrite if already found
+                    continue
+                s_name = _station_name(s)
+                s_brand = _station_brand(s)
+                s_city = _station_city(s)
+                label = f"#{i} {s_name}"
+                if s_brand and s_brand != s_name:
+                    label += f" ({s_brand})"
+                if s_city:
+                    label += f" · {s_city}"
+                label_by_uuid[u] = label
+            
+            # Also check explorer_results (for Explorer mode comparisons)
+            for s in explorer_results:
+                u = _station_uuid(s)
+                if not u or u in label_by_uuid:  # Don't overwrite if already found
+                    continue
+                s_name = _station_name(s)
+                s_brand = _station_brand(s)
+                s_city = _station_city(s)
+                label = s_name
+                if s_brand and s_brand != s_name:
+                    label += f" ({s_brand})"
+                if s_city:
+                    label += f" · {s_city}"
+                label_by_uuid[u] = label
+            
+            for u in comp_uuids[:1]:  # Only 1 comparison for cleaner mobile view
+                if not u or u == station_uuid:
+                    continue
+                # Use cached data access
+                df = _cached_get_station_price_history(u, fuel_code, days=7)
+                if df is not None and not df.empty:
+                    label = label_by_uuid.get(u, f"Station {u[:8]}...")
+                    stations_data[label] = df
+        
+        if len(stations_data) < 2:
+            st.caption("Not enough historical data to compare.")
+        else:
+            fig, current_full_name, comparison_full_name = create_comparison_chart(
+                stations_data, fuel_code, current_station_name=name
+            )
+            st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+            
+            # Show full station names below chart
+            st.markdown(
+                f"""<div style="font-size: 0.85rem; color: #555; margin-top: -0.5rem;">
+                <span style="color: #16a34a;">●</span> <b>Your station:</b> {current_full_name}<br>
+                <span style="color: #2563eb;">●</span> <b>Comparison:</b> {comparison_full_name}
+                </div>""",
+                unsafe_allow_html=True
+            )
+            
+            # Quick insight: average price difference over the period
+            try:
+                current_avg = stations_data.get(f"{current_label} (Current)", pd.DataFrame())["price"].mean()
+                if pd.notna(current_avg):
+                    # Get comparison station name and average
+                    for label, df in stations_data.items():
+                        if "(Current)" in label or df.empty:
+                            continue
+                        alt_avg = df["price"].mean()
+                        if pd.notna(alt_avg):
+                            diff = float(alt_avg) - float(current_avg)
+                            
+                            if diff > 0:
+                                st.success(f"Your station is **€{diff:.3f}/L cheaper** on average")
+                            elif diff < 0:
+                                st.warning(f"Your station is **€{abs(diff):.3f}/L more expensive** on average")
+                            else:
+                                st.info("Prices match on average")
+                            
+                            # Show calculation breakdown
+                            st.caption(f"Based on 7-day history: Your avg €{float(current_avg):.3f}/L vs Comparison €{float(alt_avg):.3f}/L")
+                            break  # Only 1 comparison
+            except Exception:
+                pass
     
     maybe_persist_state()
 
