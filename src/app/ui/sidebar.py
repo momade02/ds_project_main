@@ -420,7 +420,7 @@ def _render_trip_planner_action() -> SidebarState:
         value=float(_canonical("max_distance_km", 750.0)),
         key=_w("max_distance_km"),
         help=(
-            "The maximum distance from the starting point to a station. Stations farther than this distance are excluded." \
+            "The maximum distance from the starting point to a station. Stations farther than this distance are excluded. " \
             "Useful to set for long trips if your fuel tank is low and you want to refill before running out."
         ),
     )
@@ -433,11 +433,11 @@ def _render_trip_planner_action() -> SidebarState:
         value=float(_canonical("min_distance_km", 0.0)),
         key=_w("min_distance_km"),
         help=(
-            "The minimum distance from the starting point to a station. Stations closer than this distance are excluded." \
+            "The minimum distance from the starting point to a station. Stations closer than this distance are excluded. " \
             "Useful to set if your fuel tank is full and you want to refill after driving some distance."
         ),
     )
-    # Validierung: min_distance_km <= max_distance_km
+    # Validation: min_distance_km <= max_distance_km
     if min_distance_km > max_distance_km:
         st.sidebar.error(
             "Minimum distance cannot be greater than maximum distance. "
