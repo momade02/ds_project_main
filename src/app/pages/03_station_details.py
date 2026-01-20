@@ -1188,38 +1188,10 @@ def main():
         st.session_state["map_style_mode"] = _preserve_map_style_mode
     
     apply_app_css()
-    
-    # Reduce vertical spacing for tighter layout (similar to page 02)
-    st.markdown("""
-    <style>
-        /* Reduce gap between elements */
-        .stMarkdown { margin-bottom: 0.25rem !important; }
-        .stMetric { padding: 0.5rem 0 !important; }
-        
-        /* Tighter section headers */
-        h3 { margin-top: 1rem !important; margin-bottom: 0.5rem !important; }
-        h4 { margin-top: 0.75rem !important; margin-bottom: 0.25rem !important; }
-        
-        /* Reduce chart container padding */
-        .stPlotlyChart { margin-bottom: 0.5rem !important; }
-        
-        /* Reduce expander padding */
-        .streamlit-expanderHeader { padding: 0.5rem 0 !important; }
-        
-        /* Tighter info boxes */
-        .stAlert { padding: 0.5rem !important; margin: 0.25rem 0 !important; }
-        
-        /* Reduce column gaps */
-        [data-testid="column"] { padding: 0.25rem !important; }
-        
-        /* Tighter captions */
-        .stCaption { margin-top: 0 !important; margin-bottom: 0.25rem !important; }
-    </style>
-    """, unsafe_allow_html=True)
-    
+
     st.title("Station Details & Analysis")
     st.caption("##### Deep-dive into individual station data and price patterns.")
-    
+
     # =========================================================================
     # TOP NAVIGATION
     # =========================================================================
@@ -1251,7 +1223,7 @@ def main():
         except Exception:
             pass
         st.switch_page(target)
-    
+
     # =========================================================================
     # SIDEBAR - WITH TRIP SETTINGS IN ACTION TAB AND HELP CONTENT
     # =========================================================================
@@ -1262,7 +1234,7 @@ def main():
     ranked = list(last_run.get("ranked") or [])
     stations = list(last_run.get("stations") or [])
     explorer_results = list(st.session_state.get("explorer_results") or [])
-    
+
     # =========================================================================
     # RESOLVE STATION
     # =========================================================================
@@ -1285,12 +1257,40 @@ def main():
             st.info("No station selected. Please select a station from the sidebar.")
             st.caption("Tip: Use the 'Select Station' dropdown in the sidebar to choose a station.")
         else:
-            st.info("No station data available yet.")
-            st.caption("Tip: Run **Trip Planner** on the Home page or use **Station Explorer** to search for stations first.")
+            st.info("No station data available yet. Run a route recommendation first on the home page or use the Station Explorer.")
         
-        st.markdown("---")
         maybe_persist_state()
         return
+
+    # Reduce vertical spacing for tighter layout (similar to page 02)
+    st.markdown("""
+    <style>
+        /* Reduce gap between elements */
+        .stMarkdown { margin-bottom: 0.25rem !important; }
+        .stMetric { padding: 0.5rem 0 !important; }
+        
+        /* Tighter section headers */
+        h3 { margin-top: 1rem !important; margin-bottom: 0.5rem !important; }
+        h4 { margin-top: 0.75rem !important; margin-bottom: 0.25rem !important; }
+        
+        /* Reduce chart container padding */
+        .stPlotlyChart { margin-bottom: 0.5rem !important; }
+        
+        /* Reduce expander padding */
+        .streamlit-expanderHeader { padding: 0.5rem 0 !important; }
+        
+        /* Tighter info boxes */
+        .stAlert { padding: 0.5rem !important; margin: 0.25rem 0 !important; }
+        
+        /* Reduce column gaps */
+        [data-testid="column"] { padding: 0.25rem !important; }
+        
+        /* Tighter captions */
+        .stCaption { margin-top: 0 !important; margin-bottom: 0.25rem !important; }
+    </style>
+    """, unsafe_allow_html=True)
+    
+
     
     # =========================================================================
     # EXTRACT STATION INFO
