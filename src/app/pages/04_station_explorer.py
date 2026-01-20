@@ -10,7 +10,7 @@ import streamlit as st
 
 from ui.styles import apply_app_css
 
-from ui.sidebar import render_sidebar, render_sidebar_shell, _render_help_action
+from ui.sidebar import render_sidebar, render_sidebar_shell, _render_help_explorer
 
 from config.settings import load_env_once
 
@@ -376,7 +376,7 @@ def main() -> None:
         ):
             _sync(k)
 
-    sidebar_view = render_sidebar_shell(action_renderer=_action_tab, help_renderer = _render_help_action)
+    sidebar_view = render_sidebar_shell(action_renderer=_action_tab, help_renderer = _render_help_explorer)
 
     # Read values from session_state so they remain available even on non-Action tabs
     use_realtime = True
@@ -455,7 +455,7 @@ def main() -> None:
     stations: List[Dict[str, Any]] = st.session_state.get("explorer_results") or []
 
     if not center:
-        st.markdown("### Welcome to **Station Explorer**")
+        st.markdown("#### Welcome to Station Explorer")
 
         st.markdown(
             """

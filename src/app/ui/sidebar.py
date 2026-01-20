@@ -510,129 +510,149 @@ def _render_help_action() -> SidebarState:
     state = _read_cached_values_for_non_action()
 
     st.sidebar.markdown("### Detailed Information")
-    st.sidebar.markdown("Click on the Topic in which you are interested in.")
+    st.sidebar.markdown("Click on the topic headings below to get more information.")
 
     with st.sidebar.popover("Data Sources"):
         st.markdown("**Google Maps APIs**: " \
-        "\n- Geocoding: convert addresses into latitude/longitude coordinates" \
-        "\n- Directions: find best driving route" \
-        "\n- Places Text Search Enterprise: find fuel stations along the route" \
-        "\n\n**Tankerkönig**:" \
-        "\n- API for current fuel prices of 14000+ stations in Germany" \
-        "\n- Historical price data for model training.")
+            "\n- Geocoding: convert addresses into latitude/longitude coordinates" \
+            "\n- Directions: find best driving route" \
+            "\n- Places Text Search Enterprise: find fuel stations along the route" \
+            "\n\n**Tankerkönig**:" \
+            "\n- API for current fuel prices of 14000+ stations in Germany" \
+            "\n- Historical price data for model training.")
 
     with st.sidebar.popover("Route finding process"):
         st.markdown("First the user’s start and destination input is converted into exact latitude/longitude coordinates using the **Google Maps Geocoding API**. " \
-        "\n\n Next, the best driving route is calculated with the **Google Maps Directions API**. Besides total distance and travel time, we also extract the detailed route geometry, which is  later used to find stations along the route.")
+            "\n\n Next, the best driving route is calculated with the **Google Maps Directions API**. Besides total distance and travel time, we also extract the detailed route geometry, which is  later used to find stations along the route.")
 
     with st.sidebar.popover("Finding Stations along the route"):
         st.markdown("Fuel stations are retrieved along the calculated route using the **Places API Text Search Enterprise**. " \
-                    "\n\nFor each returned station, the detour time and distance caused by stopping there is calculated from the API’s routing summary output. Further an estimated arrival time is computed. Opening-hours information is then evaluated to determine whether the station is likely open at that ETA.")
+            "\n\nFor each returned station, the detour time and distance caused by stopping there is calculated from the API’s routing summary output. Further an estimated arrival time is computed. Opening-hours information is then evaluated to determine whether the station is likely open at that ETA.")
 
     with st.sidebar.popover("Detour Economics Explained"):
         st.markdown("The Detour Economics logic evaluates the cost-effectiveness of taking a detour to refuel. It combines the additional fuel costs (based on distance and car consumption) and time costs (using the user's value of time) with the potential savings from lower fuel prices at the detour station. " \
-        "The goal is to calculate the net savings and ensure that the detour is economically beneficial." \
-        "Formula: \n\n$$Net Saving = Fuel Price Saving − Detour Fuel Cost − Time Cost$$" \
-        )
+            "The goal is to calculate the net savings and ensure that the detour is economically beneficial." \
+            "Formula: \n\n$$Net Saving = Fuel Price Saving − Detour Fuel Cost − Time Cost$$" \
+            )
         
     with st.sidebar.popover("Price prediction model"):
         st.markdown("The price prediction is based on an **ARDL model (Autoregressive Distributed Lag)** that uses past fuel prices to estimate future prices. " \
-        "Separate models are trained for each fuel type (E5, E10, Diesel) and for different prediction horizons (from “now” up to about two hours ahead). " \
-        "\n\nTo generate a prediction, it is first determined how far in the future the arrival at a station lies. If the arrival is very soon (within a few minutes) and a current price is available, the current price is used directly and no model is applied. " \
-        "Otherwise, the appropriate horizon model is selected: short-term horizons (h1–h4) are used for near-future arrivals, while a daily-only model (h0) is used when the arrival lies further ahead or when no current price is available. " \
-        "The model then receives a **feature vector** consisting of **daily lagged prices** (prices from previous days) and, for short horizons, an additional **intraday price feature**. " \
-        "Based on these inputs, the ARDL model predicts the expected fuel price at the estimated arrival time. ")
+            "Separate models are trained for each fuel type (E5, E10, Diesel) and for different prediction horizons (from “now” up to about two hours ahead). " \
+            "\n\nTo generate a prediction, it is first determined how far in the future the arrival at a station lies. If the arrival is very soon (within a few minutes) and a current price is available, the current price is used directly and no model is applied. " \
+            "Otherwise, the appropriate horizon model is selected: short-term horizons (h1–h4) are used for near-future arrivals, while a daily-only model (h0) is used when the arrival lies further ahead or when no current price is available. " \
+            "The model then receives a **feature vector** consisting of **daily lagged prices** (prices from previous days) and, for short horizons, an additional **intraday price feature**. " \
+            "Based on these inputs, the ARDL model predicts the expected fuel price at the estimated arrival time. ")
 
     # Return a SidebarState compatible object (keep cached values, only change view)
     return SidebarState(**{**state.__dict__, "view": "Help"})
 
 
-def render_station_help():
+def _render_help_station():
     """
     Render help content for Station Details page (Page 03).
     Explains the key concepts and features available.
     """
-    st.sidebar.markdown("### Help")
-    st.sidebar.markdown(
-        "Below are explanations of the key features on this page."
-    )
+    # Keep cached values for downstream behaviour and return a SidebarState
+    state = _read_cached_values_for_non_action()
+
+    st.sidebar.markdown("### Detailed Information")
+    st.sidebar.markdown("Click on the topic headings below to get more information.")
     
     # Rating System
-    with st.sidebar.expander("Rating System"):
+    with st.sidebar.popover("Rating System"):
         st.markdown("""
-**Traffic Light Rating**
+            **Traffic Light Rating**
 
-The colored circles show how this station compares to others:
+            The colored circles show how this station compares to others:
 
-**In Trip Planner mode** (route-based):
-- 🟢 **Green** = Top 33% (best value/price)
-- 🟡 **Yellow** = Middle 33% (average)
-- 🔴 **Red** = Bottom 33% (worst value/price)
-- ⚪ **No Rating** = Station did not meet ranking criteria (e.g., excessive detour, closed at ETA, filtered by brand, or insufficient data)
+            **In Trip Planner mode** (route-based):
+            - 🟢 **Green** = Top 33% (best value/price)
+            - 🟡 **Yellow** = Middle 33% (average)
+            - 🔴 **Red** = Bottom 33% (worst value/price)
+            - ⚪ **No Rating** = Station did not meet ranking criteria (e.g., excessive detour, closed at ETA, filtered by brand, or insufficient data)
 
-**In Explorer mode** (location-based):
-- ⚪ **Explorer** = No ranking available. Explorer searches show stations near a location, not along a route. Rankings require route context (detours, ETAs).
+            **In Explorer mode** (location-based):
+            - ⚪ **Explorer** = No ranking available. Explorer searches show stations near a location, not along a route. Rankings require route context (detours, ETAs).
 
-**With Economics enabled:** Rating based on net savings (price advantage minus detour costs).
+            **With Economics enabled:** Rating based on net savings (price advantage minus detour costs).
 
-**Without Economics:** Rating based on predicted price only.
-        """)
+            **Without Economics:** Rating based on predicted price only.
+            """)
     
     # Savings Calculator / Price Comparison
-    with st.sidebar.expander("Savings / Price Comparison"):
+    with st.sidebar.popover("Savings / Price Comparison"):
         st.markdown("""
-**Trip Planner mode: Savings Calculator**
+            **Trip Planner mode: Savings Calculator**
 
-We compare this station against the **worst on-route** price (most expensive station directly on your route, no detour needed).
+            We compare this station against the **worst on-route** price (most expensive station directly on your route, no detour needed).
 
-- **Gross Savings** = Price difference × Liters
-- **Net Savings** = Gross Savings − Detour Costs
-  - Detour fuel cost: extra km × consumption × price
-  - Time cost: extra minutes × your hourly rate
-- **Break-even:** Minimum liters needed for the detour to be worthwhile.
+            - **Gross Savings** = Price difference × Liters
+            - **Net Savings** = Gross Savings − Detour Costs
+            - Detour fuel cost: extra km × consumption × price
+            - Time cost: extra minutes × your hourly rate
+            - **Break-even:** Minimum liters needed for the detour to be worthwhile.
 
-**Explorer mode: Price Comparison**
+            **Explorer mode: Price Comparison**
 
-Shows this station's price vs the cheapest and most expensive in your search results. No calculations - just a quick overview to see where this station stands.
-        """)
+            Shows this station's price vs the cheapest and most expensive in your search results. No calculations - just a quick overview to see where this station stands.
+            """)
     
     # Best Time to Refuel
-    with st.sidebar.expander("Best Time to Refuel"):
+    with st.sidebar.popover("Best Time to Refuel"):
         st.markdown("""
-**Hourly Price Patterns**
+            **Hourly Price Patterns**
 
-Based on 14 days of historical data, we show when prices are typically:
-- 🟢 Cheapest (often early morning or late evening)
-- 🟡 Average
-- 🔴 Most expensive (often mid-day)
+            Based on 14 days of historical data, we show when prices are typically:
+            - 🟢 Cheapest (often early morning or late evening)
+            - 🟡 Average
+            - 🔴 Most expensive (often mid-day)
 
-**Heatmap:** Shows price patterns by day and hour. White cells mean no data was recorded for that time slot.
+            **Heatmap:** Shows price patterns by day and hour. White cells mean no data was recorded for that time slot.
 
-**When is data "not enough"?**
+            **When is data "not enough"?**
 
-We need at least 20 price changes across 4 different hours in the last 14 days. In our experience, stations with fewer updates rarely change prices, making hourly patterns unreliable. A typical station updates prices 3-5 times per day.
-        """)
+            We need at least 20 price changes across 4 different hours in the last 14 days. In our experience, stations with fewer updates rarely change prices, making hourly patterns unreliable. A typical station updates prices 3-5 times per day.
+            """)
     
     # Station Selection
-    with st.sidebar.expander("Station Selection"):
+    with st.sidebar.popover("Station Selection"):
         st.markdown("""
-**Station Source**
+            **Station Source**
 
-Use the radio button to switch between:
-- **From latest route run:** Stations from your Trip Planner route
-- **From station explorer:** Stations from your proximity search
+            Use the radio button to switch between:
+            - **From latest route run:** Stations from your Trip Planner route
+            - **From station explorer:** Stations from your proximity search
 
-**Ranked vs Not Ranked** (Trip Planner only)
+            **Ranked vs Not Ranked** (Trip Planner only)
 
-- **Ranked:** Stations that passed all your filters (detour limits, opening hours, etc.)
-- **Not Ranked:** Stations excluded due to excessive detour, being closed at ETA, or other filters.
+            - **Ranked:** Stations that passed all your filters (detour limits, opening hours, etc.)
+            - **Not Ranked:** Stations excluded due to excessive detour, being closed at ETA, or other filters.
 
-**Explorer stations:** No ranking - these are simply stations near your searched location.
+            **Explorer stations:** No ranking - these are simply stations near your searched location.
 
-**Comparison:** Select stations from the sidebar to compare historical prices.
-        """)
+            **Comparison:** Select stations from the sidebar to compare historical prices.
+                    """)
+    # Return a SidebarState compatible object (keep cached values, only change view)
+    return SidebarState(**{**state.__dict__, "view": "Help"})
 
+def _render_help_explorer():
+    """
+    Render help content for Station Explorer page (Page 04).
+    Explains the key concepts and features available.
+    """
+    # Keep cached values for downstream behaviour and return a SidebarState
+    state = _read_cached_values_for_non_action()
 
+    st.sidebar.markdown("### Detailed Information")
+    st.sidebar.markdown("Click on the topic headings below to get more information.")
+    
+    # Station Explorer Overview
+    with st.sidebar.popover("Why is the number of Stations open vs. with current price sometimes different?"):
+        st.markdown("""
+            """)
+
+    # Return a SidebarState compatible object (keep cached values, only change view)
+    return SidebarState(**{**state.__dict__, "view": "Help"})
 def render_sidebar(
     *,
     action_renderer: Optional[Callable[[], SidebarState]] = None,
