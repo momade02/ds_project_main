@@ -1344,7 +1344,10 @@ def main() -> None:
         last_run["litres_to_refuel"] = litres_to_refuel
         last_run["debug_mode"] = debug_mode
 
-        last_run["computed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        from datetime import timezone  # add near your other imports if not already present
+
+        # store as UTC ISO-8601 with offset (unambiguous across containers)
+        last_run["computed_at"] = datetime.now(timezone.utc).isoformat()
 
         st.session_state["last_run"] = last_run
         st.session_state["last_params_hash"] = params_hash
