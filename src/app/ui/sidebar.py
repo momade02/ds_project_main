@@ -330,8 +330,8 @@ def _render_trip_planner_action() -> SidebarState:
     value_of_time_eur_per_hour = st.sidebar.number_input(
         "Value of time (€/hour)",
         min_value=0.0,
-        max_value=200.0,
-        step=5.0,
+        max_value=50.0,
+        step=1.0,
         value=float(_canonical("value_of_time_eur_per_hour", 0.0)),
         key=_w("value_of_time_eur_per_hour"),
         help=(
@@ -711,9 +711,10 @@ def render_sidebar(
 
 def render_sidebar_shell(
     *,
+    top_renderer: Optional[Callable[[], None]] = None,
     action_renderer: Optional[Callable[[], None]] = None,
     action_placeholder: str = "Placeholder: Action",
-    help_renderer: Optional[Callable[[], None]] = None ,
+    help_renderer: Optional[Callable[[], None]] = None,
     settings_placeholder: str = "Placeholder: Settings (will be added later).",
     profile_placeholder: str = "Placeholder: Profile (will be added later).",
 ) -> str:
@@ -739,6 +740,15 @@ def render_sidebar_shell(
         width="stretch",
         key="sidebar_view",
     )
+
+    # Optional page-specific controls rendered directly below the sidebar toggle
+    # (e.g., quick back-navigation buttons on some pages).
+    if top_renderer is not None:
+        try:
+            top_renderer()
+        except Exception:
+            # Best-effort: sidebar chrome should never break the page.
+            pass
     
     # Render content based on selected tab
     # Only Action tab renders the (potentially heavy) action_renderer
@@ -820,6 +830,88 @@ def _build_station_label(
 
     parts.append(f"[{tag}]")
     return " ".join(parts).strip()
+
+
+def _extract_net_saving_eur(station: Dict[str, Any], fuel_code: str) -> Optional[float]:
+    """
+    Best-effort extraction of net saving (EUR) from a station dict.
+
+    Primary key is fuel-specific:
+      econ_net_saving_eur_<fuel_code>  (e.g., econ_net_saving_eur_e5)
+
+    Fallbacks are supported for robustness across older cached runs.
+    """
+    if not isinstance(station, dict):
+        return None
+
+    fc = (fuel_code or "").strip().lower()
+    candidate_keys = []
+    if fc:
+        candidate_keys.append(f"econ_net_saving_eur_{fc}")
+
+    # Fall back to older / generic keys (defensive)
+    candidate_keys += [
+        "econ_net_saving_eur",
+        "net_saving_eur",
+        "net_saving",
+    ]
+
+    for k in candidate_keys:
+        if k in station:
+            try:
+                v = station.get(k)
+                if v is None:
+                    return None
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+
+    return None
+
+
+def _build_compact_route_label(rank_index: int, station: Dict[str, Any]) -> str:
+    """
+    Label format for the route selector:
+      "<i>. <BRAND> — <Address>"
+
+    Address is built from Tankerkönig fields if available:
+      street + house_number + post_code + city
+    Fallback: city only, else station name/uuid placeholder.
+    """
+    # BRAND (preferred) with safe fallback
+    brand = _safe_text((station or {}).get("brand", "")).strip()
+    if not brand:
+        name = station.get("tk_name") or station.get("osm_name") or station.get("name")
+        brand = _safe_text(str(name) if name else "Unknown")
+
+    # Address from TK fields (best for ALL stations)
+    street = (station or {}).get("street")
+    house_number = (station or {}).get("house_number")
+    post_code = (station or {}).get("post_code")
+    city = (station or {}).get("city")
+
+    address = ""
+    if street and city:
+        street_title = str(street).title().strip()
+        city_title = str(city).title().strip()
+
+        street_part = f"{street_title} {str(house_number).strip()}" if house_number else street_title
+        city_part = f"{str(post_code).strip()} {city_title}".strip() if post_code else city_title
+
+        address = f"{street_part}, {city_part}".strip()
+    elif city:
+        address = str(city).title().strip()
+
+    if not address:
+        # Very defensive fallback (should be rare for TK stations)
+        address = _safe_text(
+            str(station.get("city") or station.get("osm_name") or station.get("tk_name") or "")
+        ).strip()
+
+    if not address:
+        address = "Address unavailable"
+
+    return f"{rank_index}. {brand} — {address}"
 
 
 def _resolve_uuid_to_station_map(
@@ -970,23 +1062,59 @@ def render_station_selector(
     options: List[Tuple[str, str]] = []  # (uuid, label)
 
     if source == "route":
-        ranked_uuids = {_station_uuid(s) for s in ranked if _station_uuid(s)}
-        excluded = [s for s in stations if (_station_uuid(s) and _station_uuid(s) not in ranked_uuids)]
+        # NEW BEHAVIOR (route source only):
+        # - Show ALL found route stations (no ranked/not-ranked split)
+        # - Sort descending by net saving (missing net saving goes to bottom)
+        # - Label: "1. BRAND — Address"
+        fuel_code = str(last_run.get("fuel_code") or "").strip().lower()
 
-        for i, s in enumerate(ranked[:max_ranked], start=1):
+        # Prefer the full station universe; fall back to ranked if stations missing for any reason.
+        base = list(stations or ranked or [])
+
+        # Deduplicate by UUID while keeping the best (highest) net saving for that UUID.
+        # Missing net saving is treated as -inf so it never wins over a real value.
+        best_by_uuid: Dict[str, Dict[str, Any]] = {}
+        best_score_by_uuid: Dict[str, float] = {}
+
+        for s in base:
+            uid = _station_uuid(s)
+            if not uid:
+                continue
+
+            net = _extract_net_saving_eur(s, fuel_code)
+            score = float(net) if net is not None else float("-inf")
+
+            if uid not in best_by_uuid or score > best_score_by_uuid.get(uid, float("-inf")):
+                best_by_uuid[uid] = s
+                best_score_by_uuid[uid] = score
+
+        all_stations = list(best_by_uuid.values())
+
+        def _sort_key(s: Dict[str, Any]) -> Tuple[int, float, float]:
+            net = _extract_net_saving_eur(s, fuel_code)
+            missing = 1 if net is None else 0
+            # missing=0 first, then descending net (use -net), then stable tie-breakers
+            frac = s.get("fraction_of_route", float("inf"))
+            dist = s.get("distance_along_m", float("inf"))
+            try:
+                frac_f = float(frac) if frac is not None else float("inf")
+            except (TypeError, ValueError):
+                frac_f = float("inf")
+            try:
+                dist_f = float(dist) if dist is not None else float("inf")
+            except (TypeError, ValueError):
+                dist_f = float("inf")
+
+            return (missing, -(float(net) if net is not None else 0.0), frac_f + 0.0 + dist_f * 0.0)
+
+        # Note: the tie-breakers above are intentionally conservative; primary is net saving.
+        all_stations_sorted = sorted(all_stations, key=_sort_key)
+
+        for i, s in enumerate(all_stations_sorted, start=1):
             uid = _station_uuid(s)
             if uid:
-                options.append((uid, _build_station_label(s, tag="ranked", rank_index=i)))
+                options.append((uid, _build_compact_route_label(i, s)))
 
-        # Add separator if there are both ranked and excluded
-        if ranked and excluded:
-            # Add a visual separator label (not selectable, but shown in dropdown)
-            pass  # Streamlit doesn't support separators, so we'll use label styling instead
-
-        for s in excluded[:max_excluded]:
-            uid = _station_uuid(s)
-            if uid:
-                options.append((uid, _build_station_label(s, tag="not ranked", rank_index=None)))
 
     else:  # explorer
         for s in explorer_results[:max_explorer]:
@@ -1032,13 +1160,9 @@ def render_station_selector(
     except ValueError:
         default_idx = 0
 
-    # Count ranked vs not-ranked for caption
+    # Caption/help text
     if source == "route":
-        ranked_uuids_set = {_station_uuid(s) for s in ranked if _station_uuid(s)}
-        excluded_list = [s for s in stations if (_station_uuid(s) and _station_uuid(s) not in ranked_uuids_set)]
-        ranked_count = min(len(ranked), max_ranked)
-        excluded_count = min(len(excluded_list), max_excluded)
-        caption_text = f"{ranked_count} ranked · {excluded_count} not ranked"
+        caption_text = f"{len(options)} stations · sorted by net saving (desc) · missing net saving at bottom"
     else:
         caption_text = f"{len(options)} stations"
 
@@ -1120,8 +1244,7 @@ def render_comparison_selector(
     Returns:
         UUID of the selected comparison station, or None if none selected
     """
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("**Compare stations**")
+    st.sidebar.markdown("### Compare stations")
     
     explorer_results = explorer_results or []
     
@@ -1184,37 +1307,27 @@ def render_comparison_selector(
             if not u:
                 continue
             ranked_uuids.add(u)
-            nm = _station_name_for_comparison(s)
-            br = _station_brand_for_comparison(s)
-            city = _safe_text(s.get("city", ""))
-            
-            label = f"#{i} {nm}"
-            if br and br != nm:
-                label += f" ({br})"
-            if city:
-                label += f" · {city}"
-            label += " [ranked]"
-            
-            uuid_labels[u] = label
-        
+
+            # UI only: compact label format (do not change selection logic)
+            uuid_labels[u] = _build_compact_route_label(i, s)
+
         # Second: excluded stations (in stations but not in ranked)
-        excluded = [s for s in stations if (_station_uuid(s) and _station_uuid(s) not in ranked_uuids)]
-        for s in excluded[:max_excluded]:
+        excluded = [
+            s for s in stations
+            if (_station_uuid(s) and _station_uuid(s) not in ranked_uuids)
+        ]
+
+        # Continue numbering after the ranked list (UI only)
+        next_index = len(uuid_labels) + 1
+
+        for j, s in enumerate(excluded[:max_excluded], start=next_index):
             u = _station_uuid(s)
             if not u or u in uuid_labels:
                 continue
-            nm = _station_name_for_comparison(s)
-            br = _station_brand_for_comparison(s)
-            city = _safe_text(s.get("city", ""))
-            
-            label = f"{nm}"
-            if br and br != nm:
-                label += f" ({br})"
-            if city:
-                label += f" · {city}"
-            label += " [excluded]"
-            
-            uuid_labels[u] = label
+
+            # UI only: compact label format (do not change selection logic)
+            uuid_labels[u] = _build_compact_route_label(j, s)
+
         
         if not uuid_labels:
             st.sidebar.caption("No route stations available for comparison.")
