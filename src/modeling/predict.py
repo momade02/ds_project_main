@@ -251,6 +251,11 @@ def _predict_single_fuel(
     debug_eta_key = f"debug_{ft}_eta_utc"
     debug_mta_key = f"debug_{ft}_minutes_to_arrival"
 
+    # Feature-vector debug (for exact explainability in the UI)
+    debug_fc_key = f"debug_{ft}_feature_cols"     # list[str]
+    debug_fv_key = f"debug_{ft}_feature_values"   # list[float|None]
+    debug_fm_key = f"debug_{ft}_feature_map"      # dict[str, float|None]
+
     # Attach current time cell for all stations (useful for debugging)
     for station in model_input_list:
         station[debug_ct_key] = current_time_cell
@@ -259,6 +264,14 @@ def _predict_single_fuel(
         # Ensure prediction key exists, default None
         if pred_key not in station:
             station[pred_key] = None
+
+        # Ensure explainability debug fields exist (best-effort; do not affect logic)
+        if debug_fc_key not in station:
+            station[debug_fc_key] = None
+        if debug_fv_key not in station:
+            station[debug_fv_key] = None
+        if debug_fm_key not in station:
+            station[debug_fm_key] = None
 
         time_cell = station.get("time_cell")
         if time_cell is None:
@@ -301,9 +314,15 @@ def _predict_single_fuel(
                 station[pred_key] = float(current_price)
                 station[debug_ucp_key] = True
                 station[debug_h_key] = None
+                station[debug_fc_key] = None
+                station[debug_fv_key] = None
+                station[debug_fm_key] = None
             except (TypeError, ValueError):
                 station[pred_key] = None
             continue
+
+        # If we are here, we are NOT in Spot mode -> explicitly mark "used_current_price" as False
+        station[debug_ucp_key] = False
 
         # ------------------------------------------------------------------
         # Case 2: need to run a model -> decide horizon + feature columns
@@ -340,20 +359,37 @@ def _predict_single_fuel(
 
         station[debug_h_key] = horizon
 
-        # Build feature values mapped to generic names
-        values: List[float] = []
+        # Build feature vector (and persist exact inputs for UI explainability)
+        values: List[Optional[float]] = []
+        feature_map: Dict[str, Optional[float]] = {}
 
-        for suffix in ("1d", "2d", "3d", "7d"):
-            key = f"price_lag_{suffix}_{ft}"  # e.g. price_lag_1d_e5
-            values.append(station.get(key))
+        def _to_float_or_none(x: Any) -> Optional[float]:
+            try:
+                return None if x is None else float(x)
+            except Exception:
+                return None
 
+        # Daily lags
+        for col_name, suffix in zip(daily_cols_generic, ("1d", "2d", "3d", "7d")):
+            raw_val = station.get(f"price_lag_{suffix}_{ft}")
+            v = _to_float_or_none(raw_val)
+            values.append(v)
+            feature_map[col_name] = v
+
+        # Intraday feature (models were trained with price_lag_<horizon>cell columns)
         if horizon > 0:
-            # For horizons 1..4 we use the observed current price as
-            # the intraday proxy feature (price_lag_kcell).
-            values.append(current_price)
+            intraday_col = f"price_lag_{horizon}cell"
+            v = _to_float_or_none(current_price)  # keep existing logic: you feed current realtime price here
+            values.append(v)
+            feature_map[intraday_col] = v
 
+        # Persist for audit + Part D explainability (JSON-serialisable)
+        station[debug_fc_key] = list(feature_cols)
+        station[debug_fv_key] = list(values)
+        station[debug_fm_key] = dict(feature_map)
+
+        # If incomplete, skip prediction (unchanged behavior)
         if any(v is None for v in values):
-            # Incomplete feature vector; skip prediction for this station
             continue
 
         X = pd.DataFrame([values], columns=feature_cols)
