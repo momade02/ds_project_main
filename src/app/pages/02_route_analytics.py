@@ -2448,30 +2448,26 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
 
     st.markdown("### **4. Full Table Results**")
 
-    st.markdown(
-        "#### What this page shows:",
-        help=(
-            "This is an audit view of the station decision pipeline as two tables.\n\n"
-            "The system operates in two stages:\n"
-            "1) Hard-feasible stage (non-negotiable): stations must have valid inputs and pass hard constraints\n"
-            "   such as open-at-ETA (if enabled), detour caps, distance window, and deduplication.\n"
-            "2) Economic stage (benchmark-based): among hard-feasible stations, a station is considered economically\n"
-            "   viable if its net saving is at least as high as the worst on-route station (reference benchmark).\n\n"
-            "Important: stations removed upstream (e.g. by corridor search scope) are not available in this cached\n"
-            "station list and therefore cannot appear in these tables."
-        ),
-    )
+    st.markdown("#### What this page shows:")
 
     st.markdown(
-        "- **Table 1 (Selected)** shows stations that are **hard-feasible** and **economically viable**.\n"
-        "  - Hard-feasible: valid prediction inputs, not closed at ETA (if enabled), within detour caps, within the distance window, deduped.\n"
-        "  - Economic viability: net saving **≥ worst on-route net saving** (benchmark).\n"
-        "  - If no on-route benchmark exists, the economic step is **not applicable** and all hard-feasible stations are shown.\n"
-        "- **Table 2 (Discarded)** shows stations that were **discarded by hard constraints and/or economics**.\n"
-        "  - Hard-discarded: missing/invalid prediction, closed at ETA (if enabled), failed detour caps, failed distance window, duplicates removed.\n"
-        "  - Economically rejected: hard-feasible but net saving **< worst on-route net saving**.\n"
+        "This section provides an **audit view** of the station decision pipeline for the cached run, presented as two tables. "
+        "It makes the selection logic transparent and shows the underlying price and cost components used for the savings calculations.\n\n"
+        "**Decision stages:**\n"
+        "1) **Hard constraints (non-negotiable):** stations must have valid prediction inputs and pass feasibility filters such as "
+        "open at ETA (if enabled), detour caps, distance window (if configured), and deduplication.\n"
+        "2) **Economic benchmark (only when available and economics mode is enabled):** among hard-feasible stations, a station is "
+        "economically viable if its **net saving is at least as high as the worst on-route station** (reference benchmark).\n\n"
+        "**How to read the tables:**\n"
+        "- **Selected stations:** pass hard constraints and, if an on-route benchmark exists, also satisfy the economic rule "
+        "(net saving ≥ worst on-route net saving).\n"
+        "- **Discarded stations:** fail at least one hard constraint or are economically rejected (hard-feasible but net saving < worst on-route net saving).\n"
+        "- **Benchmark columns (right side):** show the on-route best/median/worst predicted price as global references, plus the per-station "
+        "gross/net savings versus those references for the configured refuel volume.\n"
+        "- **If no on-route benchmark exists:** the economic step is treated as N/A and all hard-feasible stations appear as selected.\n\n"
+        "**Important:** this view only reflects stations contained in the cached station list for this run. Stations removed upstream "
+        "(e.g., due to corridor search scope) cannot appear here."
     )
-
     # -----------------------------
     # Config / keys (aligned with Section 2 semantics)
     # -----------------------------
@@ -2484,6 +2480,27 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
     econ_time_cost_key__p4 = f"econ_time_cost_eur_{fuel_code}"
 
     constraints__p4 = run_summary.get("constraints") or {}
+
+    # -----------------------------
+    # Run-level context columns (constant per row)
+    # -----------------------------
+    def _fuel_label__p4(code: Any) -> str:
+        c = str(code or "").strip().lower()
+        if c == "e5":
+            return "E5"
+        if c == "e10":
+            return "E10"
+        if c in ("diesel", "d"):
+            return "Diesel"
+        return str(code or "—").upper()
+
+    fuel_type_label__p4 = _fuel_label__p4(fuel_code)
+
+    # Min net saving threshold (from sidebar / constraints). Best-effort key support.
+    min_net_saving_eur__p4 = _as_float(
+        (constraints__p4.get("min_net_saving_eur") if isinstance(constraints__p4, dict) else None)
+        or (constraints__p4.get("min_net_saving") if isinstance(constraints__p4, dict) else None)
+    )
 
     # Detour caps: in economics mode, caps default to 10 km / 10 min if unset.
     cap_km_f__p4 = _as_float(constraints__p4.get("max_detour_km"))
@@ -2634,6 +2651,41 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
 
         hard_feasible__p4 = tmp_ok
 
+    # -----------------------------
+    # On-route benchmark stats (for per-row "vs best/median/worst" columns)
+    # Benchmark universe = hard-feasible (stable, post hard constraints)
+    # -----------------------------
+    litres__p4 = _as_float((constraints__p4 or {}).get("litres_to_refuel"))
+
+    def _onroute_price_stats__p4(universe: List[Dict[str, Any]]) -> Tuple[Optional[float], Optional[float], Optional[float], int]:
+        vals: List[float] = []
+        n_onroute = 0
+
+        for s in universe:
+            p = _as_float((s or {}).get(pred_key__p4))
+            if p is None or p < MIN_VALID_PRICE_EUR_L:
+                continue
+
+            km, mins = _detour_metrics(s)
+            if km is None or mins is None:
+                continue
+
+            # Use the same definition as your benchmark UI (defaults to 1 km / 5 min)
+            if float(km) <= float(onroute_km__p4) and float(mins) <= float(onroute_min__p4):
+                n_onroute += 1
+                vals.append(float(p))
+
+        if not vals:
+            return None, None, None, n_onroute
+
+        ser = pd.Series(vals, dtype="float")
+        return float(ser.min()), float(ser.median()), float(ser.max()), n_onroute
+
+    on_best__p4, on_median__p4, on_worst__p4, onroute_n__p4 = _onroute_price_stats__p4(hard_feasible__p4)
+    onroute_benchmark_available__p4 = (
+        on_best__p4 is not None and on_median__p4 is not None and on_worst__p4 is not None
+    )
+
     # Economic benchmark: worst on-route net saving (Case 1 handled as N/A)
     econ_benchmark_available__p4 = False
     worst_onroute_net__p4: Optional[float] = None
@@ -2727,6 +2779,64 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
     def _fmt_minutes_until_arrival__p4(s: Dict[str, Any]) -> Any:
         v = s.get(f"debug_{fuel_code}_minutes_to_arrival") or s.get(f"debug_{fuel_code}_minutes_ahead")
         return v if v is not None else "—"
+    
+    def _fmt_open_at_eta__p4(s: Dict[str, Any]) -> str:
+        """
+        Open-at-ETA audit flag.
+        Uses the pipeline-provided value via _open_at_eta_flag() (conservative: None => Unknown).
+        """
+        v = _open_at_eta_flag(s)
+        if v is True:
+            return "Yes"
+        if v is False:
+            return "No"
+        return "Unknown"
+
+    def _fmt_utc_offset__p4(s: Dict[str, Any]) -> str:
+        """
+        Display the station-local UTC offset (as provided by Google Places).
+        Example: UTC+01:00, UTC-05:30
+        """
+        raw = (s or {}).get("utc_offset_minutes")
+        try:
+            if raw is None:
+                return "—"
+            mins = int(float(raw))
+        except Exception:
+            return "—"
+
+        sign = "+" if mins >= 0 else "-"
+        mins_abs = abs(mins)
+        hh = mins_abs // 60
+        mm = mins_abs % 60
+        return f"UTC{sign}{hh:02d}:{mm:02d}"
+
+    def _fmt_opening_hours_eta_day__p4(s: Dict[str, Any]) -> str:
+        """
+        Best-effort evidence column:
+        - Prefer the weekdayDescription for the ETA weekday (if we have 7 entries).
+        - Otherwise fall back to a compact joined string.
+        """
+        oh = (s or {}).get("opening_hours")
+        if not isinstance(oh, list) or not oh:
+            return "—"
+
+        # ETA parsing follows the same robust chain used elsewhere on Page 02
+        eta_raw = (s or {}).get("eta") or (s or {}).get(f"debug_{fuel_code}_eta_utc") or (s or {}).get("eta_utc")
+        dt = _parse_any_dt_to_berlin(eta_raw)
+
+        # Google weekdayDescriptions typically has 7 strings (Mon..Sun). Use ETA weekday when possible.
+        if dt is not None and len(oh) >= 7:
+            try:
+                return str(oh[int(dt.weekday())]).strip() or "—"  # 0=Mon..6=Sun
+            except Exception:
+                pass
+
+        # Fallback: compact join (kept short to avoid exploding table width)
+        items = [str(x).strip() for x in oh if x]
+        if not items:
+            return "—"
+        return "; ".join(items[:3]) + ("; …" if len(items) > 3 else "")
 
     def _row__p4(s: Dict[str, Any]) -> Dict[str, Any]:
         dk, dm = _detour_metrics(s)
@@ -2758,6 +2868,26 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
             except Exception:
                 time_cost__p4 = None
 
+        # --- Benchmark-based savings vs on-route best/median/worst (same cards as Section 2, but per-row) ---
+        station_pred__p4 = _as_float((s or {}).get(pred_key__p4))
+
+        def _gross_vs__p4(ref_price: Optional[float]) -> Optional[float]:
+            if ref_price is None or station_pred__p4 is None or litres__p4 is None:
+                return None
+            return (float(ref_price) - float(station_pred__p4)) * float(litres__p4)
+
+        def _net_vs__p4(ref_price: Optional[float]) -> Optional[float]:
+            g = _gross_vs__p4(ref_price)
+            if g is None or detour_fuel_cost__p4 is None or time_cost__p4 is None:
+                return None
+            return float(g) - float(detour_fuel_cost__p4) - float(time_cost__p4)
+
+        def _price_or_na__p4(ref_price: Optional[float]) -> str:
+            return "N/A" if not onroute_benchmark_available__p4 else _fmt_price_or_dash__p4(ref_price)
+
+        def _eur_or_na__p4(v: Optional[float]) -> str:
+            return "N/A" if not onroute_benchmark_available__p4 else _fmt_eur_or_dash__p4(v)
+
         gross = (s or {}).get(econ_gross_key__p4)
         net = (s or {}).get(econ_net_key__p4)
 
@@ -2769,6 +2899,12 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
             "Fraction of route": _fmt_fraction__p4(s.get("fraction_of_route")),
             "ETA": _fmt_eta_local__p4(s),
             "Minutes until arrival": _fmt_minutes_until_arrival__p4(s),
+
+            # Open-at-ETA audit columns (both tables)
+            "Open at ETA": _fmt_open_at_eta__p4(s),
+            "Opening hours (ETA day)": _fmt_opening_hours_eta_day__p4(s),
+            "Station UTC offset": _fmt_utc_offset__p4(s),
+
             "Detour distance": _format_km(dk),
             "Detour time": _format_min(dm),
             "Detour fuel (L)": _format_liters(detour_liters__p4),
@@ -2776,8 +2912,26 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
             "Time cost": _fmt_eur_or_dash__p4(time_cost__p4),
             "Current price": _fmt_price_or_dash__p4(_current_price_best_effort__p4(s)),
             "Predicted price": _fmt_price_or_dash__p4((s or {}).get(pred_key__p4)),
+
+            # Run context (constant per row; makes the table self-contained)
+            "Fuel type": _safe_text(fuel_type_label__p4),
+            "Min net saving (threshold)": _fmt_eur_or_dash__p4(min_net_saving_eur__p4),
+
             "Gross saving": "—" if not bool(use_economics) else _fmt_eur_or_dash__p4(gross),
             "Net saving": "—" if not bool(use_economics) else _fmt_eur_or_dash__p4(net),
+
+            # NEW: On-route benchmarks (same value for all rows)
+            "On-route best (pred)": _price_or_na__p4(on_best__p4),
+            "On-route median (pred)": _price_or_na__p4(on_median__p4),
+            "On-route worst (pred)": _price_or_na__p4(on_worst__p4),
+
+            # NEW: Savings breakdown vs benchmarks (per-row)
+            "Gross vs best": _eur_or_na__p4(_gross_vs__p4(on_best__p4)),
+            "Gross vs median": _eur_or_na__p4(_gross_vs__p4(on_median__p4)),
+            "Gross vs worst": _eur_or_na__p4(_gross_vs__p4(on_worst__p4)),
+            "Net vs best": _eur_or_na__p4(_net_vs__p4(on_best__p4)),
+            "Net vs median": _eur_or_na__p4(_net_vs__p4(on_median__p4)),
+            "Net vs worst": _eur_or_na__p4(_net_vs__p4(on_worst__p4)),
         }
 
     def _reorder_cols__p4(df: pd.DataFrame, *, is_selected: bool) -> pd.DataFrame:
@@ -2796,8 +2950,25 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
             "Time cost",
             "Current price",
             "Predicted price",
+
+            # NEW: run context (keep near the price/saving block)
+            "Fuel type",
+            "Min net saving (threshold)",
+
             "Gross saving",
             "Net saving",
+            "On-route best (pred)",
+            "On-route median (pred)",
+            "On-route worst (pred)",
+            "Gross vs best",
+            "Gross vs median",
+            "Gross vs worst",
+            "Net vs best",
+            "Net vs median",
+            "Net vs worst",
+            "Open at ETA",
+            "Opening hours (ETA day)",
+            "Station UTC offset",
         ]
         selected_only = [
             "Baseline: net saving (worst on-route)",
@@ -2814,17 +2985,30 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
     st.markdown(
         "#### Selected stations (hard-feasible + economically viable):",
         help=(
-            "Selected stations are those that the system would realistically consider for the recommendation.\n\n"
-            "Hard-feasible means:\n"
-            "- Valid prediction inputs\n"
-            "- Not closed at ETA (if enabled)\n"
-            "- Within detour caps\n"
-            "- Within the distance window (if enabled)\n"
-            "- Deduplicated by station UUID\n\n"
-            "Economic viability (only in economics mode):\n"
-            "- Net saving ≥ worst on-route net saving (benchmark).\n"
-            "- If no on-route benchmark exists, the economic step is N/A and all hard-feasible stations appear here."
-        ),
+            "Stations shown here are the ones that the recommender would consider eligible candidates for ranking.\n\n"
+            "Selection is applied in two stages:\n"
+            "1) Hard constraints (non-negotiable):\n"
+            "   - Valid prediction inputs (predicted price must be available and plausible)\n"
+            "   - Open at ETA filter (only if enabled): stations explicitly closed at ETA are removed\n"
+            "   - Within detour caps (km/min)\n"
+            "   - Within the configured min/max distance window (if configured)\n"
+            "   - Deduplicated by station UUID (only one variant is kept)\n"
+            "2) Economic benchmark (only when applicable and economics mode is enabled):\n"
+            "   - A station is economically viable if Net saving ≥ the worst on-route net saving (reference benchmark)\n"
+            "   - If no on-route benchmark exists, the economic step is treated as N/A and all hard-feasible stations appear here\n\n"
+            "Open-at-ETA audit columns:\n"
+            "   - Open at ETA: Yes / No / Unknown\n"
+            "   - Unknown means opening-hours evidence was missing or not parseable; it is NOT treated as closed\n"
+            "   - Opening hours (ETA day) shows the station’s weekday schedule text for the ETA weekday (best-effort)\n"
+            "   - Station UTC offset shows the offset used for local-time evaluation (when provided)\n\n"
+            "Baseline columns (reference benchmark):\n"
+            "   - Baseline net saving = worst on-route net saving used as the economic threshold\n"
+            "   - Baseline predicted price = predicted price of that same worst on-route reference station\n\n"
+            "Benchmark breakdown (right-side columns):\n"
+            "   - On-route best/median/worst are computed from the hard-feasible on-route subset\n"
+            "   - Gross vs best/median/worst compares predicted prices for the configured refuel volume\n"
+            "   - Net vs best/median/worst subtracts detour fuel cost and time cost from the gross saving\n"
+        )
     )
 
     if selected__p4:
@@ -2881,16 +3065,24 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
     st.markdown(
         "#### Discarded stations (hard and/or economic):",
         help=(
-            "Discarded stations include everything that is not selected.\n\n"
-            "Hard-discarded examples:\n"
-            "- Missing prediction\n"
-            "- Closed at ETA (if enabled)\n"
-            "- Failed detour caps\n"
-            "- Failed distance window (if enabled)\n"
-            "- Duplicate station variants removed during deduplication\n\n"
-            "Economic rejection (only when an on-route benchmark exists):\n"
-            "- Hard-feasible but net saving < worst on-route net saving."
-        ),
+            "Stations shown here are everything that did not end up in the Selected table.\n\n"
+            "A station can appear here for two reasons:\n"
+            "1) Hard-discarded (failed feasibility constraints):\n"
+            "   - Missing or invalid predicted price (no reliable prediction input/output)\n"
+            "   - Closed at ETA (only if the open-at-ETA filter is enabled and the system has explicit evidence)\n"
+            "   - Exceeds detour caps (km/min)\n"
+            "   - Outside the configured min/max distance window\n"
+            "   - Removed during deduplication (duplicate station UUID variants; only one is retained)\n"
+            "2) Economic rejection (only when an on-route benchmark exists and economics mode is enabled):\n"
+            "   - The station is hard-feasible but Net saving < worst on-route net saving (benchmark threshold)\n\n"
+            "Open-at-ETA audit columns:\n"
+            "   - Open at ETA is still shown for transparency.\n"
+            "   - Unknown indicates missing/unparseable opening-hours evidence and is NOT the reason for exclusion by itself.\n"
+            "   - Opening hours (ETA day) and Station UTC offset help validate timezone-correct evaluation.\n\n"
+            "Benchmark columns:\n"
+            "   - On-route best/median/worst are global reference values for this run.\n"
+            "   - Gross/Net vs references are shown even for rejected stations to make the magnitude and direction of savings visible.\n"
+        )
     )
 
     if discarded__p4:
@@ -2900,8 +3092,20 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
     else:
         st.caption("No discarded stations to display.")
 
+
+
+
+
+
+
+
+
+
+
+
+
     # Keep the existing content below (A/B sections, existing tables) for now.
-    st.markdown("---")
+    st.markdown("--- EVERYTHING BELOW WILL BE DELETED SOON ---")
 
 
 
