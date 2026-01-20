@@ -10,10 +10,8 @@ import requests
 
 from app_errors import ConfigError, ExternalServiceError, DataAccessError
 
-# Reuse your existing integration utilities (stations cache + realtime price batching).
-# We intentionally DO NOT modify integration code for Step 8.
+# Reuse existing integration utilities (stations cache + realtime price batching).
 from src.integration import route_tankerkoenig_integration as tkint
-
 
 @dataclass(frozen=True)
 class StationExplorerInputs:
@@ -25,6 +23,50 @@ class StationExplorerInputs:
     use_realtime: bool = True
     only_open: bool = False
     brand_filter_selected: Optional[List[str]] = None
+
+
+# ---------------------------------------------------------------------
+# Brand filter normalization (kept aligned with Trip Planner logic)
+# ---------------------------------------------------------------------
+
+BRAND_FILTER_ALIASES: dict[str, list[str]] = {
+    "ARAL": ["ARAL"],
+    "AVIA": ["AVIA", "AVIA XPress", "AVIA Xpress"],
+    "AGIP ENI": ["Agip", "AGIP ENI"],
+    "Shell": ["Shell"],
+    "Total": ["Total", "TotalEnergies"],
+    "ESSO": ["ESSO"],
+    "JET": ["JET"],
+    "ORLEN": ["ORLEN"],
+    "HEM": ["HEM"],
+    "OMV": ["OMV"],
+}
+
+
+def _normalize_brand(value: object) -> str:
+    if value is None:
+        return ""
+    s = str(value).strip()
+    if not s:
+        return ""
+    # Case-insensitive + whitespace normalization
+    return " ".join(s.upper().split())
+
+
+def _allowed_brand_norm_set(selected: Optional[List[str]]) -> set[str]:
+    """
+    Convert a list of canonical brands into the normalized allowed set,
+    including their known aliases.
+    """
+    allowed: set[str] = set()
+    for canon in (selected or []):
+        canon_s = str(canon).strip()
+        if not canon_s:
+            continue
+        aliases = BRAND_FILTER_ALIASES.get(canon_s, [canon_s])
+        for a in aliases:
+            allowed.add(_normalize_brand(a))
+    return allowed
 
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -147,8 +189,8 @@ def search_stations_nearby(inputs: StationExplorerInputs) -> Dict[str, Any]:
         ids = [s["station_uuid"] for s in stations if s.get("station_uuid")]
         try:
             live = tkint.get_realtime_prices_batch(ids)
-        except Exception as e:
-            # Non-fatal: keep stations without realtime prices
+        except Exception:
+            # Best-effort: if realtime fails, still return stations (prices remain None).
             live = {}
         for s in stations:
             uid = s.get("station_uuid")
@@ -180,6 +222,15 @@ def search_stations_nearby(inputs: StationExplorerInputs) -> Dict[str, Any]:
             s for s in stations
             if (s.get("is_open") is True) and _has_current_price(s)
         ]
+
+    # Optional brand filter (Explorer): canonical list + alias matching
+    if inputs.brand_filter_selected:
+        allowed_norm = _allowed_brand_norm_set(inputs.brand_filter_selected)
+        if allowed_norm:
+            stations = [
+                s for s in stations
+                if _normalize_brand((s or {}).get("brand")) in allowed_norm
+            ]
 
     def _sort_key(s: Dict[str, Any]) -> Tuple[int, float, float]:
         p = (s or {}).get(price_key)
@@ -343,17 +394,13 @@ def search_stations_nearby_list_api(inputs: StationExplorerInputs) -> Dict[str, 
             if (s.get("is_open") is True) and _has_current_price(s)
         ]
 
-    # Optional brand filter (Page 04): if selected, keep only matching brands
+    # Optional brand filter (Explorer): canonical list + alias matching
     if inputs.brand_filter_selected:
-        wanted = {
-            str(b).strip().lower()
-            for b in (inputs.brand_filter_selected or [])
-            if str(b).strip()
-        }
-        if wanted:
+        allowed_norm = _allowed_brand_norm_set(inputs.brand_filter_selected)
+        if allowed_norm:
             stations = [
                 s for s in stations
-                if str(s.get("brand") or "").strip().lower() in wanted
+                if _normalize_brand((s or {}).get("brand")) in allowed_norm
             ]
 
     # Sort by selected fuel price (if available), then distance; missing prices go last

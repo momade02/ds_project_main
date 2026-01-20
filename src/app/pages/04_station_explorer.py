@@ -10,7 +10,7 @@ import streamlit as st
 
 from ui.styles import apply_app_css
 
-from ui.sidebar import render_sidebar, render_sidebar_shell, _render_help_explorer
+from ui.sidebar import render_sidebar_shell, _render_help_explorer
 
 from config.settings import load_env_once
 
@@ -33,7 +33,7 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-from app_errors import AppError, ConfigError, ExternalServiceError, DataAccessError
+from app_errors import AppError
 
 from src.app.services.station_explorer import (
     StationExplorerInputs,
@@ -51,6 +51,12 @@ from ui.formatting import (
     _format_price,
 )
 
+# Fixed brand options (same canonical list as Trip Planner / Page 01)
+BRAND_OPTIONS = ["ARAL", "AVIA", "AGIP ENI", "Shell", "Total", "ESSO", "JET", "ORLEN", "HEM", "OMV"]
+
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
 
 def _fuel_label_to_code(label: str) -> str:
     m = {"E5": "e5", "E10": "e10", "Diesel": "diesel"}
@@ -329,21 +335,21 @@ def main() -> None:
             help="If a station has no price for the selected fuel, it will be treated as ‘no current price’ for this view.",
         )
 
-        # Brand filter — same canonical key as Page 01 ("brand_filter_selected")
-        # Options are derived from current cached results (if available).
-        stations_cached = st.session_state.get("explorer_results") or []
-        brand_options = sorted({
-            str(s.get("brand")).strip()
-            for s in stations_cached
-            if str(s.get("brand") or "").strip()
-        })
+        # Brand filter — fixed list (same as Trip Planner / Page 01)
+        persisted = list(_canonical("brand_filter_selected", []))
+        default_selected = [b for b in persisted if b in BRAND_OPTIONS]
 
         st.sidebar.multiselect(
             "Station brand",
-            options=brand_options,
-            default=list(_canonical("brand_filter_selected", [])) if brand_options else [],
+            options=BRAND_OPTIONS,
+            default=default_selected,
             key=_w("brand_filter_selected"),
-            help="Available after running a search once. If set, only stations matching these brands are included in results.",
+            help=(
+                "Fixed list of common brands in Germany (same as Trip Planner). "
+                "If selected, only stations matching these brands are included. "
+                "Brand matching includes common sub-names/aliases (e.g., AVIA XPress, TotalEnergies). "
+                "When active, stations with unknown/missing brand are excluded."
+            ),
         )
 
         st.sidebar.header("Advanced Settings")
@@ -379,9 +385,12 @@ def main() -> None:
     sidebar_view = render_sidebar_shell(action_renderer=_action_tab, help_renderer = _render_help_explorer)
 
     # Read values from session_state so they remain available even on non-Action tabs
-    use_realtime = True
-    debug_mode = True
-    location_query = str(st.session_state.get("explorer_location_query", st.session_state.get("explorer_last_query", "Tübingen")))
+    location_query = str(
+        st.session_state.get(
+            "explorer_location_query",
+            st.session_state.get("explorer_last_query", "Tübingen"),
+        )
+    )
     fuel_label = str(st.session_state.get("explorer_fuel_label", "E5"))
     fuel_code = _fuel_label_to_code(fuel_label)
     radius_km = float(st.session_state.get("explorer_radius_km", 10.0))
@@ -389,7 +398,6 @@ def main() -> None:
     use_realtime = bool(st.session_state.get("explorer_use_realtime", True))
     limit = int(st.session_state.get("explorer_limit", 50))
     brand_filter_selected = list(st.session_state.get("brand_filter_selected", []))
-    debug_mode = bool(st.session_state.get("debug_mode", True))
 
     run = bool(run_clicked["value"]) and (sidebar_view == "Action")
 
@@ -468,7 +476,7 @@ def main() -> None:
 
     **How it works (high level)**
     - Your location input is **geocoded** to a center point.
-    - The app queries **Tankerkönig** for stations within the selected radius (including **current prices** and **open/closed**).
+    - The app queries for stations within the selected radius (including **current prices** and **open/closed**).
     - Filters (e.g., *Only open stations*) and sorting (price-first, then distance) are applied before rendering.
 
     **What you will see after running a search**
