@@ -304,7 +304,7 @@ def _render_trip_planner_action() -> SidebarState:
     litres_to_refuel = st.sidebar.number_input(
         "Litres to refuel",
         min_value=1.0,
-        max_value=1000.0,
+        max_value=200.0,
         step=1.0,
         value=float(_canonical("litres_to_refuel", 40.0)),
         key=_w("litres_to_refuel"),
@@ -920,16 +920,42 @@ def render_station_selector(
 
     # Render source selector (only if both exist)
     if len(available_sources) >= 2:
-        # index based on inferred / stored source
         src_ids = [sid for sid, _ in available_sources]
-        default_idx = src_ids.index(current_source) if current_source in src_ids else 0
+        radio_key = f"{widget_key_prefix}_source_radio"
+        
+        # Determine default index:
+        # - If radio widget already has a value (user interacted), use that
+        # - Otherwise, use the session state source
+        if radio_key in st.session_state:
+            # User has already interacted with radio - find index from their selection
+            existing_label = st.session_state.get(radio_key)
+            existing_source = next((sid for sid, lbl in available_sources if lbl == existing_label), None)
+            if existing_source in src_ids:
+                default_idx = src_ids.index(existing_source)
+            else:
+                default_idx = src_ids.index(current_source) if current_source in src_ids else 0
+        else:
+            # First render - use session state source
+            default_idx = src_ids.index(current_source) if current_source in src_ids else 0
+        
         chosen_source_label = st.sidebar.radio(
             "Station source",
             options=[lbl for _, lbl in available_sources],
             index=default_idx,
-            key=f"{widget_key_prefix}_source_radio",
+            key=radio_key,
+            help="Switch between stations from your Trip Planner route or from your Station Explorer search."
         )
         source = next((sid for sid, lbl in available_sources if lbl == chosen_source_label), src_ids[0])
+        
+        # Update session state to match user's radio selection
+        # This ensures the header ("Explorer Mode" vs "Trip Planner Settings") stays in sync
+        if source != current_source:
+            st.session_state[selected_source_key] = source
+            # RESET selection when switching sources - avoids "ghost" stations from other source
+            st.session_state[selected_uuid_key] = ""
+            st.session_state[selected_data_key] = None
+            current_uuid = ""  # Also reset local variable
+            current_station = None
     elif len(available_sources) == 1:
         source = available_sources[0][0]
         # Keep the UI compact; still show where selection comes from.
