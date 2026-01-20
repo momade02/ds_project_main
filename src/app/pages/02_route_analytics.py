@@ -1478,7 +1478,25 @@ def main() -> None:
     # ------------------------------------------------------------------
 
     if analysis_view == "Recommended Stations":
-        st.markdown("### **2. Recommended Stations**")
+        st.markdown(
+            """
+            <h3 style='margin-top: 0px; margin-bottom: -15px;'>
+                <b>2. Recommended Stations</b>
+            </h3>
+            """, 
+            unsafe_allow_html=True
+        )
+
+        st.markdown(
+            "#### Stations funnel",
+            help="""This section reports the station selection pipeline in two stages:
+
+1) Hard-feasible: stations that remain after non-negotiable constraints are applied (e.g., upstream filters like brand and closed-at-ETA, valid predicted price, deduplication, detour caps).
+
+2) Economically selected: among hard-feasible stations, a station is considered economically viable if its net saving is at least as high as the worst on-route station (benchmark).
+
+If no on-route stations exist, the benchmark is not applicable and the economics stage is skipped (all hard-feasible stations are counted as economically selected).""",
+        )
 
         # Force cards to sit higher, counteracting st.columns padding
         st.markdown(
@@ -1907,18 +1925,6 @@ def main() -> None:
         # -----------------------------
         # Headline + cards
         # -----------------------------
-        
-        st.markdown(
-            "#### Stations funnel \n\n"
-            "(Found → Hard-feasible → Economically selected)",
-            help="""This section reports the station selection pipeline in two stages:
-
-1) Hard-feasible: stations that remain after non-negotiable constraints are applied (e.g., upstream filters like brand and closed-at-ETA, valid predicted price, deduplication, detour caps).
-
-2) Economically selected: among hard-feasible stations, a station is considered economically viable if its net saving is at least as high as the worst on-route station (benchmark).
-
-If no on-route stations exist, the benchmark is not applicable and the economics stage is skipped (all hard-feasible stations are counted as economically selected).""",
-        )
 
         _gap(P02_S["after_h_selected"])
 

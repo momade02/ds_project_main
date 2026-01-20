@@ -360,6 +360,40 @@ def _parse_opening_hours(station: Dict[str, Any], eta_datetime: Optional[datetim
 # Helper Functions
 # =============================================================================
 
+def _render_page03_quick_back_buttons() -> None:
+    """Render Page-03-only back-navigation buttons directly under the sidebar toggle."""
+    if st.sidebar.button(
+        "Back to Trip Planner",
+        type="primary",
+        use_container_width=True,
+        key="p02_back_to_trip_planner",
+        help="Return to the Home page.",
+    ):
+        # Do NOT set st.session_state["top_nav"] here (top_nav widget already exists on this page).
+        # Instead, request Home navigation and let streamlit_app.py apply it before rendering its widget.
+        st.session_state["nav_request_top_nav"] = "Home"
+
+        try:
+            maybe_persist_state(force=True)
+        except Exception:
+            pass
+
+        st.switch_page("streamlit_app.py")
+
+    if st.sidebar.button(
+        "Back to Station Explorer",
+        type="primary",
+        use_container_width=True,
+        key="p03_back_to_station_explorer",
+        help="Return to Station Explorer.",
+    ):
+        try:
+            maybe_persist_state(force=True)
+        except Exception:
+            pass
+        st.switch_page("pages/04_station_explorer.py")
+
+
 def _safe_float(value: Any) -> Optional[float]:
     """Safely convert value to float, return None on failure."""
     if value is None:
@@ -1043,56 +1077,48 @@ def _render_trip_settings():
     # EXPLORER MODE
     # -------------------------------------------------------------------------
     if is_explorer_mode:
+        # Station selector FIRST (main interaction)
         st.sidebar.markdown(
-            "**Explorer Mode**",
-            help="You selected a station from the Station Explorer. Trip Planner settings (detour costs, economics) don't apply here."
-        )
-        
-        # Show fuel type - note it comes from session/last Trip settings
-        fuel_code = str(last_run.get("fuel_code") or st.session_state.get("fuel_label") or "e5")
-        fuel_label = fuel_code.upper()
-        st.sidebar.markdown(
-            f"**Fuel:** {fuel_label}",
-            help="Fuel type from your last Trip Planner run or Explorer search. Change it on the Home page or in Explorer."
-        )
-        
-        # Show explorer station count
-        st.sidebar.markdown(f"**Explorer stations:** {len(explorer_results)}")
-        
-        # Note about Trip Planner (with proper spacing to avoid overlap)
-        if last_run:
-            route_station_count = len(list(last_run.get("stations") or []))
-            # Use HTML with explicit margin to prevent overlap
-            st.sidebar.markdown(
-                f'<p style="margin-top: 0.5rem; font-size: 0.85rem; color: #6b7280;">Trip Planner data also available ({route_station_count} route stations)</p>',
-                unsafe_allow_html=True
-            )
-        
-        st.sidebar.markdown("---")
-        
-        # Station selector
-        st.sidebar.markdown(
-            "**Select Station**",
+            "### Select Station",
             help="Choose a station to analyze from your Explorer search results."
         )
-        
+
         render_station_selector(
             last_run=last_run,
             explorer_results=explorer_results,
             max_ranked=200,
             max_excluded=200,
         )
-        
+
         # Comparison selector - include explorer stations
         current_uuid = str(st.session_state.get("selected_station_uuid") or "")
         ranked = list(last_run.get("ranked") or [])
         stations = list(last_run.get("stations") or [])
+
         render_comparison_selector(
-            ranked, stations, current_uuid, 
-            max_ranked=50, max_excluded=100,
+            ranked,
+            stations,
+            current_uuid,
+            max_ranked=50,
+            max_excluded=100,
             explorer_results=explorer_results,
         )
+
+        # Settings moved to BOTTOM
+        st.sidebar.markdown(
+            "### Station Explorer Settings",
+            help="You selected a station from the Station Explorer. Trip Planner settings (detour costs, economics) don't apply here."
+        )
+
+        fuel_code = str(last_run.get("fuel_code") or st.session_state.get("fuel_label") or "e5")
+        fuel_label = fuel_code.upper()
+        st.sidebar.markdown(
+            f"- Fuel: {fuel_label}",
+            help="Fuel type from your last Trip Planner run or Explorer search. Change it on the Home page or in Explorer."
+        )
+
         return
+
     
     # -------------------------------------------------------------------------
     # TRIP PLANNER MODE (default)
@@ -1116,43 +1142,45 @@ def _render_trip_settings():
     
     explorer_station_count = len(explorer_results)
     
-    # Header with explanation
+    # Station selectors FIRST (main interaction)
     st.sidebar.markdown(
-        "**Last Trip Planner Settings**",
-        help="These settings come from your last Trip Planner run on the Home page. To change them, go back to Home and run a new trip."
+        "### Select Station",
+        help=(
+            "Choose a station to analyze.\n\n"
+            "From latest route run: The list always includes ALL stations found along your last route, "
+            "sorted by net saving in descending order. Stations with missing net saving appear at the bottom.\n\n"
+            "From station explorer: The list shows your Explorer search results."
+        )
     )
-    
-    # Display settings
-    st.sidebar.markdown(f"**Fuel:** {fuel_label}")
-    st.sidebar.markdown(f"**Economics:** {econ_status}")
-    st.sidebar.markdown(f"**Refuel amount:** {refuel_amount}")
-    st.sidebar.markdown(f"**Route stations:** {route_station_count}")
-    if explorer_station_count > 0:
-        st.sidebar.markdown(f"**Explorer stations:** {explorer_station_count}")
-    
-    st.sidebar.markdown("---")
-    
-    # Station selectors with help text
-    st.sidebar.markdown(
-        "**Select Station**",
-        help="Choose a station to analyze. In Trip Planner mode: 'Ranked' stations passed all filters and are recommended. 'Not Ranked' stations were excluded due to detour limits, being closed, or other filters. Use the 'Station source' radio above to switch between Trip Planner and Explorer stations."
-    )
-    
-    # Station selectors (inside Action tab for faster sidebar switching)
+
     render_station_selector(
         last_run=last_run,
         explorer_results=explorer_results,
         max_ranked=200,
         max_excluded=200,
     )
-    
-    # Comparison selector - include explorer stations if available
+
+    # Comparison selector
     current_uuid = str(st.session_state.get("selected_station_uuid") or "")
     render_comparison_selector(
-        ranked, stations, current_uuid, 
-        max_ranked=50, max_excluded=100,
+        ranked,
+        stations,
+        current_uuid,
+        max_ranked=50,
+        max_excluded=100,
         explorer_results=explorer_results if explorer_results else None,
     )
+
+    # Settings moved to BOTTOM
+    st.sidebar.markdown(
+        "### Trip Planner Settings",
+        help="These settings come from your last Trip Planner run on the Home page. To change them, go back to Home and run a new trip."
+    )
+
+    st.sidebar.markdown(f"- Fuel: {fuel_label}")
+    st.sidebar.markdown(f"- Economics: {econ_status}")
+    st.sidebar.markdown(f"- Refuel amount: {refuel_amount}")
+    st.sidebar.markdown(f"- Route stations: {route_station_count}")
 
 
 
@@ -1227,7 +1255,11 @@ def main():
     # =========================================================================
     # SIDEBAR - WITH TRIP SETTINGS IN ACTION TAB AND HELP CONTENT
     # =========================================================================
-    render_sidebar_shell(action_renderer=_render_trip_settings, help_renderer=_render_help_station)
+    render_sidebar_shell(
+        top_renderer=_render_page03_quick_back_buttons,
+        action_renderer=_render_trip_settings,
+        help_renderer=_render_help_station,
+    )
     
     # Station selectors are now rendered inside _render_trip_settings() for faster sidebar switching
     last_run = st.session_state.get("last_run") or {}
@@ -1287,6 +1319,13 @@ def main():
         
         /* Tighter captions */
         .stCaption { margin-top: 0 !important; margin-bottom: 0.25rem !important; }
+                
+        /* 2) Tighten headline spacing (add h1/h2; you already have h3/h4) */
+        h1 { margin-top: 0.0rem !important; margin-bottom: 0.35rem !important; }
+        h2 { margin-top: 0rem !important; margin-bottom: 0.35rem !important; }
+        h3 { margin-top: -1rem !important; margin-bottom: 0.35rem !important; }
+        h4 { margin-top: -0.5rem !important; margin-bottom: 0.25rem !important; }
+                
     </style>
     """, unsafe_allow_html=True)
     
@@ -1356,263 +1395,175 @@ def main():
     net_saving = _safe_float(station.get(econ_net_key))
     baseline_price = _safe_float(station.get(econ_baseline_key))
     
-    # Check if this station is in the ranked list (i.e., passed all filters)
-    is_ranked = any(_station_uuid(s) == station_uuid for s in ranked)
-    
-    # Get thresholds from last_run for accurate exclusion detection
-    # on-route thresholds: define what counts as "on-route" for baseline price (e.g., 1 km, 5 min)
+    # -------------------------------------------------------------------------
+    # Selection universe (IMPORTANT):
+    # Page 01 persists the "value view" set into last_run:
+    # - value_view_stations: stations considered "selected/value-comparable" (new logic)
+    # - value_view_meta: metadata about the benchmark (optional)
+    #
+    # For route context, we treat "value_view_stations" as the authoritative set.
+    # For explorer context, we keep the neutral "Explorer" behavior.
+    # -------------------------------------------------------------------------
+    value_view_stations = list((last_run or {}).get("value_view_stations") or [])
+    value_view_meta = dict((last_run or {}).get("value_view_meta") or {})
+
+    # Use the new selection set if available (route mode).
+    # Fall back to legacy ranked if value view is missing (older cache).
+    rank_universe = value_view_stations if value_view_stations else list(ranked or [])
+
+    # "Selected" means: part of the value-view universe (new logic) when coming from route.
+    # In Explorer mode, we do not apply selection status.
+    is_selected = (not is_from_explorer) and any(_station_uuid(s) == station_uuid for s in rank_universe)
+
+    # Backward-compatible alias: the rest of the page still expects `is_ranked`.
+    # In route context, "ranked" now means "selected/value-comparable" (new logic).
+    is_ranked = is_selected
+
+    # Get thresholds from last_run for exclusion detection (best effort)
+    # on-route thresholds: define what counts as "on-route" for benchmark (e.g. 1 km, 5 min)
     onroute_km_threshold, onroute_min_threshold = _get_onroute_thresholds(last_run)
-    # exclusion thresholds: the user's hard caps that determine exclusion (e.g., 5 km, 10 min)
+    # exclusion thresholds: user's hard caps (e.g. 5 km, 10 min)
     max_detour_km_cap, max_detour_min_cap = _get_exclusion_thresholds(last_run)
-    
-    # Get ETA for exclusion checks
+
     eta_str_for_check = station.get("eta")
-    
-    # Get exclusion reason if not ranked
+
+    # -------------------------------------------------------------------------
+    # ETA datetime + opening-hours evaluation
+    # (Needed for the Opening Hours info card further below)
+    # -------------------------------------------------------------------------
+    eta_datetime: Optional[datetime] = None
+    if eta_str_for_check:
+        try:
+            if isinstance(eta_str_for_check, str):
+                eta_datetime = datetime.fromisoformat(eta_str_for_check.replace("Z", "+00:00"))
+            else:
+                eta_datetime = eta_str_for_check
+        except Exception:
+            eta_datetime = None
+
+    # Always compute opening status (ETA if available, otherwise "now")
+    is_open, time_info = _parse_opening_hours(station, eta_datetime)
+
+    # Provide an explanation ONLY when a route station is not in the selected/value set.
+    # Note: This is now aligned with the new logic: "selected" vs "other stations".
     exclusion_reason = None
-    if not is_ranked:
-        # Check conditions in order of likelihood
-        
-        # 1. Check detour distance (most common exclusion reason)
-        # Use max_detour_km_cap (user's setting) NOT onroute_km_threshold
+    if (not is_from_explorer) and (not is_selected):
+        # Best-effort "why not selected?" checks.
+        # We keep your existing checks, but we do NOT label this as "Not Ranked" anymore.
+
+        # 1) Detour caps
         if detour_km is not None and max_detour_km_cap is not None and detour_km > max_detour_km_cap:
             exclusion_reason = f"Detour exceeds limit ({detour_km:.1f} km > {max_detour_km_cap:.1f} km max)"
-        
-        # 2. Check detour time
-        # Use max_detour_min_cap (user's setting) NOT onroute_min_threshold
         elif detour_min is not None and max_detour_min_cap is not None and detour_min > max_detour_min_cap:
             exclusion_reason = f"Detour time exceeds limit ({detour_min:.0f} min > {max_detour_min_cap:.0f} min max)"
-        
-        # 3. Check if station is closed at ETA
+
+        # 2) Closed at ETA (only if we can evaluate opening hours)
         elif eta_str_for_check:
             try:
-                eta_dt = datetime.fromisoformat(eta_str_for_check.replace('Z', '+00:00')) if isinstance(eta_str_for_check, str) else eta_str_for_check
+                eta_dt = (
+                    datetime.fromisoformat(eta_str_for_check.replace("Z", "+00:00"))
+                    if isinstance(eta_str_for_check, str)
+                    else eta_str_for_check
+                )
                 is_open_check, _ = _parse_opening_hours(station, eta_dt)
-                if not is_open_check:
-                    exclusion_reason = f"Station closed at arrival time ({eta_dt.strftime('%H:%M') if eta_dt else 'unknown'})"
+                if is_open_check is False:
+                    exclusion_reason = (
+                        f"Station closed at arrival time ({eta_dt.strftime('%H:%M') if eta_dt else 'unknown'})"
+                    )
             except Exception:
                 pass
-        
-        # 4. Check if no price prediction
+
+        # 3) Missing prediction (value-view requires a valid predicted price)
         if exclusion_reason is None and predicted_price is None:
-            exclusion_reason = "No price prediction available for this station"
-        
-        # 5. Check if net savings too low (when economics enabled)
+            exclusion_reason = "No predicted price available (not part of the value comparison set)"
+
+        # 4) Economics: if enabled and net_saving exists, explain directionally
+        # (We intentionally do NOT enforce the old 'net_saving < 0' logic here.)
         if exclusion_reason is None and use_economics:
-            if net_saving is not None and net_saving < 0:
-                exclusion_reason = f"Negative net savings (€{net_saving:.2f}) - detour cost exceeds price benefit"
-            elif net_saving is None:
-                exclusion_reason = "Could not calculate savings (missing data)"
-        
-        # 6. Generic fallback with hint
-        if exclusion_reason is None:
-            exclusion_reason = "Did not pass ranking filters (check detour/time thresholds in settings)"
-    
-    # Traffic light status
-    if not is_ranked:
-        # Station is excluded or in Explorer mode - show neutral gray indicator
-        traffic_status = "gray"
-        if is_from_explorer:
-            traffic_text = "Explorer"  # Shorter text for Explorer mode
-        else:
-            traffic_text = "Not Ranked"
-    elif use_economics and net_saving is not None:
-        # Ranked station with economics - use net savings ranking
-        traffic_status, traffic_text_raw, traffic_css = calculate_traffic_light_status(
-            display_price,
-            ranked,
-            fuel_code,
-            station_net_saving=net_saving,
-            use_net_savings=True,
-        )
-        # Set economics-based text
-        if traffic_status == "red":
-            traffic_text = "Poor Value"
-        elif traffic_status == "yellow":
-            traffic_text = "Fair Value"
-        else:
-            traffic_text = "Excellent Value"
-    else:
-        # Ranked station without economics - use price ranking
-        traffic_status, traffic_text_raw, traffic_css = calculate_traffic_light_status(
-            display_price,
-            ranked,
-            fuel_code,
-            station_net_saving=None,
-            use_net_savings=False,
-        )
-        # Set price-based text
-        if traffic_status == "red":
-            traffic_text = "Expensive"
-        elif traffic_status == "yellow":
-            traffic_text = "Fair Price"
-        else:
-            traffic_text = "Excellent Deal"
-    
-    # Extract ETA for opening hours check
-    eta_datetime = None
-    eta_str = station.get("eta")
-    if eta_str:
-        try:
-            if isinstance(eta_str, str):
-                eta_datetime = datetime.fromisoformat(eta_str.replace('Z', '+00:00'))
+            if net_saving is None:
+                exclusion_reason = "Savings could not be computed (missing economic inputs)"
             else:
-                eta_datetime = eta_str
-        except Exception:
-            pass
-    
-    is_open, time_info = _parse_opening_hours(station, eta_datetime)
-    
+                # If Page 01 provided a benchmark price, the value-view logic is price-based.
+                # Still give a user-friendly economic interpretation:
+                if float(net_saving) < 0:
+                    exclusion_reason = (
+                        f"Negative net savings (€{float(net_saving):.2f}) – detour cost exceeds price benefit"
+                    )
+                else:
+                    exclusion_reason = (
+                        f"Positive net savings (€{float(net_saving):.2f}), but not in the value comparison set"
+                    )
+
+        if exclusion_reason is None:
+            exclusion_reason = "Not part of the selected/value comparison set for this run"
+
+    # -------------------------------------------------------------------------
+    # HERO SECTION (NO RATING)
+    # - Keep the cyan box with station title, address and price only.
+    # - No traffic-light / ranking / tooltip / expander.
+    # -------------------------------------------------------------------------
+
     # =========================================================================
-    # HERO SECTION - CYAN BOX WITH PRICE + TRAFFIC LIGHT
+    # HERO SECTION - CYAN BOX WITH PRICE (NO TRAFFIC LIGHT)
     # =========================================================================
-    
+
     # Check for valid brand (not empty, not dash variants, not just whitespace)
     invalid_brand_values = {"", "-", "—", "–", "None", "null", "N/A", "n/a"}
     brand_valid = brand and brand.strip() and brand.strip() not in invalid_brand_values
-    
+
     base_name = brand if brand_valid else name
     city_clean = city.title() if (city and city.strip() and city.strip() not in invalid_brand_values) else ""
-    
+
     # Handle case where base_name is still invalid
     if not base_name or base_name.strip() in invalid_brand_values:
         base_name = "Unknown Station"
-    
+
     title_line = f"{base_name} in {city_clean}" if (base_name and city_clean) else base_name
-    
-    # Build subtitle with address - prioritize full address, then construct from available data
-    if full_address:
-        subtitle_line = full_address
-    else:
-        # No full address - construct from available fields
-        # The name field often contains street info (e.g., "TUEBINGEN EUROPASTR. 5")
-        street = station.get("street", "")
-        house_number = station.get("house_number", "")
-        post_code = station.get("post_code", "")
-        
-        if street:
-            # Have street data - build address manually (use title case for readability)
-            street_title = street.title() if street else ""
-            street_part = f"{street_title} {house_number}".strip() if house_number else street_title
-            if post_code and city_clean:
-                subtitle_line = f"{street_part}, {post_code} {city_clean}"
-            elif city_clean:
-                subtitle_line = f"{street_part}, {city_clean}"
-            else:
-                subtitle_line = street_part
-        elif name and name != base_name:
-            # Use name field if it contains additional info (often has street)
-            # Convert to title case for readability
-            name_title = name.title() if name else ""
-            if city_clean and city_clean.upper() not in name.upper():
-                subtitle_line = f"{name_title}, {city_clean}"
-            else:
-                subtitle_line = name_title
-        elif city_clean:
-            subtitle_line = city_clean
-        else:
-            subtitle_line = ""
-    
-    # Traffic light circles
-    if traffic_status == "green":
-        circles = '<span style="color: #4ade80; font-size: 1.6rem;">●</span> <span style="color: #fbbf24; font-size: 1.6rem;">○</span> <span style="color: #f87171; font-size: 1.6rem;">○</span>'
-    elif traffic_status == "yellow":
-        circles = '<span style="color: #4ade80; font-size: 1.6rem;">○</span> <span style="color: #fbbf24; font-size: 1.6rem;">●</span> <span style="color: #f87171; font-size: 1.6rem;">○</span>'
-    elif traffic_status == "red":
-        circles = '<span style="color: #4ade80; font-size: 1.6rem;">○</span> <span style="color: #fbbf24; font-size: 1.6rem;">○</span> <span style="color: #f87171; font-size: 1.6rem;">●</span>'
-    else:
-        # Gray/excluded - show all circles as gray/empty
-        circles = '<span style="color: #9ca3af; font-size: 1.6rem;">○</span> <span style="color: #9ca3af; font-size: 1.6rem;">○</span> <span style="color: #9ca3af; font-size: 1.6rem;">○</span>'
-    
-    price_display = f"€{display_price:.3f}" if display_price else "-"
-    
-    # Build tooltip based on station status and source context
-    if not is_ranked:
-        # Excluded station or Explorer station (no ranking in Explorer mode)
-        reason_text = exclusion_reason if exclusion_reason else "Station did not meet ranking criteria"
-        if is_from_explorer:
-            traffic_tooltip = (
-                f"⚪ Explorer Mode | Ranking not available for Explorer searches. Use Trip Planner for route-based recommendations."
-            )
-        else:
-            traffic_tooltip = (
-                f"⚪ This station is not ranked | Reason: {reason_text} | Only ranked stations are compared for value. Check the ranked stations list for recommendations."
-            )
-    elif use_economics and net_saving is not None:
-        traffic_tooltip = (
-            "🟢 Excellent Value = Top 33% net savings | 🟡 Fair Value = Middle 33% | 🔴 Poor Value = Bottom 33% | Compared against all ranked stations. Accounts for price and detour costs."
-        )
-    else:
-        traffic_tooltip = (
-            "🟢 Excellent Deal = Cheapest 33% | 🟡 Fair Price = Middle 33% | 🔴 Expensive = Top 33% | Based on predicted prices. Enable economics for value-based ranking."
-        )
-    
+
+    # Build address line (same logic as before)
+    street_clean = station.get("street", "")
+    house_number_clean = station.get("house_number", "")
+    post_code_clean = station.get("post_code", "")
+    city_clean_full = station.get("city", "")
+
+    address_parts = []
+    street_part = f"{street_clean} {house_number_clean}".strip() if street_clean else ""
+    city_part = f"{post_code_clean} {city_clean_full}".strip() if (post_code_clean or city_clean_full) else ""
+
+    if street_part:
+        address_parts.append(street_part)
+    if city_part:
+        address_parts.append(city_part)
+
+    address_line = ", ".join([p for p in address_parts if p]) if address_parts else ""
+
+    # --- Price display (consistent formatting) ---
+    price_display = f"€{display_price:.3f}" if display_price else "—"
+
+    # -------------------------------------------------------------------------
+    # HERO (match Page 01 design): station-header only, price below address
+    # -------------------------------------------------------------------------
+    label_html = _safe_text("Selected station:")
+    name_html = _safe_text(title_line) if title_line else ""
+    addr_html = _safe_text(address_line) if address_line else ""
+    price_html = _safe_text(price_display)
+
     hero_html = f"""
-    <div class='station-header'>
-        <div class='label'>Selected station:</div>
-        <div class='name'>{_safe_text(title_line)}</div>
-        {f"<div class='addr'>{_safe_text(subtitle_line)}</div>" if subtitle_line else ""}
-        <div style='margin-top: 1.5rem; text-align: center;'>
-            <div style='font-size: 3rem; font-weight: 800; color: #1f2937; margin-bottom: 0.8rem;'>
-                {price_display} <span style='font-size: 1.8rem; font-weight: 600; color: #6b7280;'>/L</span>
-            </div>
-            <div style='display: flex; align-items: center; justify-content: center; gap: 0.4rem; color: #374151; font-size: 1.1rem; font-weight: 600;'>
-                {circles}
-                <span style='margin-left: 0.5rem;'>{traffic_text}</span>
-            </div>
-        </div>
+    <div class="station-header">
+    <div class="label">{label_html}</div>
+    <div class="name">{name_html}</div>
+    {"<div class='addr'>" + addr_html + "</div>" if addr_html else ""}
+    <div class="addr" style="margin-top:0.35rem; font-weight:800;">
+        {price_html} <span style="font-weight:700; opacity:0.8;">/L</span>
     </div>
-    """
-    
+    </div>
+    """.strip()
+
     st.markdown(hero_html, unsafe_allow_html=True)
-    
-    # Mobile-friendly help for traffic light rating
-    # Using (?) style to match the help buttons elsewhere in the app
-    with st.expander("Rating explained", expanded=False):
-        if is_from_explorer:
-            # Explorer mode - different explanation
-            if not is_ranked:
-                st.markdown("""
-                **⚪ Explorer Mode**: Ranking not available for Explorer searches.
-                
-                In Explorer mode, you're browsing stations near a location - not along a route.
-                The traffic light rating compares stations within your Trip Planner route, 
-                so it doesn't apply here.
-                
-                **To get rankings:** Use Trip Planner on the Home page to plan a route, 
-                then stations will be ranked by price and detour cost.
-                """)
-            else:
-                st.markdown("""
-                **Explorer Mode**: Showing station data from your proximity search.
-                
-                Note: Traffic light ratings are based on Trip Planner route data.
-                For the most accurate comparison, use Trip Planner to plan your route.
-                """)
-        elif not is_ranked:
-            st.markdown(f"""
-            **⚪ Not Ranked**: This station did not meet the ranking criteria.
-            
-            **Reason:** {exclusion_reason if exclusion_reason else "Station did not pass filters"}
-            
-            Only ranked stations are compared for value. Check the ranked stations list for recommendations.
-            """)
-        elif use_economics and net_saving is not None:
-            st.markdown("""
-            **Value Rating** (based on net savings after detour costs):
-            - 🟢 **Excellent Value** = Top 33%: Best savings after accounting for detour
-            - 🟡 **Fair Value** = Middle 33%: Moderate savings
-            - 🔴 **Poor Value** = Bottom 33%: Detour costs eat into savings
-            """)
-        else:
-            st.markdown("""
-            **Price Rating** (based on predicted fuel price):
-            - 🟢 **Excellent Deal** = Cheapest 33% of stations
-            - 🟡 **Fair Price** = Middle 33%
-            - 🔴 **Expensive** = Most expensive 33%
-            
-            *Tip: Enable Economics in Trip Planner for value-based ranking that includes detour costs.*
-            """)
+
+
+
+
     
     # =========================================================================
     # MISSING PREDICTION WARNING (if using current price as fallback)
@@ -1687,38 +1638,28 @@ def main():
                 
                 st.info(f"ETA: {eta_display}")
             except Exception:
-                st.info("ETA: Unknown")
+                st.info("ETA: --")
         else:
-            st.info("ETA: Unknown")
+            st.info("ETA: --")
 
     with info_cols[2]:
-        # Opening hours - show day if ETA is different from today
-        day_prefix = ""
-        if eta_datetime:
-            try:
-                today = datetime.now(tz=ZoneInfo("Europe/Berlin") if ZoneInfo else None)
-            except Exception:
-                today = datetime.now()
-            
-            if eta_datetime.date() != today.date():
-                day_prefix = f"{eta_datetime.strftime('%a')} "  # e.g., "Mon "
-        
-        # Handle different opening hours states
-        if time_info == "UNKNOWN":
-            # No data from Google or Tankerkönig - show as unknown
-            st.info("Opening hours: Unknown (assumed 24/7)")
-        elif is_open and time_info:
-            # Open with known closing time
-            st.success(f"Opening hours: {day_prefix}OPEN until {time_info}")
-        elif not is_open and time_info:
-            # Closed with known opening time
-            st.error(f"Opening hours: {day_prefix}CLOSED, opens at {time_info}")
-        elif is_open:
-            # Open but no closing time known (likely 24/7)
-            st.success(f"Opening hours: {day_prefix}OPEN (24/7)")
-        else:
-            # Closed but no opening time known
-            st.error(f"Opening hours: {day_prefix}CLOSED")
+        # Opening hours (ETA day) — match Page 02 semantics:
+        # show the weekdayDescription for the ETA weekday (NOT an inferred open/closed status).
+        oh = (station or {}).get("opening_hours")  # Google weekdayDescriptions (list)
+        opening_hours_eta_day = "—"
+
+        if isinstance(oh, list) and oh:
+            # Use ETA weekday when we have 7 entries; otherwise a compact join
+            if eta_datetime is not None and len(oh) >= 7:
+                try:
+                    opening_hours_eta_day = str(oh[int(eta_datetime.weekday())]).strip() or "—"  # 0=Mon..6=Sun
+                except Exception:
+                    opening_hours_eta_day = "—"
+            else:
+                items = [str(x).strip() for x in oh if x]
+                opening_hours_eta_day = "; ".join(items[:3]) + ("; …" if len(items) > 3 else "") if items else "—"
+
+        st.info(f"Opening hours: {opening_hours_eta_day}")
 
 
     # =========================================================================
