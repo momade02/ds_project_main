@@ -1069,7 +1069,7 @@ def main() -> None:
             """
         ### Welcome to the Fuel Station Recommender!
 
-        This tool helps you plan a refueling stop that is economically optimal **for your exact route**.
+        This tool helps you plan a refueling stop that is economically optimal **for your exact route** within Germany.
         It combines real-time fuel prices with short-horizon price forecasts and evaluates candidate stations by **net savings** after detour effort (distance/time) and your selected constraints.
         Use it when you want a recommendation that balances price, detour, and practicality—without manual map hopping.
 
