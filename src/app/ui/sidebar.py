@@ -757,47 +757,25 @@ def _render_help_station():
     st.sidebar.markdown("### Detailed Information")
     st.sidebar.markdown("Click on the topic headings below to get more information.")
     
-    # Rating System
-    with st.sidebar.popover("Rating System"):
-        st.markdown("""
-            **Traffic Light Rating**
-
-            The colored circles show how this station compares to others:
-
-            **In Trip Planner mode** (route-based):
-            - 🟢 **Green** = Top 33% (best value/price)
-            - 🟡 **Yellow** = Middle 33% (average)
-            - 🔴 **Red** = Bottom 33% (worst value/price)
-            - ⚪ **No Rating** = Station did not meet ranking criteria (e.g., excessive detour, closed at ETA, filtered by brand, or insufficient data)
-
-            **In Explorer mode** (location-based):
-            - ⚪ **Explorer** = No ranking available. Explorer searches show stations near a location, not along a route. Rankings require route context (detours, ETAs).
-
-            **With Economics enabled:** Rating based on net savings (price advantage minus detour costs).
-
-            **Without Economics:** Rating based on predicted price only.
-            """)
-    
     # Savings Calculator / Price Comparison
-    with st.sidebar.popover("Savings / Price Comparison"):
+    with st.sidebar.expander("Savings / Price Comparison"):
         st.markdown("""
-            **Trip Planner mode: Savings Calculator**
+            **Trip Planner only: Savings Calculator**
 
             We compare this station against the **worst on-route** price (most expensive station directly on your route, no detour needed).
 
             - **Gross Savings** = Price difference × Liters
             - **Net Savings** = Gross Savings − Detour Costs
-            - Detour fuel cost: extra km × consumption × price
-            - Time cost: extra minutes × your hourly rate
-            - **Break-even:** Minimum liters needed for the detour to be worthwhile.
+            - **Detour fuel cost**: extra km × consumption × price
+            - **Time cost**: extra minutes × your hourly rate
 
-            **Explorer mode: Price Comparison**
+            **Station Explorer: Price Comparison**
 
             Shows this station's price vs the cheapest and most expensive in your search results. No calculations - just a quick overview to see where this station stands.
             """)
     
     # Best Time to Refuel
-    with st.sidebar.popover("Best Time to Refuel"):
+    with st.sidebar.expander("Best Time to Refuel"):
         st.markdown("""
             **Hourly Price Patterns**
 
@@ -814,7 +792,7 @@ def _render_help_station():
             """)
     
     # Station Selection
-    with st.sidebar.popover("Station Selection"):
+    with st.sidebar.expander("Station Selection"):
         st.markdown("""
             **Station Source**
 
@@ -822,14 +800,13 @@ def _render_help_station():
             - **From latest route run:** Stations from your Trip Planner route
             - **From station explorer:** Stations from your proximity search
 
-            **Ranked vs Not Ranked** (Trip Planner only)
+            **Ranked** 
 
-            - **Ranked:** Stations that passed all your filters (detour limits, opening hours, etc.)
-            - **Not Ranked:** Stations excluded due to excessive detour, being closed at ETA, or other filters.
+            - In **Trip Planner** mode, stations are ranked by the net savings (desc).
+            - In **Station Explorer** mode, stations are ranked by current price and distance (desc).
 
-            **Explorer stations:** No ranking - these are simply stations near your searched location.
-
-            **Comparison:** Select stations from the sidebar to compare historical prices.
+            **Comparison:** 
+            - Select stations from the sidebar to compare historical prices.
                     """)
     # Return a SidebarState compatible object (keep cached values, only change view)
     return SidebarState(**{**state.__dict__, "view": "Help"})
@@ -842,14 +819,29 @@ def _render_help_explorer():
     # Keep cached values for downstream behaviour and return a SidebarState
     state = _read_cached_values_for_non_action()
 
-    st.sidebar.markdown("### Detailed Information")
+    st.sidebar.markdown("### Additional Information")
     st.sidebar.markdown("Click on the topic headings below to get more information.")
     
     # Station Explorer Overview
-    with st.sidebar.popover("Why is the number of Stations open vs. with current price sometimes different?"):
+    with st.sidebar.expander("Difference in number of stations open vs. with current price"):
         st.markdown("""
             The data for prices and opening times is pulled from Tankerkönig. The difference is already in the raw data.
             Stations which have at least one information missing (either price or opening times) will be labeled as red on the map.
+            """)
+        
+    # Station Explorer Overview
+    with st.sidebar.expander("Why is the station marked as closed / no price when Google shows it is open?"):
+        st.markdown("""
+            All data as explained before is pulled from Tankerkönig. If a station is marked as closed / no price, 
+            it means that Tankerkönig does not have this information for the specific station.
+            """)
+        
+    # Station Explorer Overview
+    with st.sidebar.expander("Why are there more than one green markers on the map?"):
+        st.markdown("""
+            It can happen that multiple stations have the same "lowest" price. In this case, all stations with the 
+            lowest price are marked green. The closest one to the center of the search is shown as selected by default 
+            and has a larger marker.
             """)
 
     # Return a SidebarState compatible object (keep cached values, only change view)
@@ -1364,19 +1356,12 @@ def render_station_selector(
     except ValueError:
         default_idx = 0
 
-    # Caption/help text
-    if source == "route":
-        caption_text = f"{len(options)} stations · sorted by net saving (desc) · missing net saving at bottom"
-    else:
-        caption_text = f"{len(options)} stations"
-
     chosen_uuid = st.sidebar.selectbox(
         "Select station",
         options=option_uuids,
         index=default_idx,
         format_func=lambda u: uuid_to_label.get(u, u),
         key=f"{widget_key_prefix}_station_select",
-        help=caption_text,
     )
 
     chosen_station = uuid_to_station.get(chosen_uuid)

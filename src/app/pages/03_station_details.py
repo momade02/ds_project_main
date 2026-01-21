@@ -117,6 +117,129 @@ def _cached_calculate_hourly_stats(station_uuid: str, fuel_code: str, days: int 
         return None
 
 
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def _cached_get_tk_detail_opening_times(station_uuid: str) -> Optional[Dict[str, Any]]:
+    """Fetch Tankerkönig detail.php openingTimes/wholeDay for a station UUID.
+
+    Why this exists:
+    - Page 04 (Station Explorer) often uses Tankerkönig list.php which only returns isOpen.
+    - Page 03 needs to display *opening hours* (not open/closed) also for Explorer stations.
+
+    Returns a dict with keys:
+      - wholeDay: bool
+      - openingTimes: List[Dict[str, Any]]  (each item usually has text/start/end)
+    or None if unavailable.
+    """
+    if not station_uuid:
+        return None
+
+    # Resolve API key (prefer env; fall back to integration module if present)
+    api_key: Optional[str] = None
+    try:
+        import os
+        api_key = os.getenv("TANKERKOENIG_API_KEY")
+    except Exception:
+        api_key = None
+
+    if not api_key:
+        try:
+            from src.integration import route_tankerkoenig_integration as tkint  # type: ignore
+            api_key = getattr(tkint, "TANKERKOENIG_API_KEY", None)
+        except Exception:
+            api_key = None
+
+    if not api_key:
+        return None
+
+    try:
+        import requests
+
+        url = "https://creativecommons.tankerkoenig.de/json/detail.php"
+        params = {"id": station_uuid, "apikey": api_key}
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return None
+
+    if not isinstance(data, dict) or not data.get("ok"):
+        return None
+
+    stn = data.get("station")
+    if not isinstance(stn, dict):
+        return None
+
+    return {
+        "wholeDay": bool(stn.get("wholeDay", False)),
+        "openingTimes": list(stn.get("openingTimes") or []),
+    }
+
+
+def _format_opening_hours_for_display(
+    *, station: Dict[str, Any], eta_datetime: Optional[datetime], is_from_explorer: bool
+) -> str:
+    """Return a human-readable opening-hours string for the Page-03 info card.
+
+    Priority:
+      1) Google weekdayDescriptions (station['opening_hours'])
+      2) Tankerkönig detail.php openingTimes/wholeDay (Explorer-friendly)
+      3) Fallback "—"
+    """
+    # 1) Google weekdayDescriptions (list of 7 strings)
+    oh = (station or {}).get("opening_hours")
+    if isinstance(oh, list) and oh:
+        if eta_datetime is not None and len(oh) >= 7:
+            try:
+                s = str(oh[int(eta_datetime.weekday())]).strip()
+                return s or "—"
+            except Exception:
+                return "—"
+        items = [str(x).strip() for x in oh if x]
+        return ("; ".join(items[:3]) + ("; …" if len(items) > 3 else "")) if items else "—"
+
+    # 2) Explorer stations: fetch TK detail openingTimes (list.php does not include it)
+    if is_from_explorer:
+        uid = _station_uuid(station)
+        if uid:
+            details = _cached_get_tk_detail_opening_times(uid)
+            if isinstance(details, dict):
+                whole_day = bool(details.get("wholeDay", False))
+                opening_times = details.get("openingTimes")
+
+                if whole_day:
+                    return "24/7"
+
+                if isinstance(opening_times, list) and opening_times:
+                    parts: List[str] = []
+                    for it in opening_times:
+                        if not isinstance(it, dict):
+                            continue
+                        text = str(it.get("text") or "").strip()
+                        start = str(it.get("start") or "").strip()
+                        end = str(it.get("end") or "").strip()
+
+                        # Tankerkönig sometimes encodes 24/7 as 00:00:00–00:00:00
+                        if start == "00:00:00" and end == "00:00:00":
+                            return "24/7"
+
+                        time_part = ""
+                        if start and end:
+                            time_part = f"{start[:5]}–{end[:5]}"
+
+                        if text and time_part:
+                            parts.append(f"{text} ({time_part})")
+                        elif text:
+                            parts.append(text)
+                        elif time_part:
+                            parts.append(time_part)
+
+                    if parts:
+                        # Keep it compact in the info card
+                        return " / ".join(parts[:2]) + (" / …" if len(parts) > 2 else "")
+
+    return "—"
+
+
 # =============================================================================
 # Address Extraction (Google Maps Reverse Geocode)
 # =============================================================================
@@ -953,7 +1076,7 @@ def create_comparison_chart(
             width = 2
             opacity = 1.0
             dash = "solid"
-            legend_name = "Your station ★"
+            legend_name = "Your station"
             current_full_name = full_name
         else:
             # Blue for comparison
@@ -1086,7 +1209,12 @@ def _render_trip_settings():
         # Station selector FIRST (main interaction)
         st.sidebar.markdown(
             "### Select Station",
-            help="Choose a station to analyze from your Explorer search results."
+        help=(
+            "**Choose a station to analyze:**\n\n"
+            "- From route recommender: All stations from your last route, "
+            "sorted by net saving in descending order. Stations with missing net saving appear at the bottom.\n\n"
+            "- From station explorer: The list shows your Explorer search results. Sorted by current price in descending order."
+        )
         )
 
         render_station_selector(
@@ -1113,14 +1241,13 @@ def _render_trip_settings():
         # Settings moved to BOTTOM
         st.sidebar.markdown(
             "### Station Explorer Settings",
-            help="You selected a station from the Station Explorer. Trip Planner settings (detour costs, economics) don't apply here."
+            help="Station selected from Station Explorer. Trip Planner economics don't apply here."
         )
 
         fuel_code = str(last_run.get("fuel_code") or st.session_state.get("fuel_label") or "e5")
         fuel_label = fuel_code.upper()
         st.sidebar.markdown(
             f"- Fuel: {fuel_label}",
-            help="Fuel type from your last Trip Planner run or Explorer search. Change it on the Home page or in Explorer."
         )
 
         return
@@ -1152,10 +1279,10 @@ def _render_trip_settings():
     st.sidebar.markdown(
         "### Select Station",
         help=(
-            "Choose a station to analyze.\n\n"
-            "From latest route run: The list always includes ALL stations found along your last route, "
+            "**Choose a station to analyze:**\n\n"
+            "- From route recommender: All stations from your last route, "
             "sorted by net saving in descending order. Stations with missing net saving appear at the bottom.\n\n"
-            "From station explorer: The list shows your Explorer search results."
+            "- From station explorer: The list shows your Explorer search results. Sorted by current price in descending order."
         )
     )
 
@@ -1301,43 +1428,41 @@ def main():
         maybe_persist_state()
         return
 
-    # Reduce vertical spacing for tighter layout (similar to page 02)
+    # Reduce vertical + horizontal spacing for a tighter layout
     st.markdown("""
     <style>
-        /* Reduce gap between elements */
-        .stMarkdown { margin-bottom: 0.25rem !important; }
-        .stMetric { padding: 0.5rem 0 !important; }
-        
-        /* Tighter section headers */
-        h3 { margin-top: 1rem !important; margin-bottom: 0.5rem !important; }
-        h4 { margin-top: 0.75rem !important; margin-bottom: 0.25rem !important; }
-        
-        /* Reduce chart container padding */
-        .stPlotlyChart { margin-bottom: 0.5rem !important; }
-        
-        /* Reduce expander padding */
-        .streamlit-expanderHeader { padding: 0.5rem 0 !important; }
-        
-        /* Tighter info boxes */
-        .stAlert { padding: 0.5rem !important; margin: 0.25rem 0 !important; }
-        
-        /* Reduce column gaps */
-        [data-testid="column"] { padding: 0.25rem !important; }
-        
-        /* Tighter captions */
-        .stCaption { margin-top: 0 !important; margin-bottom: 0.25rem !important; }
-                
-        /* 2) Tighten headline spacing (add h1/h2; you already have h3/h4) */
-        h1 { margin-top: 0.0rem !important; margin-bottom: 0.35rem !important; }
-        h2 { margin-top: 0rem !important; margin-bottom: 0.35rem !important; }
-        h3 { margin-top: -1rem !important; margin-bottom: 0.35rem !important; }
-        h4 { margin-top: -0.5rem !important; margin-bottom: 0.25rem !important; }
-                
+        /* 1) Global: reduce default spacing between Streamlit elements */
+        div[data-testid="stVerticalBlock"] { gap: 1rem !important; }
+        .element-container { margin-bottom: 0rem !important; }
+
+        /* 2) Horizontal layouts: reduce space between columns */
+        div[data-testid="stHorizontalBlock"] { gap: 0.55rem !important; }
+        [data-testid="column"] { padding: 0.10rem !important; }
+
+        /* 3) Tighter markdown + captions */
+        .stMarkdown { margin-bottom: 0.20rem !important; }
+        .stCaption  { margin-top: -0.15rem !important; margin-bottom: 0.15rem !important; }
+
+        /* 4) Tighter info / success / warning blocks (your “cards”) */
+        .stAlert {
+            padding: 0rem 0rem !important;
+            margin: 0rem 0 !important;
+        }
+
+        /* 5) Headline spacing (keep conservative to avoid layout glitches) */
+        h1 { margin-top: -0.2rem !important; margin-bottom: -0.3rem !important; }
+        h2 { margin-top: 0.20rem !important; margin-bottom: 0.35rem !important; }
+        h3 { margin-top: -1rem !important; margin-bottom: 0.25rem !important; }
+        h4 { margin-top: 0rem !important; margin-bottom: 0.20rem !important; }
+
+        /* 6) Charts + expanders */
+        .stPlotlyChart { margin-bottom: 0.35rem !important; }
+        details { margin-bottom: 0.25rem !important; }
+        .streamlit-expanderHeader { padding: 0.35rem 0 !important; }
     </style>
     """, unsafe_allow_html=True)
-    
+ 
 
-    
     # =========================================================================
     # EXTRACT STATION INFO
     # =========================================================================
@@ -1579,16 +1704,14 @@ def main():
         if is_from_explorer:
             # Explorer mode: predictions are NEVER available (no route = no ETA)
             st.info(
-                "**Showing live price**: Explorer searches show current prices, not predictions. "
-                "Predictions require a route with an estimated arrival time.",
+                "**Showing live price**: Explorer searches show current prices, not predictions.",
                 icon=None
             )
         else:
             # Trip Planner mode: prediction failed for some reason
             st.warning(
                 "**Using live price (no forecast)**: No prediction available for this station at your arrival time. "
-                "The displayed price is the current real-time price, not a forecast.",
-                icon="⚠️"
+                "The displayed price is the current real-time price, not a forecast."
             )
             with st.expander("Why is the prediction missing?", expanded=False):
                 st.markdown("""
@@ -1610,14 +1733,23 @@ def main():
     info_cols = st.columns(3)
 
     with info_cols[0]:
-        # Detour info (same as before)
-        if detour_km < 0.1:
-            if detour_min > 0.5:
-                st.info(f"On route • +{detour_min:.0f} min stop")
+        # Context-aware distance / detour badge
+        if is_from_explorer:
+            # Station Explorer has no route context; show distance to the search center instead.
+            dist_km = _safe_float((station or {}).get("distance_km") or (station or {}).get("dist"))
+            if dist_km is not None and dist_km > 0:
+                st.info(f"{dist_km:.1f} km from search center")
             else:
-                st.success("On route")
+                st.info("Station Explorer result")
         else:
-            st.info(f"{detour_km:.1f} km detour or +{detour_min:.0f} min")
+            # Trip Planner / route mode: show detour vs on-route semantics.
+            if detour_km < 0.1:
+                if detour_min > 0.5:
+                    st.info(f"On route • +{detour_min:.0f} min stop")
+                else:
+                    st.success("On route")
+            else:
+                st.info(f"{detour_km:.1f} km detour or +{detour_min:.0f} min")
 
     with info_cols[1]:
         # ETA (Expected Time of Arrival) - show day if different from today
@@ -1650,23 +1782,15 @@ def main():
             st.info("ETA: --")
 
     with info_cols[2]:
-        # Opening hours (ETA day) — match Page 02 semantics:
-        # show the weekdayDescription for the ETA weekday (NOT an inferred open/closed status).
-        oh = (station or {}).get("opening_hours")  # Google weekdayDescriptions (list)
-        opening_hours_eta_day = "—"
-
-        if isinstance(oh, list) and oh:
-            # Use ETA weekday when we have 7 entries; otherwise a compact join
-            if eta_datetime is not None and len(oh) >= 7:
-                try:
-                    opening_hours_eta_day = str(oh[int(eta_datetime.weekday())]).strip() or "—"  # 0=Mon..6=Sun
-                except Exception:
-                    opening_hours_eta_day = "—"
-            else:
-                items = [str(x).strip() for x in oh if x]
-                opening_hours_eta_day = "; ".join(items[:3]) + ("; …" if len(items) > 3 else "") if items else "—"
-
-        st.info(f"Opening hours: {opening_hours_eta_day}")
+        # Opening hours (ETA day)
+        # - Route mode: prefer Google weekdayDescriptions if present.
+        # - Explorer mode: enrich via Tankerkönig detail.php (list.php only provides isOpen).
+        opening_hours_text = _format_opening_hours_for_display(
+            station=station,
+            eta_datetime=eta_datetime,
+            is_from_explorer=is_from_explorer,
+        )
+        st.info(f"**Opening hours:** {opening_hours_text}")
 
 
     # =========================================================================
@@ -1676,7 +1800,7 @@ def main():
     # Different behavior for Explorer vs Trip Planner mode
     if is_from_explorer:
         st.markdown("### Price Comparison")
-        st.caption("Compare this station against other Explorer stations.")
+        st.caption("Compare this station against other stations found.")
         
         # In Explorer mode, we don't have route context
         if not display_price:
@@ -1720,7 +1844,7 @@ def main():
                     )
                 with price_cols[1]:
                     st.metric(
-                        label="Cheapest nearby",
+                        label="Cheapest found",
                         value=f"€{min_explorer:.3f}/L",
                         help=f"Cheapest: {cheapest_station_name}" if cheapest_station_name else "Cheapest station in your Explorer search"
                     )
@@ -1740,8 +1864,6 @@ def main():
                 
                 # Show which stations are cheapest/most expensive
                 st.caption(f"Based on {len(explorer_prices)} stations. Average: €{avg_explorer:.3f}/L")
-                if cheapest_station_name and expensive_station_name:
-                    st.caption(f"Cheapest: {cheapest_station_name} | Most expensive: {expensive_station_name}")
             else:
                 st.info("No price data available for comparison.")
     else:
@@ -1982,12 +2104,12 @@ def main():
                 st.success(f"Usually cheapest: {int(cheapest_hour)}:00")
         
         # Weekday × Hour Heatmap (below hourly chart)
-        st.markdown("#### Price by Day & Hour")
+        st.markdown("### Price by Day & Hour")
         if history_df is not None and len(history_df) > 0:
             heatmap_fig = create_weekday_hour_heatmap(history_df, fuel_code)
             if heatmap_fig is not None:
                 st.plotly_chart(heatmap_fig, use_container_width=True, config=PLOTLY_CONFIG)
-                st.caption("White cells = no data for that day/hour in the last 14 days. Tankerkönig only records price changes, so quiet periods may have gaps.")
+                st.caption("White cells = no data for that day/hour in the last 14 days.")
             else:
                 st.caption(f"Not enough variety in data for weekday patterns.")
         else:
@@ -2000,10 +2122,15 @@ def main():
     # PRICE TREND (7 DAYS - NO DOTS)
     # =========================================================================
     
-    st.markdown("### Price Trend (7 days)")
+    st.markdown(
+        '<h3 style="margin-bottom: -20px;">Price Trend (7 days)</h3>', 
+        unsafe_allow_html=True
+    )
+    
     history_df_7d = _cached_get_station_price_history(station_uuid, fuel_code, days=7)
     if history_df_7d is not None and not history_df_7d.empty:
         fig, stats_text = create_price_trend_chart(history_df_7d, fuel_code)
+
         st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
         st.caption(stats_text)
     else:
@@ -2026,7 +2153,7 @@ def main():
     
     is_from_explorer = (station_source == "explorer")
     
-    st.markdown("### Compare Stations")
+
     # In Explorer mode, skip the automatic station boxes since there's no ranking
     # Go directly to Historical Price Comparison
     if is_from_explorer:
@@ -2169,8 +2296,11 @@ def main():
     # Only show divider if we had content above (Trip Planner mode with boxes)
     if not is_from_explorer:
         pass
-    
-    st.markdown("#### Historical Price Comparison (7 Days)")
+
+    st.markdown("""
+    <h3 style="margin-bottom:0; padding-bottom:0;">Compare Stations</h3>
+    <h5 style="margin-top:0; padding-top:0;">Historical Price Development (7 Days)</h5>
+    """, unsafe_allow_html=True)
     
     comp_uuids = st.session_state.get("comparison_station_uuids")
     if not isinstance(comp_uuids, list):
@@ -2179,7 +2309,7 @@ def main():
     if not station_uuid:
         st.caption("Station UUID missing.")
     elif not comp_uuids:
-        st.caption("Select comparison stations in the sidebar to see price history chart.")
+        st.caption("Select a station to compare in the sidebar.")
     else:
         with st.spinner("Loading comparison data..."):
             stations_data: Dict[str, pd.DataFrame] = {}
@@ -2289,7 +2419,7 @@ def main():
                                 st.info("Prices match on average")
                             
                             # Show calculation breakdown
-                            st.caption(f"Based on 7-day history: Your avg €{float(current_avg):.3f}/L vs Comparison €{float(alt_avg):.3f}/L")
+                            st.caption(f"Based on 7-day history: Your avg €{float(current_avg):.3f}/L vs. Comparison €{float(alt_avg):.3f}/L")
                             break  # Only 1 comparison
             except Exception:
                 pass
