@@ -977,7 +977,12 @@ def main() -> None:
     if _preserve_sidebar_view is not None:
         st.session_state["sidebar_view"] = _preserve_sidebar_view
     if _preserve_map_style_mode is not None:
-        st.session_state["map_style_mode"] = _preserve_map_style_mode  # <-- ADD THIS
+        st.session_state["map_style_mode"] = _preserve_map_style_mode
+    # If a preset was selected from a non-Home page, re-apply after Redis restore
+    _pending = st.session_state.pop("_pending_quick_route_config", None)
+    if isinstance(_pending, dict) and _pending:
+        for _k, _v in _pending.items():
+            st.session_state[_k] = _v
 
     # Apply custom CSS styles
     apply_app_css()
@@ -1034,7 +1039,8 @@ def main() -> None:
     sidebar = render_sidebar()
 
     sidebar_view = sidebar.view
-    run_clicked = sidebar.run_clicked
+    _quick_run_now = bool(st.session_state.pop("_quick_run_now", False))
+    run_clicked = bool(sidebar.run_clicked or _quick_run_now)
 
     start_locality = sidebar.start_locality
     end_locality = sidebar.end_locality

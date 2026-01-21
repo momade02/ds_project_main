@@ -291,15 +291,14 @@ section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-g
   </svg>");
 }
 
-/* Settings icon: gear (button 3) */
+/* Settings icon: ! in circle (button 3) */
 section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(3) button::after,
 section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(3)::after{
   background-image: url("data:image/svg+xml;utf8,\
   <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>\
-  <path fill='none' stroke='%2331333F' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='\
-  M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z'/>\
-  <path fill='none' stroke='%2331333F' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='\
-  M19.4 12a7.7 7.7 0 0 0-.1-1l2-1.6-2-3.5-2.4 1a7.4 7.4 0 0 0-1.7-1L15 3h-4l-.2 2.9a7.4 7.4 0 0 0-1.7 1l-2.4-1-2 3.5 2 1.6a7.7 7.7 0 0 0-.1 1c0 .3 0 .7.1 1l-2 1.6 2 3.5 2.4-1a7.4 7.4 0 0 0 1.7 1L11 21h4l.2-2.9a7.4 7.4 0 0 0 1.7-1l2.4 1 2-3.5-2-1.6c.1-.3.1-.7.1-1z'/>\
+  <circle cx='12' cy='12' r='9' fill='none' stroke='%2331333F' stroke-width='2'/>\
+  <path d='M12 6.5v8' fill='none' stroke='%2331333F' stroke-width='2' stroke-linecap='round'/>\
+  <circle cx='12' cy='17.5' r='1.1' fill='%2331333F'/>\
   </svg>");
 }
 

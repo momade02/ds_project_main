@@ -40,7 +40,13 @@ try:
 except Exception:
     ZoneInfo = None
 
-from ui.sidebar import render_sidebar_shell, render_station_selector, render_comparison_selector, _render_help_station
+from ui.sidebar import (
+    render_sidebar_shell,
+    render_station_selector,
+    render_comparison_selector,
+    _render_help_station,
+    _render_settings_quick_routes,
+)
 
 # Path setup
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -1259,6 +1265,7 @@ def main():
         top_renderer=_render_page03_quick_back_buttons,
         action_renderer=_render_trip_settings,
         help_renderer=_render_help_station,
+        settings_renderer=_render_settings_quick_routes,
     )
     
     # Station selectors are now rendered inside _render_trip_settings() for faster sidebar switching
