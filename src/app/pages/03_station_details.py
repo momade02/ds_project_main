@@ -1752,8 +1752,15 @@ def main():
             st.info("No price data available for this station.")
         else:
             # Find the WORST on-route price for user-friendly display
+            # IMPORTANT: Use the full route station universe (stations), not only `ranked`.
+            # `ranked` is post-filtered and may contain no on-route candidates, which would
+            # incorrectly fall back to this station's own price (baseline == predicted).
+            baseline_universe = list(stations or [])
+            if not baseline_universe:
+                baseline_universe = list(ranked or [])
+
             worst_onroute_computed = _compute_worst_onroute_price(
-                ranked, fuel_code, onroute_km_threshold, onroute_min_threshold
+                baseline_universe, fuel_code, onroute_km_threshold, onroute_min_threshold
             )
             worst_onroute_price = worst_onroute_computed if worst_onroute_computed is not None else display_price
             
