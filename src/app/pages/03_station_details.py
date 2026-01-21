@@ -1307,7 +1307,7 @@ def _render_trip_settings():
     # Settings moved to BOTTOM
     st.sidebar.markdown(
         "### Trip Planner Settings",
-        help="These settings come from your last Trip Planner run on the Home page. To change them, go back to Home and run a new trip."
+        help="These settings come from your last Trip Planner run on the Home page."
     )
 
     st.sidebar.markdown(f"- Fuel: {fuel_label}")
@@ -1775,11 +1775,11 @@ def main():
                     # Same day - just show time
                     eta_display = eta_dt.strftime("%H:%M")
                 
-                st.info(f"ETA: {eta_display}")
+                st.info(f"**ETA:** {eta_display}")
             except Exception:
-                st.info("ETA: --")
+                st.info("**ETA:** --")
         else:
-            st.info("ETA: --")
+            st.info("**ETA:** --")
 
     with info_cols[2]:
         # Opening hours (ETA day)
@@ -2035,7 +2035,7 @@ def main():
                 st.caption("Assumes you refuel the same amount once per week. Monthly = weekly × 4.3, yearly = weekly × 52.")
             
             # Rounding disclaimer
-            st.caption("**Note:** Small differences (a few cents) may occur because calculations use full precision while displayed prices are rounded to 3 decimals. See Help for details.")
+            st.caption("**Note:** Small differences may occur due to rounding.")
     
     
     # SMART PRICE ALERT

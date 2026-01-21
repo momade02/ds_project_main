@@ -619,7 +619,7 @@ def _render_trip_planner_action() -> SidebarState:
         value=float(_canonical("max_distance_km", 750.0)),
         key=_w("max_distance_km"),
         help=(
-            "The maximum distance from the starting point to a station. Stations farther than this distance are excluded ." \
+            "The maximum distance from the starting point to a station. Stations further than this distance are excluded. " \
             "Useful to set for long trips if your fuel tank is low and you want to refill before running out."
         ),
     )
@@ -632,7 +632,7 @@ def _render_trip_planner_action() -> SidebarState:
         value=float(_canonical("min_distance_km", 0.0)),
         key=_w("min_distance_km"),
         help=(
-            "The minimum distance from the starting point to a station. Stations closer than this distance are excluded ." \
+            "The minimum distance from the starting point to a station. Stations closer than this distance are excluded. " \
             "Useful to set if your fuel tank is full and you want to refill after driving some distance."
         ),
     )
@@ -708,39 +708,60 @@ def _render_help_action() -> SidebarState:
     """
     state = _read_cached_values_for_non_action()
 
-    st.sidebar.markdown("### Detailed Information")
+    st.sidebar.markdown("### Additional Information")
     st.sidebar.markdown("Click on the topic headings below to get more information.")
 
-    with st.sidebar.popover("Data Sources"):
-        st.markdown("**Google Maps APIs**: " \
-            "\n- Geocoding: convert addresses into latitude/longitude coordinates" \
-            "\n- Directions: find best driving route" \
-            "\n- Places Text Search Enterprise: find fuel stations along the route" \
-            "\n\n**Tankerkönig**:" \
-            "\n- API for current fuel prices of 14000+ stations in Germany" \
-            "\n- Historical price data for model training.")
+    with st.sidebar.expander("Data Sources"):
+        st.markdown(
+            "The system combines geospatial, real-time, and historical data to deliver its recommendations."
+            "\n\n**Key Sources:**\n"
+            "- **Google Maps Platform:**"
+            "\n  - *Geocoding API:* Converts addresses to coordinates."
+            "\n  - *Directions API:* Calculates optimal driving routes."
+            "\n  - *Places API (New):* Locates stations along the route and provides opening hours."
+            "\n- **Tankerkönig API:**"
+            "\n  - *Real-time Data:* Provides current fuel prices for over 14,000 stations across Germany."
+            "\n  - *Historical Data:* Used to train the price prediction models."
+        )
 
-    with st.sidebar.popover("Route finding process"):
-        st.markdown("First the user’s start and destination input is converted into exact latitude/longitude coordinates using the **Google Maps Geocoding API**. " \
-            "\n\n Next, the best driving route is calculated with the **Google Maps Directions API**. Besides total distance and travel time, we also extract the detailed route geometry, which is  later used to find stations along the route.")
-
-    with st.sidebar.popover("Finding Stations along the route"):
-        st.markdown("Fuel stations are retrieved along the calculated route using the **Places API Text Search Enterprise**. " \
-            "\n\nFor each returned station, the detour time and distance caused by stopping there is calculated from the API’s routing summary output. Further an estimated arrival time is computed. Opening-hours information is then evaluated to determine whether the station is likely open at that ETA.")
-
-    with st.sidebar.popover("Detour Economics Explained"):
-        st.markdown("The Detour Economics logic evaluates the cost-effectiveness of taking a detour to refuel. It combines the additional fuel costs (based on distance and car consumption) and time costs (using the user's value of time) with the potential savings from lower fuel prices at the detour station. " \
-            "The goal is to calculate the net savings and ensure that the detour is economically beneficial." \
-            "Formula: \n\n$$Net Saving = Fuel Price Saving − Detour Fuel Cost − Time Cost$$" \
-            )
+    with st.sidebar.expander("Route finding process"):
+        st.markdown(
+            "The system calculates your optimal path using a two-step process:"
+            "\n\n**1. Geocoding:**\n"
+            "Your start and destination addresses are converted into precise geographic coordinates (latitude/longitude) using the **Google Maps Geocoding API**."
+            "\n\n**2. Route Calculation:**\n"
+            "The **Google Maps Directions API** determines the best driving route, providing total distance, travel time, and the detailed route geometry (polyline) required for the search corridor."
+            "\n\n*For detailed route metrics and visualizations, visit the **Analytics** tab (Section: **1. Recommended Route**).*"
+        )
         
-    with st.sidebar.popover("Price prediction model"):
-        st.markdown("The price prediction is based on an **ARDL model (Autoregressive Distributed Lag)** that uses past fuel prices to estimate future prices. " \
-            "Separate models are trained for each fuel type (E5, E10, Diesel) and for different prediction horizons (from “now” up to about two hours ahead). " \
-            "\n\nTo generate a prediction, it is first determined how far in the future the arrival at a station lies. If the arrival is very soon (within a few minutes) and a current price is available, the current price is used directly and no model is applied. " \
-            "Otherwise, the appropriate horizon model is selected: short-term horizons (h1–h4) are used for near-future arrivals, while a daily-only model (h0) is used when the arrival lies further ahead or when no current price is available. " \
-            "The model then receives a **feature vector** consisting of **daily lagged prices** (prices from previous days) and, for short horizons, an additional **intraday price feature**. " \
-            "Based on these inputs, the ARDL model predicts the expected fuel price at the estimated arrival time. ")
+    with st.sidebar.expander("Finding stations along route"):
+        st.markdown(
+            "The system identifies relevant fuel stations using the **Places API** `searchAlongRoute` capability."
+            "\n\n**How it works:**\n"
+            "- **Search:** Queries for stations within a defined detour corridor along your route's polyline.\n"
+            "- **Detour Metrics:** Uses the API's **routing summaries** to precisely calculate the extra driving time and distance for each candidate.\n"
+            "- **Availability:** Estimates your arrival time (ETA) and cross-references it with the station's `regularOpeningHours` to ensure it is open.\n\n"
+        )
+
+    with st.sidebar.expander("Detour Economics Logic"):
+        st.markdown(
+            "The system determines if a cheaper station is worth the drive by calculating the **Net Economic Saving**."
+            "\n\n**The Calculation:**\n"
+            "1. **Gross Savings:** `(Benchmark Price - Station Price) × Liters`\n"
+            "2. **Detour Costs:** `(Extra Distance × Consumption × Fuel Price) + (Extra Time × Value of Time)`\n"
+            "\n"
+            "$$ \\text{Net Saving} = \\text{Gross Savings} - \\text{Detour Costs} - \\text{Time Costs} $$"
+            "\n\n *For detailed cost breakdowns and benchmarks, visit the **Analytics** tab (Section: **2. Recommended Stations** & **4. Full Result Tables**).*"
+        )
+        
+    with st.sidebar.expander("Price Prediction Model"):
+        st.markdown(
+            "The system estimates the fuel price at your expected arrival time using an **Autoregressive Distributed Lag (ARDL)** model approach. "
+            "\n\n**How it works:**\n"
+            "- **Spot Mode:** If the arrival is very soon (within 10 mins), the current live price is used directly.\n"
+            "- **Forecast Mode:** For stations further away, a specific horizon model uses historical price patterns (daily lags) to predict the future price.\n\n"
+            "*For a deep dive into the algorithm, model inputs, and evaluations, visit the **Analytics** tab (Section: **3. Prediction Algorithm**).*"
+        )
 
     # Return a SidebarState compatible object (keep cached values, only change view)
     return SidebarState(**{**state.__dict__, "view": "Help"})
@@ -754,7 +775,7 @@ def _render_help_station():
     # Keep cached values for downstream behaviour and return a SidebarState
     state = _read_cached_values_for_non_action()
 
-    st.sidebar.markdown("### Detailed Information")
+    st.sidebar.markdown("### Additional Information")
     st.sidebar.markdown("Click on the topic headings below to get more information.")
     
     # Savings Calculator / Price Comparison
