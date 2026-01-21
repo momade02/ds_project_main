@@ -479,9 +479,9 @@ def main() -> None:
     - Inspect results on an interactive **map** and in a **sortable table**
 
     ##### How it works (high level)
-    - Your location input is **geocoded** to a center point.
-    - The app queries for stations within the selected radius (including **current prices** and **open/closed**).
-    - Filters (e.g., *Only open stations*) and sorting (price-first, then distance) are applied before rendering.
+    - Your location input is **geocoded** to a center point
+    - The app queries for stations within the selected radius (including **current prices** and **open/closed**)
+    - Filters (e.g., *Only open stations*) and sorting (price-first, then distance) are applied before rendering
 
     ##### What you will see after running a search
     - A map with all stations in the result set
