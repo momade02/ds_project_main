@@ -463,23 +463,23 @@ def main() -> None:
     stations: List[Dict[str, Any]] = st.session_state.get("explorer_results") or []
 
     if not center:
-        st.markdown("#### Welcome to Station Explorer")
+        st.markdown("### Welcome to the Station Explorer")
 
         st.markdown(
             """
     Use this page to **browse fuel stations around any location** in Germany and quickly compare **realtime prices**.
 
-    **What you can do**
+    ##### What you can do
     - Search stations around a **city, ZIP, or full address**
     - Adjust the **search radius**, choose the **fuel type**, and optionally filter by **brand** / **open stations**
     - Inspect results on an interactive **map** and in a **sortable table**
 
-    **How it works (high level)**
+    ##### How it works (high level)
     - Your location input is **geocoded** to a center point.
     - The app queries for stations within the selected radius (including **current prices** and **open/closed**).
     - Filters (e.g., *Only open stations*) and sorting (price-first, then distance) are applied before rendering.
 
-    **What you will see after running a search**
+    ##### What you will see after running a search
     - A map with all stations in the result set
     - A highlighted “cheapest & closest” station (based on the selected fuel)
     - A results table with address, distance, current price, and open status
