@@ -1193,23 +1193,23 @@ def main() -> None:
             status_ph = st.empty()
             try:
                 try:
-                    with status_ph.status("Calculating route and recommendations...", expanded = True) as status:
-                        status.write("Convert addresses to coordinates")
+                    with status_ph.status("**Calculating route and recommendations...**", expanded = True) as status:
+                        status.write("- Convert addresses to coordinates.")
                         time.sleep(0.5)
-                        status.write(f"Compute route from {start_locality} to {end_locality}")
+                        status.write(f"- Compute route from {start_locality} to {end_locality}.")
                         time.sleep(0.5)
-                        status.write("Find stations along route")
+                        status.write("- Find stations along route.")
                         last_run = run_route_recommendation(
                             inputs,
                             integration_kwargs=integration_kwargs,
                             ranking_kwargs=ranking_kwargs,
                             recommendation_kwargs=recommendation_kwargs,
                         )
-                        status.write("Get (historical) prices for candidate stations")
+                        status.write("- Retrieve (historical) prices for candidate stations.")
                         time.sleep(1)
-                        status.write("Predict prices")
+                        status.write("- Predict prices at arrival time.")
                         time.sleep(0.5)
-                        status.update(label = "Recommendation ready!", state = "complete", expanded = False)
+                        status.update(label = "**-> Recommendation ready!**", state = "complete", expanded = False)
                 except Exception:
                     status_ph.info("Calculating route and recommendations...")
 

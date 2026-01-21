@@ -2382,7 +2382,8 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
             else:
                 price_basis = f"Forecast/Realtime (best-effort) — lags: 1d/2d/3d/7d ({ft_label})"
 
-            if horizon_used not in (None, "", 0):
+            # Only show a horizon when a forecast model is actually used.
+            if used_current is not True and horizon_used not in (None, "", 0):
                 price_basis = f"{price_basis} — horizon={horizon_used}"
 
             # Mode label
@@ -2514,8 +2515,26 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
 
         # --- B) Horizon selection: tight layout (single HTML block) ---
         if explain:
-            derived_h = explain.get("horizon_used")
-            derived_h_str = "h0_daily" if (derived_h in (None, "", 0)) else f"h{derived_h}"
+            used_current = explain.get("used_current")
+
+            # If Spot mode is active, explicitly show that no model was used.
+            if used_current is True:
+                derived_h_str = "Spot price"
+            else:
+                derived_h = explain.get("horizon_used")
+
+                # Robust formatting: horizon_used can be int-like (1..4) or a string ("h0_daily")
+                if derived_h in (None, "", 0, "0"):
+                    derived_h_str = "h0_daily"
+                else:
+                    # Keep string horizons as-is, otherwise render as "h{n}"
+                    if isinstance(derived_h, str):
+                        derived_h_str = derived_h.strip()
+                    else:
+                        try:
+                            derived_h_str = f"h{int(derived_h)}"
+                        except Exception:
+                            derived_h_str = str(derived_h)
 
             now_cell_str = "—" if cell_now is None else str(cell_now)
             eta_cell = explain.get("cell_eta")
