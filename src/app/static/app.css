@@ -36,20 +36,6 @@ section[data-testid="stSidebar"] div[data-testid="stSidebarUserContent"] > div:f
   }
 }
 
-/* ==========================================================================
-   DEBUG OUTLINES (currently always enabled in your app)
-   ========================================================================== */
-
-/* Outline the main structural containers so you see the usable layout */
-section[data-testid="stSidebar"] { outline: 2px dashed rgba(0,0,0,0.25); outline-offset: -2px; }
-section[data-testid="stMain"] { outline: 2px dashed rgba(0,0,0,0.25); outline-offset: -2px; }
-div.block-container { outline: 2px dashed rgba(255,0,0,0.25); outline-offset: -2px; }
-
-/* Outline each vertical block (helpful to see spacing between blocks) */
-div[data-testid="stVerticalBlock"] { outline: 1px dashed rgba(0,0,255,0.20); outline-offset: -1px; }
-
-/* Outline columns */
-div[data-testid="column"] { outline: 1px dashed rgba(0,128,0,0.20); outline-offset: -1px; }
 
 /* Tighten spacing above Streamlit caption blocks */
 div[data-testid="stCaptionContainer"] { margin-top: -1.3rem !important; }
@@ -108,8 +94,6 @@ section[data-testid="stSidebar"] div[data-testid="stSegmentedControl"] [data-bas
   justify-content: center !important; /* center text */
 }
 
-/* Keep dashed debug feel without being too loud */
-.station-header { outline: 1px dashed rgba(14, 116, 144, 0.35); outline-offset: -4px; }
 
 .station-header .label {
   margin: 0 0 0.30rem 0 !important;
@@ -165,9 +149,6 @@ section[data-testid="stSidebar"] div[data-testid="stSegmentedControl"] [data-bas
   border-radius: 0.9rem;
 }
 
-/* Keep your “dashed debug” feel for these custom cards too */
-.metric-grid { outline: 1px dashed rgba(0, 0, 255, 0.20); outline-offset: -1px; }
-.metric-card { outline: 1px dashed rgba(0, 128, 0, 0.20); outline-offset: -1px; }
 
 .metric-label {
   font-size: 0.95rem;
