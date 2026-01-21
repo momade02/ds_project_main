@@ -1098,9 +1098,8 @@ def main() -> None:
 
         ##### Help and guidance
         - Hover the **“?”** info icons next to sidebar controls for quick explanations.
-        - Click/open the **Info section at the top of the sidebar** for a more complete overview of the system and settings.
-        - Use the **main settings block at the top of the sidebar** as your default starting point for every run.
-        - If you want persistent defaults (e.g., preferred constraints or routes), create/manage a **profile** via the profile button at the top of the sidebar.
+        - Open the **Help tab** in the sidebar (the **(?) icon**) for a more complete overview of the system and settings.
+        - If you are unsure where to start: open the **(!) Preset Routes** tab in the sidebar.
 
         An **introduction video** is available below.
             """
