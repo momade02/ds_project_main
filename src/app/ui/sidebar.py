@@ -8,6 +8,205 @@ import streamlit as st
 
 from ui.formatting import _fuel_label_to_code, _station_uuid, _safe_text
 
+import random
+import time
+
+
+# ---------------------------------------------------------------------------
+# Profile placeholder (shown in Sidebar -> Profile tab)
+# ---------------------------------------------------------------------------
+
+PROFILE_PLACEHOLDER_MD = """
+### Profile (Coming soon)
+
+Welcome to the Profile section.
+
+Personal profiles (sign-up / sign-in with email + password) will be added once this project moves beyond the academic stage.
+
+**Why this is not available yet**
+- A secure profile system requires a dedicated CIAM setup (Microsoft Entra External ID / Azure AD B2C) plus a persistent database for user data.
+- In the current student/academic Azure hosting setup, the required identity provisioning and always-on database setup are not feasible within the project constraints (availability/licensing/cost).
+
+**What you will get in the future**
+- Saved routes and one-click runs with predefined settings
+- Recommendation history
+- Favorite stations and personal defaults
+
+**Temporary workaround (Redis cache)**\n
+This app uses a Redis-backed session cache. After running a recommendation, you can copy the full URL from your browser (including the `sid=...` parameter) and reopen it later to continue your session.
+""".strip()
+
+
+def _render_profile_placeholder(profile_md: str) -> None:
+    """Render Profile tab content as markdown (sidebar-friendly, not too long)."""
+    st.sidebar.markdown(profile_md)
+
+
+# =============================================================================
+# Settings tab: Quick Routes (test environment presets)
+# =============================================================================
+
+def _render_settings_quick_routes() -> None:
+    """Render Settings tab: one-click quick route presets.
+
+    - Writes canonical session_state keys (compatible with Redis persistence).
+    - Uses an ephemeral one-shot flag to trigger a run on Home after navigation.
+    - Forces top navigation to "Home" so the user does not bounce back to the previous page.
+    - Applies mild randomized deviations (close to defaults) to keep presets varied.
+    """
+
+    st.sidebar.markdown(
+    """
+### Example Presets!
+
+**You can try out preset routes to the home locations of the app creators.**
+
+Each preset will automatically:
+
+**1.** Switch to the Home page
+
+**2.** Set a predefined route and fuel type
+
+**3.** Apply random settings
+
+**4.** Run the recommender immediately
+
+**How to use?**
+-> Just pick a person!
+
+        """.strip()
+    )
+
+    # --------------------------------------------------------------
+    # Helper: apply config + trigger run (best-effort Redis persist)
+    # --------------------------------------------------------------
+    def _apply_and_run(config: dict) -> None:
+        # Apply route/settings immediately (canonical keys)
+        for k, v in config.items():
+            st.session_state[k] = v
+
+        # One-shot run trigger (do NOT persist)
+        st.session_state["_quick_run_now"] = True
+
+        # Re-apply after Home restores Redis state (avoids overwrite race)
+        if config:
+            st.session_state["_pending_quick_route_config"] = dict(config)
+
+        # IMPORTANT: force the top navigation to Home on Page 01,
+        # otherwise Page 01 may immediately auto-switch back to Analytics/Station/Explorer.
+        st.session_state["nav_request_top_nav"] = "Home"
+
+        # Best-effort persistence before navigation
+        try:
+            from services.session_store import maybe_persist_state  # type: ignore
+            maybe_persist_state(force=True)
+        except Exception:
+            pass
+
+        # Navigate to Home. If already on Home, switch_page may fail -> rerun.
+        try:
+            st.switch_page("streamlit_app.py")
+        except Exception:
+            st.rerun()
+
+    def _build_preset(*, seed_key: str, destination: str, fuel_label: str, mode: str) -> dict:
+        """Create a preset config with mild randomized deviations from defaults."""
+        rng = random.Random(int(time.time() * 1000) ^ hash(seed_key))
+
+        # Mild, bounded variations
+        litres = float(rng.choice([35.0, 40.0, 45.0]))
+        consumption = float(rng.choice([6.5, 7.0, 7.5]))
+
+        max_detour_km = float(rng.choice([5.0, 6.0, 7.0, 8.0]))
+        max_detour_min = float(rng.choice([10.0, 12.0, 15.0]))
+
+        min_net_saving = float(rng.choice([0.0, 0.0, 0.5, 1.0]))
+
+        # Defaults
+        value_of_time = 0.0
+        use_economics = True
+
+        # Mode tweaks (kept close to defaults)
+        if mode == "advanced":
+            value_of_time = float(rng.choice([5.0, 10.0, 15.0]))
+            min_net_saving = float(rng.choice([0.0, 0.5, 1.0]))
+        elif mode == "economical":
+            value_of_time = 0.0
+            min_net_saving = float(rng.choice([0.0, 0.0, 0.5]))
+        elif mode == "no_econ":
+            use_economics = False
+            value_of_time = 0.0
+
+        return {
+            # Route
+            "start_locality": "Universität Tübingen",
+            "end_locality": destination,
+
+            # Fuel & economics mode
+            "fuel_label": fuel_label,
+            "use_economics": use_economics,
+
+            # Economics inputs
+            "litres_to_refuel": litres,
+            "consumption_l_per_100km": consumption,
+            "value_of_time_eur_per_hour": value_of_time,
+
+            # Constraints
+            "max_detour_km": max_detour_km,
+            "max_detour_min": max_detour_min,
+            "min_net_saving_eur": min_net_saving,
+
+            # Keep behavior consistent with your usual run defaults
+            "filter_closed_at_eta": True,
+        }
+
+    presets = [
+        {
+            "title": "Drive home to Axel!",
+            "destination": "Stühlingen, Baden-Württemberg",
+            "fuel_label": "E5",
+            "mode": "economical",
+        },
+        {
+            "title": "Drive home to Moritz!",
+            "destination": "Salmdorf, Bayern",
+            "fuel_label": "Diesel",
+            "mode": "advanced",
+        },
+        {
+            "title": "Drive home to Celine!",
+            "destination": "Weida, Thüringen",
+            "fuel_label": "E10",
+            "mode": "economical",
+        },
+    ]
+
+    for i, p in enumerate(presets, start=1):
+        with st.sidebar.container(border=True):
+            st.markdown(f"**{p['title']}**")
+            st.markdown("Start: Universität Tübingen")
+            st.markdown(f"Destination: {p['destination']}")
+            st.markdown(f"Fuel type: {p['fuel_label']}")
+
+            if st.button(
+                "Run this preset now",
+                use_container_width=True,
+                key=f"quickroute_{i}",
+            ):
+                cfg = _build_preset(
+                    seed_key=p["title"],
+                    destination=p["destination"],
+                    fuel_label=p["fuel_label"],
+                    mode=p["mode"],
+                )
+                _apply_and_run(cfg)
+
+    st.sidebar.markdown(
+    """
+**Go to the "Action" tab afterwards to see the settings applied.**
+
+        """.strip()
+    )
 
 # =============================================================================
 # Existing state model (Trip Planner sidebar)
@@ -659,9 +858,10 @@ def render_sidebar(
     *,
     action_renderer: Optional[Callable[[], SidebarState]] = None,
     help_renderer: Optional[Callable[[], SidebarState]] = None,
+    settings_renderer: Optional[Callable[[], None]] = None,
     help_placeholder: str = "Placeholder: Help (content will be added later).",
     settings_placeholder: str = "Placeholder: Settings (content will be added later).",
-    profile_placeholder: str = "Placeholder: Profile (content will be added later).",
+    profile_placeholder: str = PROFILE_PLACEHOLDER_MD,
 ) -> SidebarState:
     """
     Standardized sidebar with 4 sections:
@@ -698,12 +898,12 @@ def render_sidebar(
         renderer = help_renderer or _render_help_action
         return renderer()
     if view == "Settings":
-        st.sidebar.info(settings_placeholder)
+        renderer = settings_renderer or _render_settings_quick_routes
+        renderer()
         return SidebarState(**{**state.__dict__, "view": "Settings"})
 
-    st.sidebar.info(profile_placeholder)
+    _render_profile_placeholder(profile_placeholder)
     return SidebarState(**{**state.__dict__, "view": "Profile"})
-
 
 # =============================================================================
 # Shared sidebar shell (Pages 2—4)
@@ -715,8 +915,9 @@ def render_sidebar_shell(
     action_renderer: Optional[Callable[[], None]] = None,
     action_placeholder: str = "Placeholder: Action",
     help_renderer: Optional[Callable[[], None]] = None,
+    settings_renderer: Optional[Callable[[], None]] = None,
     settings_placeholder: str = "Placeholder: Settings (will be added later).",
-    profile_placeholder: str = "Placeholder: Profile (will be added later).",
+    profile_placeholder: str = PROFILE_PLACEHOLDER_MD,
 ) -> str:
     """
     Shared 4-tab sidebar shell for Pages 2—4 (and optionally others):
@@ -743,12 +944,14 @@ def render_sidebar_shell(
 
     # Optional page-specific controls rendered directly below the sidebar toggle
     # (e.g., quick back-navigation buttons on some pages).
-    if top_renderer is not None:
+    # IMPORTANT: Only show these on the Action tab.
+    if view == "Action" and top_renderer is not None:
         try:
             top_renderer()
         except Exception:
             # Best-effort: sidebar chrome should never break the page.
             pass
+
     
     # Render content based on selected tab
     # Only Action tab renders the (potentially heavy) action_renderer
@@ -764,9 +967,10 @@ def render_sidebar_shell(
             else:
                 st.info("Placeholder: Help (content will be added later).")
         elif view == "Settings":
-            st.info(settings_placeholder)
+            renderer = settings_renderer or _render_settings_quick_routes
+            renderer()
         else:
-            st.info(profile_placeholder)
+            _render_profile_placeholder(profile_placeholder)
 
     return st.session_state.get("sidebar_view", "Action")
 

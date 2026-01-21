@@ -10,7 +10,7 @@ import streamlit as st
 
 from ui.styles import apply_app_css
 
-from ui.sidebar import render_sidebar_shell, _render_help_explorer
+from ui.sidebar import render_sidebar_shell, _render_help_explorer, _render_settings_quick_routes
 
 from config.settings import load_env_once
 
@@ -382,7 +382,11 @@ def main() -> None:
         ):
             _sync(k)
 
-    sidebar_view = render_sidebar_shell(action_renderer=_action_tab, help_renderer = _render_help_explorer)
+    sidebar_view = render_sidebar_shell(
+        action_renderer=_action_tab,
+        help_renderer=_render_help_explorer,
+        settings_renderer=_render_settings_quick_routes,
+    )
 
     # Read values from session_state so they remain available even on non-Action tabs
     location_query = str(
