@@ -35,65 +35,69 @@ For non-technical readers: This component connects route planning (Google Maps) 
 
 ## 3) Inputs & Outputs
 
-- **Inputs**
-  - List of stations with coordinates and ETAs (more detailed description in `route_stations.py`)
-  - Stations list (from Supabase)
+**route_tankerkoenig_integration.py:**
+- Inputs:
+  - List of stations with coordinates and ETAs (from `route_stations.py` in data_pipeline)
+  - Stations master list (Supabase)
   - Historical price data (Supabase)
-  - Real-time price data (Tankerkoenig API, optional)
-
-- **Outputs**
-  - List of enriched station feature dicts, e.g.:
-    - `station_uuid` (string)
-    - `lat` (float)
-    - `lon` (float)
-    - `time_cell` (int)
-    - `price_lag_1d_e5` (float)
-    - `price_lag_7d_e5` (float)
-    - `realtime_price_e5` (float, optional)
-    - ...  
+  - Real-time price data (Tankerkönig API, optional)
+- Outputs:
+  - List of enriched station feature dicts (for modeling), e.g.:
+    - `station_uuid`, `lat`, `lon`, `time_cell`
+    - `price_lag_1d_e5`, `price_lag_2d_e5`, `price_lag_3d_e5`, `price_lag_7d_e5`
+    - `price_current_e5` (realtime or fallback)
   - Route metadata (dict)
+
+**historical_data.py:**
+- Inputs:
+  - Station UUID
+  - Fuel type (e5, e10, diesel)
+- Outputs:
+  - Price history DataFrame (14-day time series)
+  - Hourly statistics DataFrame (avg/min/max per hour)
 
 ---
 
 ## 4) How it works (high level)
 
-- Stations from Google are matched to nearest fuel stations of Tankerkönig using a spatial KD-Tree because coordinates do not match perfectly. 
-- For each station, historical price lags (1d, 2d, 3d, 7d) are fetched in parallel from Supabase.
-- Real-time prices are optionally retrieved via the Tankerkoenig API.
-- Deduplication ensures only unique stations are retained, prioritizing minimal detour.
-- Output is a list of enriched station features, ready for modeling or dashboard display.
+**route_tankerkoenig_integration.py** (main pipeline):
+- Stations from Google are matched to nearest Tankerkönig stations using a spatial KD-Tree (coordinates don't match exactly)
+- For each station, historical price lags (1d, 2d, 3d, 7d) are fetched in parallel from Supabase
+- Real-time prices are optionally retrieved via the Tankerkönig API
+- Deduplication ensures only unique stations are retained, prioritizing minimal detour
+- Output is a list of enriched station features, ready for modeling or dashboard display
+
+**historical_data.py** (Page 03 support):
+- Provides 14-day price history for station detail charts
+- Computes hourly price statistics to identify best/worst refueling times
+- Used exclusively by Page 03 (Station Details)
 
 ---
 
-``` diff
 ## 5) Automation hooks
 
-- Intended triggers:
-  - Can be called directly via Python:
-    ```bash
-    python src/integration/route_tankerkoenig_integration.py
-    ```
-  - Integrated into dashboard backend for on-demand enrichment
+- Can be called directly via Python (from project root):
+  ```bash
+  python -m src.integration.route_tankerkoenig_integration
+  ```
+- Called automatically by the dashboard when a user plans a trip
+- Uses parallel database queries for faster data loading
+- Station list is cached for 1 hour to reduce database load
 
-- Automation features:
-  - Parallel data fetching (ThreadPoolExecutor)
-  - Caching of station master list (1-hour TTL)
-  - Minimal manual intervention required
-```
 ---
 
 ## 6) Validation & quality checks
 
-- Validates input coordinates and station data
+- Coordinates are matched and filtered against the Tankerkönig database (unmatched stations are excluded)
 - Ensures price data is available for required lags; falls back to most recent available within a window
 - Deduplication logic for route-station matches
-- Data schema enforcement for outputs
+- Output schema is enforced implicitly through typed function signatures and consistent return structures
 
 ---
 
 ## 7) Error handling & troubleshooting
 
-- Handles missing credentials (Supabase, Tankerkoenig API) with clear error messages
+- Handles missing credentials (Supabase, Tankerkönig API) with clear error messages
 - Catches and reports data quality issues (invalid fuel types, missing data)
 - External service errors (API failures) are surfaced with actionable remediation steps
 
@@ -107,11 +111,10 @@ Troubleshooting steps:
 
 Create a `.env` file from the example below.
 ```ini
-# .env.example — copy to .env and fill values
+# .env.example - copy to .env and fill values
 SUPABASE_URL=<https://your-project.supabase.co>
 SUPABASE_SECRET_KEY=<SUPABASE_SERVICE_ROLE_KEY>
 
-TANKERKOENIG_EMAIL=<YOUR_TANKERKOENIG_EMAIL>
 TANKERKOENIG_API_KEY=<YOUR_TANKERKOENIG_API_KEY>
 
 GOOGLE_MAPS_API_KEY=<YOUR_GOOGLE_MAPS_API_KEY>
@@ -132,6 +135,7 @@ GOOGLE_MAPS_API_KEY=<YOUR_GOOGLE_MAPS_API_KEY>
 
 ```
 src/integration/
+├─ __init__.py
 ├─ README.md
 ├─ historical_data.py
 └─ route_tankerkoenig_integration.py
