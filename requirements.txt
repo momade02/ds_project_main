@@ -1,19 +1,30 @@
-geopy
-googlemaps
-joblib
-numpy
-plotly
-pandas
-polyline
-pyproj
-python-dotenv
-requests
-scipy
-shapely
-streamlit==1.52.2
-supabase
-pydeck
-scikit-learn==1.6.1
-redis==5.0.8
-hiredis==2.4.0
-certifi>=2024.0.0
+# --- Geospatial / routing / geometry ---
+geopy  # Geocoding + distance calculations (e.g., address -> lat/lon; distance heuristics)
+googlemaps  # Google Maps API client (directions, routing, ETA, geocoding as used in your pipeline)
+polyline  # Decode/encode Google route polylines (route geometry handling)
+pyproj  # Coordinate reference system transforms (WGS84 <-> projected CRS where needed)
+shapely  # Geometry ops (buffer/intersection/nearest points; spatial filtering)
+
+# --- Core data & numerics ---
+numpy  # Numerical arrays; vectorized computations throughout scoring/prediction pipeline
+pandas  # Tabular manipulation (stations/prices joins, feature tables, outputs)
+scipy  # Scientific routines (stats, interpolation, optimization helpers if used)
+
+# --- ML / forecasting utilities ---
+scikit-learn==1.6.1  # Feature transforms, model utilities, metrics; used alongside LightGBM pipeline patterns
+joblib  # Model/artifact persistence + caching (serialize fitted models, preprocessors, etc.)
+
+# --- App / UI / visualization ---
+streamlit==1.52.2  # Web app framework (multi-page UI, session state, widgets)
+plotly  # Interactive charts (price curves, distributions, KPIs)
+pydeck  # Map visualization layer (deck.gl integration for station maps, route overlays)
+
+# --- Storage / backend integration ---
+redis==5.0.8  # Redis client (session persistence, caching, state sharing across page refreshes)
+hiredis==2.4.0  # Faster Redis protocol parser (performance improvement for redis client)
+supabase  # Supabase client (station/metadata storage, optional persistence layer)
+
+# --- Config / networking ---
+python-dotenv  # Load environment variables from .env (local dev parity with Azure env vars)
+requests  # HTTP requests to external APIs/services (Tankerkoenig, custom endpoints, etc.)
+certifi==2024.0.0  # CA bundle for TLS verification (stabilizes SSL behavior across environments)
