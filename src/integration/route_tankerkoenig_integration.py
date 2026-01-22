@@ -1,21 +1,21 @@
 """
-Module: Route â†” Fuel Price Integration Pipeline.
+Module: Route - Fuel Price Integration Pipeline.
 
 Description:
     This module bridges the Geospatial domain (Google Maps Routes) with the
-    Economic domain (Tankerkönig Fuel Prices).
+    Economic domain (Tankerkonig Fuel Prices).
 
     It performs the following high-level transformation:
     [Route Coordinates & ETAs]
-           ↔
-    [Match to Tankerkönig Stations (Spatial KD-Tree)]
-           ↔
+           |
+    [Match to Tankerkonig Stations (Spatial KD-Tree)]
+           |
     [Enrich with Historical Prices (Supabase Batch Queries)]
-           ↔
-    [Enrich with Real-time Prices (Optional API Call)]
-           ↔
+           |
+    [Enrich with Real-time Prices]
+           |
     [Feature Engineering (Time Cells, Lags)]
-           ↔
+           |
     [Model-Ready Feature Vectors]
 
 Usage:
@@ -58,7 +58,7 @@ except ImportError as e:
 
 
 # ==========================================
-# Type Definitions (LLM Context Hints)
+# Type Definitions
 # ==========================================
 
 # A raw station matched from Google logic
@@ -92,14 +92,38 @@ CACHE_DURATION_SEC: Final[int] = 3600
 _CACHED_STATIONS_DF: Optional[pd.DataFrame] = None
 _CACHE_TIMESTAMP: Optional[float] = None
 
+# Tracks whether we have already warned about missing Tankerkönig API key
+_TK_WARNING_SHOWN: bool = False
+
+
+def check_tankerkoenig_api_available() -> bool:
+    """
+    Checks if Tankerkönig API key is configured.
+    Logs a warning once if not available (does not raise an error).
+    
+    Returns:
+        bool: True if API key is available, False otherwise.
+    """
+    global _TK_WARNING_SHOWN
+    
+    if TANKERKOENIG_API_KEY:
+        return True
+    
+    if not _TK_WARNING_SHOWN:
+        print(
+            "WARNING: TANKERKOENIG_API_KEY not configured. "
+            "Realtime prices unavailable, using historical data as fallback."
+        )
+        _TK_WARNING_SHOWN = True
+    
+    return False
+
+
 # Google API Key Loading
-try:
-    if _ROUTE_FUNCTIONS_AVAILABLE:
-        GOOGLE_API_KEY = environment_check()
-    else:
-        GOOGLE_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY") or ""
-except Exception:
-    GOOGLE_API_KEY = ""
+if _ROUTE_FUNCTIONS_AVAILABLE:
+    GOOGLE_API_KEY = environment_check()  # raises ConfigError if missing
+else:
+    GOOGLE_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY") or ""
 
 
 # ==========================================
@@ -244,7 +268,7 @@ def load_all_stations_from_supabase() -> pd.DataFrame:
         and _CACHE_TIMESTAMP
         and (time.time() - _CACHE_TIMESTAMP < CACHE_DURATION_SEC)
     ):
-        print(f"âœ“ Using cached stations ({len(_CACHED_STATIONS_DF):,} records)")
+        print(f"- Using cached stations ({len(_CACHED_STATIONS_DF):,} records)")
         return _CACHED_STATIONS_DF
 
     # Load from DB
@@ -286,7 +310,7 @@ def load_all_stations_from_supabase() -> pd.DataFrame:
     # Update Cache
     _CACHED_STATIONS_DF = df
     _CACHE_TIMESTAMP = time.time()
-    print(f"âœ“ Loaded {len(df):,} valid stations.")
+    print(f"- Loaded {len(df):,} valid stations.")
     return df
 
 
@@ -295,7 +319,7 @@ def get_historical_prices_batch(
     fallback_days: int = 3
 ) -> Dict[str, FuelPriceDict]:
     """
-    Fetches prices for multiple stations at a specific date in ONE query.
+    Fetches prices for multiple stations at a specific date in one query.
     Uses Supabase `.in_()` filtering for efficiency.
     
     FORWARD-FILL LOGIC:
@@ -310,7 +334,7 @@ def get_historical_prices_batch(
     - If no data: try 3 days ago
     - Take the most recent price found
     
-    NOTE: We search the WHOLE DAY and take the latest price, not just up to target_cell.
+    NOTE: We search the whole day and take the latest price, not just up to target_cell.
     This ensures we get data even when ETA is shortly after midnight.
     """
     from supabase import create_client  # type: ignore
@@ -370,8 +394,14 @@ def get_historical_prices_batch(
 def get_realtime_prices_batch(station_uuids: List[str]) -> Dict[str, Dict[str, Any]]:
     """
     Fetches live prices from Tankerkönig API (rate-limited and batched).
+    
+    Returns empty dict if API key is not configured (with warning logged once).
     """
-    if not station_uuids or not TANKERKOENIG_API_KEY:
+    if not station_uuids:
+        return {}
+    
+    # Check if API is available (logs warning once if not)
+    if not check_tankerkoenig_api_available():
         return {}
 
     results = {}
@@ -425,7 +455,7 @@ def integrate_route_with_prices(
     1. Match Route Points -> Tankerkönig UUIDs.
     2. Deduplicate Matches (multiple route points -> single station).
     3. Fetch Historical Prices (Parallel DB Queries for lags).
-    4. Fetch Realtime Prices (Optional).
+    4. Fetch Realtime Prices.
     5. Construct Final Feature Vectors.
 
     Args:
@@ -655,7 +685,7 @@ def get_fuel_prices_for_route(
         "filter_closed_at_eta": bool(filter_closed_at_eta),
         "closed_at_eta_filtered_n": int(closed_at_eta_filtered_n),
         
-        # Exact coordinates used (from geocoding) – authoritative for Page 02
+        # Exact coordinates used (from geocoding) - authoritative for Page 02
         "start_coord": {"lat": float(s_lat), "lon": float(s_lon)},
         "end_coord": {"lat": float(e_lat), "lon": float(e_lon)},
     }
