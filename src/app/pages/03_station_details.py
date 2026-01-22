@@ -1,10 +1,36 @@
 """
+MODULE: Station Details & Analysis (Page 03) — Per-Station Deep Dive
+-------------------------------------------------------------------
 
-Station Details & Analysis (Page 03)
+Primary responsibility:
+- Provides a detailed drill-down for a selected station: identity, address, opening hours,
+  predicted vs baseline prices, and historical price analytics.
 
-Displays detailed information and historical price analysis for a selected fuel station.
-This page is accessed from the Trip Planner (Page 02) or Station Explorer (Page 04).
+Entry points (navigation):
+- Accessed from:
+  - Trip Planner / Analytics flow (Pages 01–02) for a station on a route run
+  - Station Explorer (Page 04) for a station found near a location (non-route context)
 
+Key inputs:
+- Selection context stored in session state (e.g., selected station UUID / station payload)
+- Run context from `st.session_state["last_run"]` when opened from a route run
+- Fuel code and other parameters (for consistent comparison and plotting)
+
+Core outputs (UI):
+- Station header block (brand/name, address, key facts)
+- Opening hours display (prefers Google weekday descriptions; falls back to Tankerkönig detail)
+- Historical price chart(s) and hourly statistics (cached for performance)
+- Comparison logic against a selected baseline station / route-worst reference (where applicable)
+
+Performance considerations:
+- Uses `st.cache_data` wrappers around historical-data retrieval and hourly statistics computation
+  to avoid repeated database/API work on reruns and tab switches.
+
+Key dependencies:
+- `src.integration.historical_data` (history + stats)
+- `services.session_store` (restore/persist)
+- `ui.sidebar` (station selector + help blocks)
+- Optional Tankerkönig detail API for opening-times enrichment when coming from Explorer
 """
 
 from __future__ import annotations

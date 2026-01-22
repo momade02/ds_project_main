@@ -1,4 +1,23 @@
-# Exclude Git history (crucial for smaller images)
+# ==============================================================================
+# .dockerignore — Container Build Context Hygiene
+# ==============================================================================
+#
+# Purpose
+# - Reduces Docker build context size and prevents leaking development-only artifacts into the image.
+# - Improves build performance and helps keep final images smaller and more reproducible.
+#
+# What is excluded 
+# - Git metadata and repo housekeeping:
+#   .git, .gitignore (not needed at runtime; reduces context size)
+# - Local Python environment and caches:
+#   venv/, __pycache__/, *.pyc (platform-specific, not portable, unnecessary)
+# - Local OS junk:
+#   .DS_Store, Thumbs.db
+# - Docker build recipe files:
+#   Dockerfile, .dockerignore (the container does not need its own build instructions at runtime)
+# ==============================================================================
+
+# Exclude Git history 
 .git
 .gitignore
 
@@ -11,6 +30,6 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Exclude your Docker files (the container doesn't need its own recipe)
+# Exclude your Docker files
 Dockerfile
 .dockerignore

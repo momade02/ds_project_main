@@ -1,20 +1,58 @@
 """
-Module: Google Maps Integration for Route and Fuel Station Data.
+Google Maps route + station discovery (geospatial acquisition layer).
 
-Description:
-    This module acts as the interface to the Google Maps Platform APIs (Directions,
-    Geocoding, and Places). It is responsible for:
-    1. Geocoding human-readable addresses into coordinates.
-    2. Calculating driving routes between points to get geometry and metrics.
-    3. Identifying gas stations along a specific route corridor using the
-       Places API "Search Along Route" feature.
-    4. calculating detour metrics (extra time and distance) required to visit
-       those stations.
+Purpose
+-------
+This module encapsulates all direct interactions with the Google Maps Platform
+needed by the project’s routing pipeline. It converts user-provided locations
+into coordinates, retrieves a baseline driving route (geometry + distance/time),
+and discovers candidate fuel stations along that route corridor.
 
-Usage:
-    The functions defined here are intended to be imported by higher-level
-    application logic (e.g., integration pipelines or UI handlers).
-    Running this file directly executes a local test scenario.
+Key responsibilities
+--------------------
+1) Geocoding
+   - Convert structured address components into latitude/longitude.
+
+2) Baseline routing (Directions API)
+   - Retrieve the route polyline and route-level metrics (distance, duration).
+   - Provide helper utilities to decode step polylines into a unified
+     [lon, lat] coordinate path used downstream.
+
+3) Station search along route (Places API v1)
+   - Use Places “searchText” with `searchAlongRouteParameters` to find stations
+     along the route corridor.
+   - Handle pagination and request field masks to minimize response payload.
+   - Use the returned `routingSummaries` legs to compute detour distance/time
+     for visiting each station relative to the baseline route.
+
+4) Opening-hours evaluation (optional)
+   - Interpret Places `regularOpeningHours` (weekly schedule) and
+     `utcOffsetMinutes` to estimate whether a place is open at the station ETA.
+
+Inputs / outputs
+----------------
+- Primary route geometry format: list[[lon, lat], ...] (GeoJSON-like).
+- Station objects returned by the corridor search include:
+  - name, coordinates
+  - detour_distance_km, detour_duration_min (relative to baseline)
+  - ETA timestamp for arrival at the station (based on departure time + routing)
+  - opening-hours payloads (when returned by Places)
+
+Configuration
+-------------
+- Requires GOOGLE_MAPS_API_KEY (validated via `environment_check()`).
+- Local time normalization uses Europe/Berlin for “now”/departure-time handling.
+
+Usage
+-----
+This module is imported by the integration layer to acquire candidate stations
+and associated route/ETA features. When executed directly, it can run a local
+test scenario for manual validation of API connectivity and parsing.
+
+Notes
+-----
+- API calls are rate/latency sensitive; field masks and geometry downsampling
+  are used to stay within Places API constraints for long routes.
 """
 
 import os

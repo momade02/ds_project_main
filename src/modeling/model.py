@@ -1,20 +1,38 @@
 """
-Module: Prediction Model Loader.
+Model loading utilities for fuel price forecasting (ARDL joblib artifacts).
 
-Description:
-    This module handles the lifecycle of Machine Learning models used for fuel price prediction.
-    It isolates the file system details and serialization logic from the application.
+Purpose
+-------
+This module isolates filesystem and serialization concerns for the project’s
+forecasting models. It provides a small, stable API to resolve and load the
+correct model artifact for a given fuel type and forecast horizon.
 
-    Supported Models (ARDL - Autoregressive Distributed Lag):
-    - Horizon 0 (h0): Daily-only features (used when no intraday price is available).
-    - Horizon 1-4 (h1-h4): Intraday models (used for 30min-2hr lookaheads).
+Model family
+------------
+- Fuel types: e5, e10, diesel
+- Horizons:
+  - h0 (daily-only): used when intraday lookahead is not applicable
+  - h1–h4 (intraday): correspond to 30–120 minute lookaheads (in 30-min steps)
 
-    Storage:
-    - Path: `src/modeling/models/`
-    - Format: `.joblib` serialization (Scikit-Learn).
+Artifact conventions
+--------------------
+- Storage directory: src/modeling/models/
+- File naming:
+  - Daily model: fuel_price_model_ARDL_<fuel>_h0_daily.joblib
+  - Intraday:     fuel_price_model_ARDL_<fuel>_h<h>_<h>cell.joblib
 
-Usage:
-    Called by `predict.py` to acquire model instances.
+Implementation details
+----------------------
+- Horizon values are clipped to the supported range [0, 4].
+- Models are cached with `lru_cache` so each artifact is only loaded once per
+  process lifetime.
+- Errors are wrapped into project-level exceptions to provide actionable UI
+  messages (missing or incompatible model artifacts).
+
+Usage
+-----
+Imported by the prediction helpers (predict.py) to load the proper model for each
+station’s horizon decision.
 """
 
 from __future__ import annotations

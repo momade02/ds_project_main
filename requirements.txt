@@ -1,3 +1,26 @@
+# ==============================================================================
+# requirements.txt — Python Dependencies for Tankstoppfinder (Streamlit UI + Pipeline)
+# ==============================================================================
+#
+# Purpose
+# - Defines the Python runtime dependencies required to build and run the application inside Docker
+#   (and locally), including routing/integration, analytics/model utilities, UI, and persistence.
+#
+# Dependency groups
+# - Geospatial / routing / geometry:
+#   geopy, googlemaps, polyline, pyproj, shapely
+# - Core data & numerics:
+#   numpy, pandas, scipy
+# - ML / forecasting utilities:
+#   scikit-learn, joblib
+# - App / UI / visualization:
+#   streamlit, plotly, pydeck
+# - Storage / backend integration:
+#   redis, hiredis, supabase
+# - Config / networking:
+#   python-dotenv, requests, certifi
+# ==============================================================================
+
 # --- Geospatial / routing / geometry ---
 geopy  # Geocoding + distance calculations (e.g., address -> lat/lon; distance heuristics)
 googlemaps  # Google Maps API client (directions, routing, ETA, geocoding as used in your pipeline)

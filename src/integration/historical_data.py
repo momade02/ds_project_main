@@ -1,22 +1,49 @@
 """
-Module: Historical Data Access Layer.
+Historical fuel price data access (Supabase DAO) + analytics helpers.
 
-Description:
-    This module serves as the Data Access Object (DAO) for historical fuel price information.
-    It interfaces with the Supabase 'prices' and 'stations' tables.
+Purpose
+-------
+This module is the project’s data-access layer for historical station prices and
+station metadata that is used for analysis and visualization (primarily in the
+Station Details UI). It queries Supabase tables and provides cleaned, typed
+Pandas DataFrames and derived statistics.
 
-    Capabilities:
-    1. Time-Series Retrieval: Fetches 14-day price windows for visualization.
-    2. Statistical Aggregation: Computes hourly averages to identify optimal refueling times.
-    3. Metadata Parsing: Decodes complex JSON bitmasks for opening hours.
+Key responsibilities
+--------------------
+1) Station price history retrieval
+   - Fetch a rolling window (default: 14 days) of time-series prices for one
+     station and one fuel type.
+   - Normalize schema to a stable output: ['date', 'price', 'price_change'] and
+     enforce numeric types.
 
-    Critical Implementation Details:
-    - Dates are handled in local German time (as stored in DB) to avoid TZ confusion.
-    - Pandas 2.x compatibility is enforced via `utc=False`.
-    - Caching (`lru_cache`) is applied to static station metadata.
+2) Hour-of-day price statistics
+   - Aggregate historical prices into hourly buckets (0–23) to show typical
+     intraday patterns.
+   - Use forward-fill resampling so the “effective price” is represented even
+     when changes are sparse (reduces misleading sparsity in charts).
 
-Usage:
-    Used primarily by the `station_details.py` page to render charts and info cards.
+3) Extremes and outlier handling
+   - Identify cheapest/most expensive hours from hourly aggregates.
+   - Provide optional outlier filtering to remove obvious spikes/drops caused by
+     API glitches or data issues.
+
+4) Station metadata caching
+   - Cache static station metadata lookups (e.g., opening-hours payloads) using
+     `lru_cache` to minimize repeated database calls.
+
+Time / timezone conventions
+---------------------------
+- Database timestamps are treated as “local wall-clock time” (naive timestamps),
+  matching how the project stores German local time in Supabase.
+- Pandas parsing is explicitly configured to avoid unintended UTC conversions.
+
+Usage
+-----
+Used by UI pages (notably station_details) to render:
+- recent price curves,
+- hour-of-day average/min/max charts,
+- derived “best time to refuel” indicators,
+- decoded opening-hours information (where applicable).
 """
 
 import json

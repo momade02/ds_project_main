@@ -1,3 +1,38 @@
+"""
+MODULE: UI Formatting — Stable, Null-Safe Presentation Helpers
+--------------------------------------------------------------
+
+Purpose
+- Centralizes formatting and labeling logic used across Streamlit pages so that UI output is
+  consistent, predictable, and robust to missing fields in station/run payloads.
+- Provides backward-compatible helper aliases to avoid breaking existing call sites.
+
+What this module does
+- Fuel label mapping:
+  - Maps UI-facing labels (e.g., "E5", "E10", "Diesel") to internal fuel codes used by the pipeline.
+- Station identifiers:
+  - Extracts a stable station UUID from dict-like objects, objects with `.get`, attribute-based objects,
+    or raw UUID strings (`station_uuid`).
+- Null-safe string handling:
+  - Converts arbitrary values to display-safe text with a defined fallback (default "—") (`safe_text`).
+- Formatting primitives:
+  - Formats numeric values as domain-specific strings:
+    - `fmt_price`: 3 decimals + "€/L"
+    - `fmt_eur`: 2 decimals + "€"
+    - `fmt_km`: 2 decimals + "km"
+    - `fmt_min`: 1 decimal + "min"
+    - `fmt_liters`: 1 decimal + "L"
+- Shared explanatory UI copy:
+  - Provides a single point of truth for describing the price basis shown in UI (`describe_price_basis`).
+- Page 03 helper:
+  - Implements a “smart price alert” heuristic based on hourly historical averages
+    (`check_smart_price_alert`).
+
+Design constraints
+- Must remain side-effect free (pure helper module) and safe to import everywhere.
+- Must preserve compatibility via the exported underscore-prefixed aliases (e.g., `_fmt_price`).
+"""
+
 # src/app/ui/formatting.py
 from __future__ import annotations
 

@@ -1,4 +1,48 @@
-# src/app/services/session_store.py
+"""
+MODULE: Session Store Service — Redis-Backed Persistence for Streamlit Session State
+----------------------------------------------------------------------------------
+
+Purpose
+- Persists a controlled subset of `st.session_state` to Redis to ensure continuity across:
+  - hard refreshes (F5 / browser refresh)
+  - page navigation (multi-page Streamlit apps)
+  - Streamlit reruns (widget interactions triggering script reruns)
+
+What this module does
+- Session identity:
+  - Creates and maintains a stable session id (`sid`) stored both in `st.session_state` and as a URL
+    query param, allowing refresh to restore the same persisted snapshot.
+- Contract-driven persistence:
+  - Loads a persistence contract from `config.settings` (best-effort):
+    - `PERSISTED_STATE_VERSION`, `PERSISTED_STATE_KEYS`, `PERSISTED_STATE_DEFAULTS`
+  - Ensures defaults exist in session state before restore/persist operations.
+- Redis connectivity:
+  - Builds a cached `redis.Redis` client from `config.settings.get_redis_config()` and optional tuning
+    settings (timeouts, TLS verification flags, CA bundle via certifi).
+  - Normalizes key prefix and composes per-session keys (e.g., `tsf:session:<sid>`).
+- Snapshot encoding:
+  - Serializes the contract subset to JSON and conditionally zlib-compresses large payloads.
+  - Stores an envelope containing version, timestamp, hash, compression flag, and the state subset.
+- Restore guard (critical):
+  - Restores from Redis at most once per Streamlit session per `sid` to avoid overwriting values that were
+    just updated by user interactions (prevents “widget freezing” on reruns).
+- Change detection:
+  - Computes a stable hash of the persisted subset to avoid redundant writes; `force=True` bypasses this.
+
+Public API (typical usage)
+- `init_session_context()`:
+  Ensure `sid` exists in both session_state and URL query param.
+- `restore_persisted_state(overwrite_existing=True)`:
+  Restore contract keys from Redis snapshot into session_state (best-effort).
+- `maybe_persist_state(force=False)`:
+  Persist contract keys when changed (call once near end of each page run).
+
+Design constraints
+- Must never persist secrets unless explicitly included in the contract (contract should exclude secrets).
+- Must fail gracefully when Redis is not configured (local dev) or unavailable.
+- Must be safe to call repeatedly and remain idempotent where applicable.
+"""
+
 from __future__ import annotations
 
 import json

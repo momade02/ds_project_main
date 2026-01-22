@@ -1,34 +1,32 @@
 """
-# src/app/pages/04_station_explorer.py
+MODULE: Station Explorer (Page 04) — Location-Based Station Search
+------------------------------------------------------------------
 
-MODULE: Station Explorer (Page 04)
-----------------------------------
-This module renders the "Explorer" interface, allowing users to search, filter, and 
-compare fuel stations around a geographic center (City/Address) rather than a route.
+Primary responsibility:
+- Implements a non-route (location-centered) search workflow:
+  user selects a center location + radius + fuel type → fetch stations nearby → rank and visualize.
 
-FILE STRUCTURE & COMPONENT OVERVIEW:
+Key inputs (sidebar / Action tab):
+- Center location (city/address), radius, fuel type
+- Optional filters (brand selection, open-only toggle, etc., depending on configured UI)
 
-1.  **Bootstrap & Configuration**:
-    - Sets up system paths (`PROJECT_ROOT`) to allow relative imports.
-    - Loads environment variables and initializes session state.
+Core outputs (UI):
+- Summary metrics (e.g., stations found, open count)
+- Map visualization (Mapbox) distinguishing the “best” station vs standard stations
+- Ranked selector for quick inspection
+- Results table with standardized address formatting
 
-2.  **Helper Functions**:
-    - `_get_station_display_name` / `_format_station_address`: Standardized formatting for UI consistency.
-    - `_pick_cheapest_station`: Logic to rank stations by price (and distance as tie-breaker).
-    - `_build_results_table`: Formats raw API data into a Pandas DataFrame for the bottom view.
+State/persistence:
+- Stores explorer results in `st.session_state["explorer_results"]` and a center coordinate payload,
+  enabling stable rendering across reruns and page switches.
+- Uses Redis-backed persistence (restore/persist) while preserving widget-managed keys
+  to prevent clobbering user clicks.
 
-3.  **Main Application Logic (`main`)**:
-    - **State Management**: Persists search results (`explorer_results`) and map configuration to handle Streamlit re-runs.
-    - **Sidebar Integration**: Renders the input form (Location, Radius, Fuel Type) inside the "Action" tab.
-    - **API Integration**: Calls `search_stations_nearby_list_api` based on user inputs.
-    - **Visualizations**:
-      - *Metrics*: Summary cards (Stations found, Open count).
-      - *Map*: Interactive Mapbox GL view distinguishing "Best" (cheapest) vs. "Standard" stations.
-      - *Selector*: A ranked dropdown to quickly inspect specific stations.
-      - *Table*: Detailed list view of all search results.
-
-DATA FLOW:
-    User Input (Sidebar) -> Params Hash Check -> API Call -> Session State Storage -> Render UI
+Key dependencies:
+- `src.app.services.station_explorer.search_stations_nearby_list_api` (data acquisition)
+- `ui.maps` (Mapbox rendering helpers)
+- `ui.sidebar` (shell + explorer help/settings blocks)
+- `services.session_store` (restore/persist)
 """
 
 # src/app/pages/04_station_explorer.py

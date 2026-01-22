@@ -1,4 +1,46 @@
-# src/app/services/station_explorer.py
+"""
+MODULE: Station Explorer Service — Location-Centered Station Search for Page 04
+------------------------------------------------------------------------------
+
+Purpose
+- Implements the data acquisition and normalization layer for the Station Explorer workflow:
+  user provides a center location + radius + fuel type → service returns nearby stations with
+  optional realtime prices and filter/sort semantics compatible with the UI.
+
+What this module does
+- Input contract:
+  - Defines `StationExplorerInputs` capturing location query, fuel code, radius, UI result cap (`limit`),
+    realtime toggle, open-only toggle, and an optional brand filter list.
+- Geocoding:
+  - Resolves the user’s free-form location query into a center coordinate using integration helpers
+    (Google structured geocode via the integration module).
+- Two retrieval strategies (same output shape):
+  1) `search_stations_nearby(...)` (Supabase-based):
+     - Loads a station master list (cached in integration), computes haversine distance, filters by radius,
+       optionally enriches via batched realtime requests, then sorts for UI.
+  2) `search_stations_nearby_list_api(...)` (Tankerkönig list.php):
+     - Uses Tankerkönig’s list endpoint to fetch stations + realtime prices + isOpen in one call,
+       applies filtering/sorting locally, then enforces `limit` *after* filtering/sorting.
+- Filtering & sorting semantics:
+  - `only_open=True` => station must be open AND have a valid current price for the selected fuel.
+  - Optional brand filtering uses canonical-to-alias normalization to match known naming variants.
+  - Sorting defaults to “cheapest current price for selected fuel, then distance”; missing prices go last.
+- Explorer highlighting:
+  - `pick_best_station_uuid(...)` selects the station to highlight on the map (cheapest price if available,
+    otherwise nearest station).
+
+Outputs
+- Dict payload compatible with Page 04 session state:
+  - `center`: {lat, lon, label, radius_km}
+  - `stations`: List[station_dict] with normalized keys used by maps/UI (lat/lon, distance_km,
+    `price_current_<fuel>`, `is_open`, identity fields).
+
+Design constraints
+- Must be best-effort and robust to partial API responses (normalize prices, tolerate missing fields).
+- Must keep output key names aligned with the map and table renderers.
+- External requests must be bounded with timeouts and should degrade gracefully to “no realtime” behavior.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

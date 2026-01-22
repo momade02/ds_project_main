@@ -1,4 +1,46 @@
-# src/app/services/route_recommender.py
+"""
+MODULE: Route Recommender Service — End-to-End Orchestration for Page 01 Runs
+----------------------------------------------------------------------------
+
+Purpose
+- Provides the single, UI-facing entry point for executing a full “Trip Planner” run from Page 01.
+- Defines the canonical input contract (`RouteRunInputs`) and returns a `last_run` payload in the
+  exact structure expected by downstream pages (Analytics / Station Details).
+
+What this module does
+- Input contract:
+  - Defines `RouteRunInputs` as a typed container for all parameters collected in `streamlit_app.py`,
+    including route endpoints, fuel selection, economics toggles, and optional constraints.
+- Integration step:
+  - Calls `src.integration.route_tankerkoenig_integration.get_fuel_prices_for_route(...)` to
+    fetch route geometry and candidate stations (optionally with realtime enrichment).
+- Ranking / decision step:
+  - Calls `src.decision.recommender.rank_stations_by_predicted_price(...)` to apply ranking logic
+    (and, when enabled, economics parameters) and to populate a filter/audit log.
+- Payload assembly:
+  - Constructs and returns a serializable `last_run` dict containing:
+    - raw stations, ranked stations, best station (+ stable best UUID)
+    - route coordinates and route metadata
+    - user-selected parameters and diagnostics (debug/economics flags)
+    - filter/audit log (for transparency on Page 02)
+
+Inputs
+- `inputs: RouteRunInputs`
+- Optional `integration_kwargs`, `ranking_kwargs`, `recommendation_kwargs` for fine-grained overrides.
+
+Outputs
+- `Dict[str, Any]` compatible with `st.session_state["last_run"]`:
+  keys include `stations`, `ranked`, `best_station`, `best_uuid`, `route_info`, `route_coords`,
+  `fuel_code`, `litres_to_refuel`, `use_economics`, `debug_mode`, `filter_log`, and distance bounds.
+
+Error handling
+- Re-raises `AppError` for user-facing errors; unexpected exceptions bubble up to page-level handlers.
+
+Design constraints
+- This module must remain UI-facing and return only serializable payloads suitable for session persistence
+  (Redis) and cross-page consumption.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

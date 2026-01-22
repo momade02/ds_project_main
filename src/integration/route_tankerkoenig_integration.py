@@ -1,25 +1,58 @@
 """
-Module: Route â†” Fuel Price Integration Pipeline.
+Route ↔ Tankerkönig integration layer (station enrichment + feature assembly).
 
-Description:
-    This module bridges the Geospatial domain (Google Maps Routes) with the
-    Economic domain (Tankerkönig Fuel Prices).
+Purpose
+-------
+This module bridges the geospatial routing domain (Google route geometry + ETAs)
+with the fuel-price domain (Tankerkönig station identifiers + Supabase price
+history). It transforms a route corridor into a list of model-ready station
+feature dictionaries.
 
-    It performs the following high-level transformation:
-    [Route Coordinates & ETAs]
-           ↔
-    [Match to Tankerkönig Stations (Spatial KD-Tree)]
-           ↔
-    [Enrich with Historical Prices (Supabase Batch Queries)]
-           ↔
-    [Enrich with Real-time Prices (Optional API Call)]
-           ↔
-    [Feature Engineering (Time Cells, Lags)]
-           ↔
-    [Model-Ready Feature Vectors]
+End-to-end transformation
+-------------------------
+[Route coordinates + baseline metrics]
+    → Discover corridor stations (Google Places, via data_pipeline.route_stations)
+    → Match candidates to Tankerkönig station UUIDs (spatial KD-tree)
+    → Enrich with station metadata (brand, address, opening-hours JSON)
+    → Enrich with historical prices from Supabase (daily lags; forward-fill fallback)
+    → Optionally enrich with current real-time prices (Tankerkönig API)
+    → Compute time-cell / horizon-aligned features
+    → Emit station dictionaries consumable by the prediction + decision layers
 
-Usage:
-    The primary entrypoint is `get_fuel_prices_for_route(...)`.
+Key responsibilities
+--------------------
+1) Time features
+   - Map ETA timestamps to 30-minute “time cells” (0–47) and derive cell windows
+     used for lag feature selection.
+
+2) Spatial matching
+   - Build/caches a KD-tree index over the Supabase station master table and
+     match candidate coordinates progressively within meter thresholds.
+
+3) Data access and caching
+   - Load the full station master list from Supabase with TTL caching.
+   - Retrieve historical prices in batch for many stations, with a “lookback
+     fallback” to handle sparse station updates.
+
+4) Optional real-time price retrieval
+   - Call Tankerkönig endpoints in controlled batches (rate-limited) to fetch
+     current prices where needed.
+
+5) Feature engineering contract
+   - Assemble keys required by the modeling layer, including per-fuel daily lags
+     (1d/2d/3d/7d), current price (when available), and ETA/time-cell context.
+
+Configuration
+-------------
+- SUPABASE_URL / SUPABASE_SECRET_KEY for DB access.
+- TANKERKOENIG_API_KEY for real-time prices (optional).
+- GOOGLE_MAPS_API_KEY is used indirectly when importing route acquisition helpers.
+
+Error handling
+--------------
+This module raises project-specific exceptions (ConfigError, DataAccessError,
+DataQualityError, ExternalServiceError) to keep UI and batch jobs resilient and
+actionable in failure scenarios.
 """
 
 import logging

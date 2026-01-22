@@ -1,13 +1,36 @@
 """
-Route Analytics (Page 2)
+MODULE: Route Analytics (Page 02) — Auditability & Debugging View
+----------------------------------------------------------------
 
-Purpose:
-- Provide auditability and comparability for a single route run.
-- Explain why a station was recommended and why others were excluded.
-- Offer drill-down navigation into Station Details.
+Primary responsibility:
+- Explains and audits the most recent route run stored in `st.session_state["last_run"]`.
+- Provides interpretability of: route vs detour trade-offs, why a station was recommended,
+  and why others were excluded (constraints + filter log).
 
-Data source:
-- st.session_state["last_run"] written by src/app/streamlit_app.py
+Key inputs:
+- `st.session_state["last_run"]` (written by streamlit_app.py)
+  Expected to contain at minimum: route info, stations list, constraints/filter log, selected fuel code.
+
+Core outputs (UI):
+- Multiple analysis views (selected via sidebar buttons), typically including:
+  1) Recommended route visualization (baseline vs alternative with detour marker)
+  2) Recommended stations summary (counts, breakdowns, comparability)
+  3) Prediction algorithm view (horizon selection, spot vs model, model identifiers)
+  4) Full result tables (included vs discarded stations; diagnostic columns)
+
+Important design constraints:
+- Must not call external APIs for enrichment; relies on cached payloads from Page 01 where possible
+  (e.g., reverse-geocode cache for addresses).
+- Robust "best-effort" formatting and coercion helpers to prevent UI breaks on partial runs.
+
+State/persistence:
+- Uses Redis-backed persistence utilities to survive hard refreshes and page switches.
+- Uses a page-specific sidebar action tab to control navigation and analysis selection.
+
+Key dependencies:
+- `ui.formatting` (safe formatting helpers)
+- `ui.sidebar` (shell + action/help blocks)
+- `services.session_store` (restore/persist)
 """
 
 import sys
@@ -63,10 +86,10 @@ from services.session_store import init_session_context, restore_persisted_state
 # Helpers
 # -----------------------------
 
-# ---------------------------------------------------------------------
-# Compatibility helpers (used by Page 02 constraint/summary blocks)
-# Keep these thin wrappers so the section code stays readable.
-# ---------------------------------------------------------------------
+    # ---------------------------------------------------------------------
+    # Compatibility helpers (used by Page 02 constraint/summary blocks)
+    # Keep these thin wrappers so the section code stays readable.
+    # ---------------------------------------------------------------------
 def _format_km(x: Any) -> str:
     return _fmt_km(x)
 
