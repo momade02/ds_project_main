@@ -169,7 +169,7 @@ def get_station_price_history(
         })
 
         # Date Parsing
-        # NOTE: utc=False is critical. The DB stores '2023-01-01 12:00:00' (German time).
+        # utc=False is important here. The DB stores '2023-01-01 12:00:00' (German time).
         # We want to keep it as a naive timestamp representing that wall-clock time.
         df["date"] = pd.to_datetime(df["date"], utc=False, errors="coerce")
 
@@ -200,7 +200,7 @@ def calculate_hourly_price_stats(df: PriceHistoryDF) -> HourlyStatsDF:
     """
     Aggregates a price history DataFrame by Hour of Day (0-23).
     
-    IMPORTANT: Uses forward-fill to show the EFFECTIVE price at each hour,
+    Uses forward-fill to show the effective price at each hour,
     not just hours when prices changed. This solves the "sparse data" problem
     where stations that rarely change prices would show mostly empty charts.
 
@@ -219,7 +219,7 @@ def calculate_hourly_price_stats(df: PriceHistoryDF) -> HourlyStatsDF:
     work_df = work_df.sort_values("date").reset_index(drop=True)
     
     # Create a complete hourly time series and forward-fill prices
-    # This gives us the EFFECTIVE price at each hour, not just when prices changed
+    # This gives us the effective price at each hour, not just when prices changed
     if len(work_df) >= 2:
         try:
             # Get the date range
@@ -246,8 +246,9 @@ def calculate_hourly_price_stats(df: PriceHistoryDF) -> HourlyStatsDF:
                 "price": hourly_prices.values
             })
             
-        except Exception:
-            # If forward-fill fails, fall back to original method
+        except Exception as e:
+            # forward-fill failed, fall back to original method
+            print(f"Warning: hourly resampling failed ({e}), using raw data instead")
             work_df = df.copy()
     
     # Extract hour of day
@@ -298,82 +299,8 @@ def get_cheapest_and_most_expensive_hours(hourly_df: HourlyStatsDF) -> Dict[str,
     }
 
 
-def filter_price_outliers(df: PriceHistoryDF, method: str = "iqr") -> PriceHistoryDF:
-    """
-    Remove outliers from price history data.
-    
-    These outliers typically appear as sudden drops/spikes that immediately reverse,
-    often caused by data entry errors or API glitches.
-    
-    Args:
-        df: Price history DataFrame with 'date' and 'price' columns
-        method: "iqr" (interquartile range) or "spike" (rapid reversal detection)
-    
-    Returns:
-        Filtered DataFrame with outliers removed
-    """
-    if df is None or df.empty or len(df) < 5:
-        return df
-    
-    df_clean = df.copy()
-    
-    if method == "iqr":
-        # IQR method: remove prices outside 1.5 * IQR
-        Q1 = df_clean["price"].quantile(0.25)
-        Q3 = df_clean["price"].quantile(0.75)
-        IQR = Q3 - Q1
-        
-        # Use wider bounds (2.5 * IQR) since fuel prices can have legitimate variation
-        lower_bound = Q1 - 2.5 * IQR
-        upper_bound = Q3 + 2.5 * IQR
-        
-        df_clean = df_clean[
-            (df_clean["price"] >= lower_bound) & 
-            (df_clean["price"] <= upper_bound)
-        ]
-    
-    elif method == "spike":
-        # Spike detection: remove prices that differ significantly from neighbors
-        # and immediately revert (characteristic of data errors)
-        if len(df_clean) < 3:
-            return df_clean
-        
-        import numpy as np
-        
-        df_clean = df_clean.sort_values("date").reset_index(drop=True)
-        
-        # Calculate price changes
-        # change_in: how we arrived at this point (current - previous)
-        # change_out: how we leave this point (next - current)
-        df_clean["change_in"] = df_clean["price"].diff()
-        df_clean["change_out"] = df_clean["price"].shift(-1) - df_clean["price"]
-        
-        # A spike is when: large change in one direction, immediately followed by
-        # a similar change in the opposite direction
-        threshold = 0.05  # 5 cents minimum change to be considered a spike
-        
-        abs_in = df_clean["change_in"].abs()
-        abs_out = df_clean["change_out"].abs()
-        
-        is_spike = (
-            (abs_in > threshold) &
-            (abs_out > threshold) &
-            # Signs are opposite (spike up then down, or down then up)
-            (df_clean["change_in"] * df_clean["change_out"] < 0) &
-            # The changes are of similar magnitude (within 50%)
-            ((abs_in - abs_out).abs() < 0.5 * np.maximum(abs_in, abs_out))
-        )
-        
-        # Fill NaN values with False (first and last rows)
-        is_spike = is_spike.fillna(False)
-        
-        df_clean = df_clean[~is_spike].drop(columns=["change_in", "change_out"])
-    
-    return df_clean.reset_index(drop=True)
-
-
 # ==========================================
-# Metadata & Utils
+# Legacy Functions (kept for reference/testing)
 # ==========================================
 
 @lru_cache(maxsize=4096)
@@ -381,6 +308,10 @@ def get_station_metadata(station_uuid: StationUUID) -> Dict[str, Any]:
     """
     Fetches static station details (Name, Address, Brand).
     Cached in memory to reduce DB calls for frequently accessed stations.
+    
+    Note: This function is not used by Page 03. Station metadata is now
+    passed through from the route integration pipeline instead of being
+    fetched separately. Kept for the test harness and potential future use.
     """
     if not station_uuid:
         raise DataQualityError(
@@ -399,7 +330,6 @@ def get_station_metadata(station_uuid: StationUUID) -> Dict[str, Any]:
             .execute()
         )
     except Exception as e:
-        # FIX: Changed debug=e to details=str(e)
         raise DataAccessError(
             user_message="Failed to fetch station metadata.",
             remediation="Check database connection and try again.",
@@ -420,6 +350,10 @@ def get_station_metadata(station_uuid: StationUUID) -> Dict[str, Any]:
 def get_opening_hours_display(openingtimes_json: str) -> str:
     """
     Parses Tankerkoenig JSON bitmasks into readable strings.
+    
+    Note: This function is not used anymore by Page 03. Opening hours are now
+    fetched directly from Google Places API or Tankerkoenig detail.php
+    in the UI layer. Kept for the test harness and potential future use.
 
     Logic:
         The 'applicable_days' field is a 7-bit mask:
@@ -535,8 +469,8 @@ if __name__ == "__main__":
         else:
             print("   Insufficient data for stats.")
             
-        print("\n✓ Test Complete.")
+        print("\n[ok] Test complete.")
 
     except Exception as e:
-        print(f"\n[FAIL] Test Failed: {e}")
+        print(f"\n[error] Test Failed: {e}")
         sys.exit(1)

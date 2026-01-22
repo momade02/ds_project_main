@@ -405,6 +405,11 @@ def google_route_driving_car(
     duration_seconds = sum(
         leg.get("duration", {}).get("value", 0) for leg in route.get("legs", [])
     )
+    # validate distance and duration
+    if distance_meters <= 0:
+        raise ValueError("Route distance returned by Google Directions API is zero or negative.")
+    if duration_seconds <= 0:
+        raise ValueError("Route duration returned by Google Directions API is zero or negative.")
 
     coords_lonlat: RoutePathLonLat = decode_route_steps_lonlat(route)
 
@@ -477,7 +482,12 @@ def google_route_via_waypoint(
     total_duration_seconds = sum(
         leg.get("duration", {}).get("value", 0) for leg in route.get("legs", [])
     )
-
+    # validate distance and duration
+    if total_distance_meters <= 0:
+        raise ValueError("Via-waypoint route distance returned by Google Directions API is zero or negative.")
+    if total_duration_seconds <= 0:
+        raise ValueError("Via-waypoint route duration returned by Google Directions API is zero or negative.")
+    
     full_coords_lonlat: RoutePathLonLat = decode_route_steps_lonlat(route)
 
     return {
@@ -621,6 +631,11 @@ def google_places_fuel_along_route(
                 leg_station_to_dest.get("duration", "0s")
             )
 
+            if dist_meters_oa <= 0 or dist_meters_ad <= 0:
+                raise ValueError("Invalid detour distances returned by Places API.")
+            if duration_seconds_oa <= 0 or duration_seconds_ad <= 0:
+                raise ValueError("Invalid detour durations returned by Places API.")
+
             # Total metrics for the route passing through the station (O -> A -> D)
             total_dist_meters_oad = dist_meters_oa + dist_meters_ad
             total_duration_seconds_oad = duration_seconds_oa + duration_seconds_ad
@@ -639,8 +654,8 @@ def google_places_fuel_along_route(
 
             # Calculate progression along route (fraction 0.0 to 1.0) based on distance to station
             fraction_of_route = 0.0
-            if original_distance_km > 0:
-                fraction_of_route = (dist_meters_oa / 1000.0) / original_distance_km
+            
+            fraction_of_route = (dist_meters_oa / 1000.0) / original_distance_km
 
             # Extract opening hours data
             opening_hours_data = place.get("regularOpeningHours", {})
@@ -658,7 +673,6 @@ def google_places_fuel_along_route(
                 "lon": lon,
                 "detour_distance_km": detour_distance_km,
                 "detour_duration_min": detour_duration_min,
-                # Distance from origin to station is useful for sorting
                 "distance_along_m": dist_meters_oa,
                 "fraction_of_route": fraction_of_route,
                 "eta": eta_at_station.isoformat(),
