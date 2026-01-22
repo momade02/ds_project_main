@@ -478,7 +478,7 @@ def _display_best_station(
 
     # Distance along route (meters) – correct key + avoid falsy 0 being dropped
     _dist_candidates = [
-        "distance_along_m",          # <-- this is what your pipeline/presenters uses
+        "distance_along_m",     
         "distance_along_route_m",
         "distance_m_along_route",
         "dist_m_along_route",
