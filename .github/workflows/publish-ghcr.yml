@@ -1,3 +1,39 @@
+# ==============================================================================
+# WORKFLOW: publish-ghcr.yml — Build & Publish Streamlit Container Image to GHCR
+# ==============================================================================
+#
+# Purpose
+# - Builds the Docker image for the Tankstoppfinder Streamlit UI and publishes it to GitHub Container
+#   Registry (GHCR), so Azure Container Apps can pull and run the latest revision.
+#
+# Deployment context (Azure Container Apps)
+# - Container App: "tankstoppfinder-ui" (Sweden Central), configured to run the image from:
+#     ghcr.io/<org-or-user>/tankstoppfinder:<tag>
+# - Runtime command in Azure is effectively:
+#     streamlit run src/app/streamlit_app.py --server.address=0.0.0.0 --server.port=8501
+#   (either via Docker CMD or Azure "Command/Arguments override"; port 8501 is exposed).
+# - Runtime configuration is provided via Azure Container App environment variables and secrets:
+#   Streamlit server flags, Mapbox token, Tankerkönig API key, Google API key(s), Supabase URL/key,
+#   and Redis connection settings (host/port/SSL/DB/TTL/key-prefix; password is referenced as a secret).
+#
+# Container build assumptions (Dockerfile / requirements)
+# - Base image: python:3.11-slim
+# - Installs minimal build tools (build-essential) and installs Python dependencies from requirements.txt.
+# - Copies application sources into /app and exposes port 8501.
+# - requirements.txt includes routing/geometry deps (geopy/googlemaps/polyline/pyproj/shapely),
+#   core numerics (numpy/pandas/scipy), ML utilities (scikit-learn/joblib), UI (streamlit/plotly/pydeck),
+#   storage/integration (redis/hiredis/supabase/requests), and TLS stability (certifi).
+# - .dockerignore excludes git history, local venv/cache, and OS junk to keep images small.
+#
+# High-level workflow flow
+# 1) Trigger on push / tag / manual dispatch (as configured below).
+# 2) Checkout repository and set up Docker Buildx.
+# 3) Authenticate to GHCR (requires `packages: write` permission).
+# 4) Build the image and push to GHCR using a deterministic tag scheme:
+#    - immutable tag (git SHA)
+# ==============================================================================
+
+
 name: Publish container to GHCR
 
 on:

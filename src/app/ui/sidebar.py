@@ -1,4 +1,52 @@
-# src/app/ui/sidebar.py
+"""
+MODULE: Sidebar — Unified Sidebar Control Plane and Page Navigation
+------------------------------------------------------------------
+
+Purpose
+- Provides a standardized sidebar experience across the application, including:
+  - A consistent tab structure (Action / Help / Settings / Profile)
+  - Page-specific action controls (inputs, selectors, run triggers)
+  - Shared help and informational content blocks
+  - Stable session-state contracts that work with Redis persistence and Streamlit reruns
+
+What this module does
+- Sidebar state model:
+  - Defines `SidebarState` (Trip Planner / Page 01 contract) capturing route inputs, fuel selection,
+    economics settings, hard constraints, and diagnostic toggles.
+- Rendering logic (Page 01):
+  - Implements `_render_trip_planner_action()` as the canonical widget layout and key contract.
+  - Uses a widget-key indirection (`w_<key>`) and syncs values into canonical keys to prevent Streamlit
+    widget garbage-collection from deleting persisted values when switching sidebar tabs.
+- Help / Settings / Profile:
+  - Provides structured help content for:
+    - Trip Planner (general)
+    - Station Details (Page 03)
+    - Station Explorer (Page 04)
+  - Provides Settings “Quick Routes” presets that:
+    - Write canonical session keys
+    - Set one-shot run flags
+    - Force navigation back to Home
+    - Best-effort persist to Redis before switching pages
+  - Provides a Profile placeholder describing the intended CIAM-based future feature set.
+- Sidebar shells:
+  - `render_sidebar(...)` for Page 01 with a fully typed return (`SidebarState`).
+  - `render_sidebar_shell(...)` for Pages 02–04 to share the same 4-tab chrome while keeping Action
+    controls page-specific.
+- Page 03 station selector:
+  - Defines `StationSelection` and helper methods to build stable, human-friendly labels and to extract
+    key ranking fields (e.g., net savings) used for selection and comparison.
+
+Key contracts and assumptions
+- Canonical state is stored in `st.session_state` using well-known keys (e.g., `fuel_label`,
+  `litres_to_refuel`, detour constraints), compatible with `services.session_store`.
+- Non-Action tabs should not clobber the canonical keys; they read cached values to preserve behavior.
+
+Design constraints
+- Sidebar should be “UI-only”: it should not implement pipeline logic, only collect inputs and trigger
+  runs/navigation.
+- Failures in optional renderers must not break the page; sidebar rendering is best-effort where possible.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

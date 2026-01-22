@@ -1,8 +1,51 @@
 """
-Unified daily update script for Tankerkönig data.
-Downloads latest stations and prices CSVs and uploads to Supabase.
-Automatically deletes price data older than 14 days.
-Generates synthetic gap data for 00:00-07:00 coverage.
+Daily Tankerkönig → Supabase ingestion job (stations + prices).
+
+Purpose
+-------
+This script performs the project’s recurring data refresh for the Supabase
+database. It downloads the latest Tankerkönig CSV snapshots for stations and
+prices, normalizes datatypes/timestamps, and writes them into Supabase using a
+controlled batching strategy.
+
+High-level workflow
+-------------------
+1) Environment & clients
+   - Load .env configuration (SUPABASE_URL, SUPABASE_SECRET_KEY, and
+     Tankerkönig credentials).
+   - Initialize a Supabase client and configure file + console logging.
+
+2) Stations refresh (full rebuild)
+   - Download the “stations.csv” snapshot (published with a 1-day delay).
+   - Coerce coordinates to numeric and normalize optional timestamps.
+   - Delete all existing rows in `stations` and insert the fresh snapshot in
+     batches (full refresh approach).
+
+3) Prices refresh (rolling window + cleanup)
+   - Download the “prices.csv” snapshot (published with a 1-day delay).
+   - Keep timestamps in German local time semantics (stored as naive strings).
+   - Delete historical price records older than 14 days (batched hour-by-hour
+     to avoid oversized delete operations).
+   - Remove today’s synthetic gap rows (cleanup).
+   - Insert the new day’s prices in batches and report success rate.
+
+4) Synthetic gap generation (00:00–06:59 coverage)
+   - Generate synthetic price rows for tomorrow’s early-morning gap period by
+     time-matching records from the prior gap window (48h old).
+   - Mark synthetic rows with `is_synthetic = True` to enable downstream
+     auditing and cleanup.
+
+Operational notes
+-----------------
+- This file is intended to run as a batch job (manual run, cron, CI runner, etc.).
+- Deletion performance depends on indexing: the `prices.date` column should be
+  indexed to keep rolling-window deletion efficient.
+- The script logs a summary and exits non-zero if stations or prices update fails.
+
+Security
+--------
+- The Tankerkönig raw data URL embeds credentials; logging should avoid printing
+  secrets and should only output sanitized URLs.
 """
 
 import os

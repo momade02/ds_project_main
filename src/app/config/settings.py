@@ -1,4 +1,51 @@
-# src/app/config/settings.py
+"""
+MODULE: Settings & Runtime Configuration — Env/Secrets + Session-State Persistence Contract
+----------------------------------------------------------------------------------------
+
+Purpose
+- Centralizes runtime configuration for the Streamlit application, including:
+  1) a robust, deployment-friendly settings resolution mechanism (secrets/env/defaults),
+  2) the persisted session-state contract used for Redis-backed continuity across refreshes,
+  3) Azure Cache for Redis connection configuration.
+
+What this module does
+
+1) Environment loading (local dev convenience)
+- `load_env_once()` performs a best-effort load of a local `.env` file (via python-dotenv) exactly once,
+  and is intentionally a no-op in deployments where `.env` is absent or dotenv is unavailable.
+
+2) Settings resolution (production-safe precedence)
+- `get_setting(key, default=None, required=False)` resolves configuration using the precedence:
+  (1) `st.secrets` (if Streamlit is available) → (2) OS environment variables → (3) provided default.
+- If `required=True` and no value is found, it raises `ValueError` to fail fast on missing critical config.
+
+3) Session-state persistence contract (Redis snapshots)
+- Defines `SessionStateField` and the canonical persisted state list (`PERSISTED_STATE_FIELDS`), including:
+  - trip planner inputs & constraints (start/end, fuel label, detour limits, brand filter, etc.)
+  - navigation & display preferences (top nav, map style, debug mode, analytics view)
+  - cross-page selection state (selected station, comparison selections)
+  - station explorer state (location query, radius, open-only/realtime toggles, explorer results)
+  - cached run payload (`last_run`) and parameter hashes
+- Exposes:
+  - `PERSISTED_STATE_VERSION` for non-backward-compatible contract changes
+  - `PERSISTED_STATE_KEYS` and `PERSISTED_STATE_DEFAULTS` convenience structures
+  - `ensure_persisted_state_defaults(session_state)` to apply safe defaults without clobbering
+    existing values (deep-copies mutable defaults to avoid shared references)
+
+4) Redis configuration (Azure Cache for Redis)
+- Defines `RedisConfig` and `get_redis_config()`:
+  - Returns `None` when Redis is not configured (enables local runs without Redis).
+  - Otherwise builds a TLS-capable config using:
+    `REDIS_HOST`, `REDIS_PASSWORD`, `REDIS_PORT` (default 6380), `REDIS_SSL` (default true),
+    `REDIS_DB` (default 0), `REDIS_TTL_SECONDS` (default 43200), `REDIS_KEY_PREFIX` (default "tsf:session").
+- Includes `_to_bool` / `_to_int` coercion helpers for resilient env parsing.
+
+Design constraints
+- Must be safe to import from any page/service without side effects (only best-effort dotenv load).
+- Must keep the persistence contract explicit and versioned to prevent silent UX regressions.
+- Must avoid persisting secrets: the contract should contain only UX/state keys, never credentials.
+"""
+
 from __future__ import annotations
 
 import os

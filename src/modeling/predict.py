@@ -1,38 +1,56 @@
 """
-Prediction helpers for fuel price models.
+Inference helpers for fuel price predictions (per-station horizon selection).
 
-This module takes the list of station dictionaries produced by the
-integration pipeline and:
+Purpose
+-------
+This module performs per-station inference using the trained ARDL models. It
+consumes enriched station dictionaries (integration output), decides whether to
+use “spot price” vs. a forecast model, selects a horizon model (h0–h4), builds
+the feature vector using the generic training column names, and writes the
+predicted price back into each station dictionary.
 
-  1. For each station and fuel, decides which horizon model (h0..h4) to use.
-  2. Builds the feature vector with the **generic** column names the models
-     were trained on (price_lag_1d, ..., price_lag_7d, price_lag_kcell).
-  3. Calls the corresponding ARDL model.
-  4. Writes the prediction back into the station dict.
+Core logic (spot vs. forecast)
+------------------------------
+1) Spot mode (no model call)
+   - If ETA is within a short threshold (default: 10 minutes) AND a current
+     price exists, the predicted price is set to the current price.
 
-Conceptually, the decision is now **minutes-based**:
+2) Forecast mode
+   - If no current price exists, fall back to the daily model (h0).
+   - Otherwise:
+     - Compute minutes-to-arrival and map to a 30-minute-block horizon:
+         h_raw = ceil(minutes_ahead / 30)
+       - Use h1–h4 for 30–120 minute lookaheads.
+       - For horizons beyond 2 hours, fall back to h0 (daily-only).
 
-    minutes_ahead = (eta_utc - now_utc) in minutes
+Feature vector contract
+-----------------------
+Models were trained on generic column names; inference matches that schema:
+- Daily lag inputs:  price_lag_1d, price_lag_2d, price_lag_3d, price_lag_7d
+- Intraday anchor:   price_lag_<h>cell (for h1–h4 only)
 
-* If minutes_ahead <= ETA_THRESHOLD_MIN (default: 10 min) and a current
-  price is available, we simply use the current price (no model call).
+At runtime, the intraday anchor uses the station’s current price as the
+horizon-specific “anchor” feature, consistent with the existing training and
+serving contract.
 
-* If no current price is available, we fall back to the **daily-only**
-  model (h0), which uses only daily lags.
+Explainability / debugging fields
+---------------------------------
+For UI transparency, this module annotates each station with debug keys, e.g.:
+- minutes_ahead, horizon_used, used_current_price
+- exact feature columns and numeric values used for inference
+This enables “why did it predict that?” displays without recomputing features.
 
-* Otherwise (arrival genuinely in the future and current price exists),
-  we map minutes_ahead to a discrete horizon h:
+Time conventions
+----------------
+- Minutes-to-arrival is computed using UTC-normalised datetimes when ETA is
+  available.
+- A local “time cell” helper exists for fallback paths when ETA is missing.
 
-      h_raw = ceil(minutes_ahead / 30)
-      if 1 <= h_raw <= 4 -> h = h_raw  (intraday horizons)
-      if h_raw > 4       -> h = 0      (daily-only; too far ahead)
-
-For historical / demo cases without ETA we fall back to the older
-cell-based logic, using:
-
-    cells_ahead = station.time_cell - current_time_cell
-
-clipped to horizons {1,2,3,4} with >4 cells again mapped to h=0.
+Usage
+-----
+Primary entrypoints:
+- predict_for_fuel(...): predict for one fuel type and write `pred_price_<fuel>`
+- (optionally) a helper to predict for all fuels if used by the application
 """
 
 from __future__ import annotations
