@@ -1,17 +1,17 @@
-# data_pipeline — Component README
+# Data Pipeline — Component README
 
 Table of Contents
-- Purpose & quick summary
-- Where this fits in the pipeline
-- Inputs & Outputs
-- How it works (high level)
-- Automation hooks
-- Validation & quality checks
-- Error handling & troubleshooting
-- Configuration (.env.example)
-- Links
+1. [Purpose & quick summary](#1-purpose--quick-summary)
+2. [Where this fits in the pipeline](#2-where-this-fits-in-the-pipeline)
+3. [Inputs & Outputs](#3-inputs--outputs)
+4. [How it works (high level)](#4-how-it-works-high-level)
+5. [Automation hooks](#5-automation-hooks)
+6. [Validation & quality checks](#6-validation--quality-checks-data)
+7. [Error handling & troubleshooting](#6-validation--quality-checks-data)
+8. [Configuration (.env.example)](#8-configuration-envexample)
+9. [Links](#9-links)
 
-## 1) Component name & purpose
+## 1) Purpose & quick summary
 `data_pipeline` — Responsible for automated acquisition and preparation of fuel stations along a route and price data for downstream modeling and decision modules. The component is intended to produce station records and a rolling price table for all stations in Germany.
 
 For non-technical readers: This component gathers fuel station locations and price feeds, enriches them with route, detour & ETA context, and delivers datasets so the app and models can recommend where and when to refuel.
@@ -20,7 +20,7 @@ See sections below for exact inputs, outputs, validation checks, and automation 
 
 ## 2) Where this fits in the pipeline
 - Upstream: UI/Integration that provides starting point/destination; external data providers (Tankerkönig CSV releases; Google Maps APIs).  
-- Downstream: `src/modeling` (price forecasting), `src/decision` (stop optimizer), `src/app` (dashboard and route recommendations).
+- Downstream: `src/integration` (create full dataset)`src/modeling` (price forecasting), `src/decision` (stop optimizer), `src/app` (dashboard and route recommendations).
 
 ## 3) Inputs & Outputs
 
@@ -157,7 +157,7 @@ Troubleshooting steps:
 2. For API issues, record request IDs and timestamps.
 
 ## 8) Configuration (`.env.example`)
-Create a `.env` file from the example below. Do not commit secrets.
+Create a `.env` file from the example below.
 ```ini
 # .env.example — copy to .env and fill values
 SUPABASE_URL=<https://your-project.supabase.co>
@@ -171,6 +171,7 @@ GOOGLE_MAPS_API_KEY=<YOUR_GOOGLE_MAPS_API_KEY>
 
 ## 9) Links
 - Root README: [../../README.md](../../README.md)
+- Integrion: [../integration/README.md](../integration/README.md)
 - Modeling component: [../modeling/README.md](../modeling/README.md)
 - App/UI component: [../app/README.md](../app/README.md)
 
