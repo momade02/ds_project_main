@@ -5,94 +5,58 @@ Real route (Google route + Supabase + Tankerkönig pipeline)
    - Uses `get_fuel_prices_for_route(...)`.
    - Always uses real-time Tankerkönig prices.
 
-High-level pipeline in both modes
----------------------------------
+High-level pipeline:
 integration (route → stations → historical + real-time prices)
-    → ARDL models with horizon logic (in `src.modeling.predict`)
-    → decision layer (ranking & best station in `src.decision.recommender`)
-
-This UI additionally implements an economic detour decision:
-- user-specific litres to refuel,
-- car consumption (L/100 km),
-- optional value of time (€/hour),
-- hard caps for max detour distance / time,
-- net saving and break-even litres.
+    → ARDL models with horizon logic
+    → decision layer (ranking & best station)
 """
-
 from __future__ import annotations
 
-from app_errors import AppError, ConfigError, ExternalServiceError, DataAccessError, DataQualityError, PredictionError
-
-# ---------------------------------------------------------------------------
-# Make sure the project root (containing the `src` package) is on sys.path
-# ---------------------------------------------------------------------------
 import sys
-import math
-import inspect
-import html
-from pathlib import Path
-from typing import List, Dict, Any, Optional
-
-import base64
-
 import json
 import hashlib
+import time
+from pathlib import Path
+from typing import List, Dict, Any, Optional
+from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
-import pydeck as pdk
-
-from datetime import datetime
-import time
- 
+import streamlit.components.v1 as components
 
 from config.settings import load_env_once, ensure_persisted_state_defaults
+from app_errors import AppError
 
+# ---------------------------------------------------------------------------
+# Path setup
+# ---------------------------------------------------------------------------
 load_env_once()
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# ---------------------------------------------------------------------------
+# Internal Imports
+# ---------------------------------------------------------------------------
 from src.data_pipeline.route_stations import environment_check, google_route_via_waypoint
-
-from src.decision.recommender import (
-    ONROUTE_MAX_DETOUR_KM,
-    ONROUTE_MAX_DETOUR_MIN,
-)
+from src.decision.recommender import ONROUTE_MAX_DETOUR_KM, ONROUTE_MAX_DETOUR_MIN
+from services.route_recommender import RouteRunInputs, run_route_recommendation
+from services.session_store import init_session_context, restore_persisted_state, maybe_persist_state
 
 from ui.maps import (
     _calculate_zoom_for_bounds,
-    _supports_pydeck_selections,
-    _create_map_visualization,
     create_mapbox_gl_html,
 )
-
 from ui.formatting import (
     _station_uuid,
     _safe_text,
-    _fmt_price,
-    _fmt_eur,
-    _fmt_km,
-    _fmt_min,
     _format_price,
     _format_eur,
     _format_km,
-    _format_min,
     _format_liters,
-    _describe_price_basis,
-    _fuel_label_to_code,
 )
-
-from services.route_recommender import RouteRunInputs, run_route_recommendation
-
-from services.session_store import init_session_context, restore_persisted_state, maybe_persist_state
-
 from ui.styles import apply_app_css
-
 from ui.sidebar import render_sidebar
-
-import streamlit.components.v1 as components
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -765,146 +729,6 @@ def _display_best_station(
                         "Global comparison block not shown because fewer than 2 stations qualified as 'on-route' "
                         f"(thresholds km≤{ONROUTE_KM_TH:.2f}, min≤{ONROUTE_MIN_TH:.1f})."
                     )
-
-
-def _display_station_details_panel(
-    station: Dict[str, Any],
-    fuel_code: str,
-    *,
-    litres_to_refuel: Optional[float] = None,
-    debug_mode: bool = False,
-) -> None:
-    """
-    Render an extensive station details panel (triggered by map click selection).
-
-    The panel is designed for two-level interaction:
-      - hover tooltip for quick glance,
-      - click selection for deep dive.
-    """
-    pred_key = f"pred_price_{fuel_code}"
-    current_key = f"price_current_{fuel_code}"
-
-    name = station.get("tk_name") or station.get("osm_name") or "Unknown"
-    brand = station.get("brand") or ""
-
-    st.markdown("### Station details")
-    header = f"**{name}**"
-    if brand:
-        header += f"  \n{brand}"
-    st.markdown(header)
-
-    station_uuid = _station_uuid(station)
-    if station_uuid:
-        st.caption(f"Station UUID: {station_uuid}")
-
-    tab_overview, tab_prices, tab_econ, tab_timing, tab_raw = st.tabs(
-        ["Overview", "Prices", "Economics", "Timing", "Raw"]
-    )
-
-    with tab_overview:
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Current price", _fmt_price(station.get(current_key)))
-        col2.metric("Predicted price", _fmt_price(station.get(pred_key)))
-
-        detour_km = station.get("detour_distance_km") or station.get("detour_km")
-        detour_min = station.get("detour_duration_min") or station.get("detour_min")
-        col3.metric("Detour distance", _fmt_km(detour_km))
-        col4.metric("Detour time", _fmt_min(detour_min))
-
-        # Fuel-specific economics keys (consistent with the rest of the app)
-        econ_net_key = f"econ_net_saving_eur_{fuel_code}"
-        econ_baseline_key = f"econ_baseline_price_{fuel_code}"
-        econ_breakeven_key = f"econ_breakeven_liters_{fuel_code}"
-
-        if econ_net_key in station:
-            st.markdown("#### Economic summary")
-            col_a, col_b, col_c = st.columns(3)
-            col_a.metric("Baseline on-route price", _fmt_price(station.get(econ_baseline_key)))
-            col_b.metric("Net saving", _fmt_eur(station.get(econ_net_key)))
-            col_c.metric("Break-even litres", "—" if station.get(econ_breakeven_key) is None else f"{float(station.get(econ_breakeven_key)):.2f}")
-        else:
-            st.info(
-                "Economic metrics are not available for this station (missing econ_* fields). "
-                "This usually means the station was not part of the ranked/evaluated set."
-            )
-
-    with tab_prices:
-        rows = [
-            {"Metric": "Current price", "Value": _fmt_price(station.get(current_key))},
-            {"Metric": "Predicted price", "Value": _fmt_price(station.get(pred_key))},
-        ]
-        for lag in ("1d", "2d", "3d", "7d"):
-            rows.append(
-                {
-                    "Metric": f"Price lag {lag}",
-                    "Value": _fmt_price(station.get(f"price_lag_{lag}_{fuel_code}")),
-                }
-            )
-
-        df = pd.DataFrame(rows)
-        st.dataframe(df, hide_index=True, use_container_width=True)
-
-        debug_h_key = f"debug_{fuel_code}_horizon_used"
-        debug_ucp_key = f"debug_{fuel_code}_used_current_price"
-        if debug_h_key in station or debug_ucp_key in station:
-            st.markdown("#### Forecast basis")
-            st.write(
-                {
-                    "used_current_price": station.get(debug_ucp_key),
-                    "horizon_used": station.get(debug_h_key),
-                }
-            )
-
-    with tab_econ:
-        econ_net_key = f"econ_net_saving_eur_{fuel_code}"
-        econ_gross_key = f"econ_gross_saving_eur_{fuel_code}"
-        econ_detour_fuel_key = f"econ_detour_fuel_l_{fuel_code}"
-        econ_detour_fuel_cost_key = f"econ_detour_fuel_cost_eur_{fuel_code}"
-        econ_time_cost_key = f"econ_time_cost_eur_{fuel_code}"
-        econ_breakeven_key = f"econ_breakeven_liters_{fuel_code}"
-        econ_baseline_key = f"econ_baseline_price_{fuel_code}"
-
-        if econ_net_key not in station:
-            st.info("No economic metrics available for this station.")
-        else:
-            econ_rows = [
-                {"Metric": "Baseline on-route price", "Value": _fmt_price(station.get(econ_baseline_key))},
-                {"Metric": "Gross saving", "Value": _fmt_eur(station.get(econ_gross_key))},
-                {"Metric": "Detour fuel [L]", "Value": "—" if station.get(econ_detour_fuel_key) is None else f"{float(station.get(econ_detour_fuel_key)):.2f}"},
-                {"Metric": "Detour fuel cost", "Value": _fmt_eur(station.get(econ_detour_fuel_cost_key))},
-                {"Metric": "Time cost", "Value": _fmt_eur(station.get(econ_time_cost_key))},
-                {"Metric": "Net saving", "Value": _fmt_eur(station.get(econ_net_key))},
-                {"Metric": "Break-even litres", "Value": "—" if station.get(econ_breakeven_key) is None else f"{float(station.get(econ_breakeven_key)):.2f}"},
-            ]
-            st.dataframe(pd.DataFrame(econ_rows), hide_index=True, use_container_width=True)
-
-            if litres_to_refuel is not None:
-                st.caption(f"Economics computed assuming refuel amount: {litres_to_refuel:.1f} L")
-
-    with tab_timing:
-        eta = station.get("eta")
-        st.write({"eta_raw": eta})
-
-        timing_fields = [
-            f"debug_{fuel_code}_current_time_cell",
-            f"debug_{fuel_code}_cells_ahead_raw",
-            f"debug_{fuel_code}_minutes_ahead",
-            f"debug_{fuel_code}_minutes_to_arrival",
-            f"debug_{fuel_code}_eta_utc",
-            f"debug_{fuel_code}_horizon_used",
-            f"debug_{fuel_code}_used_current_price",
-        ]
-        timing_payload = {k: station.get(k) for k in timing_fields if k in station}
-        if timing_payload:
-            st.write(timing_payload)
-        else:
-            st.info("No timing/debug metadata available for this station.")
-
-    with tab_raw:
-        if debug_mode:
-            st.json(station)
-        else:
-            st.info("Enable 'Debug mode' in the sidebar to see the full raw station payload.")
 
 
 BRAND_FILTER_ALIASES: dict[str, list[str]] = {
@@ -1598,29 +1422,6 @@ def main() -> None:
 
         except Exception as e:
             st.warning(f"Could not display map: {e}")
-
-    # Two CTAs only: Route Analytics + Station Details
-    # Station Details opens the selected station (if any), otherwise the recommended station.
-    selected_uuid = st.session_state.get("selected_station_uuid")
-
-    # Resolve station object for Station Details action
-    station_for_details = None
-    if selected_uuid:
-        uuid_to_station: Dict[str, Dict[str, Any]] = {}
-        for s in ranked:
-            u = _station_uuid(s)
-            if u:
-                uuid_to_station[u] = s
-        for s in stations:
-            u = _station_uuid(s)
-            if u and u not in uuid_to_station:
-                uuid_to_station[u] = s
-        station_for_details = uuid_to_station.get(selected_uuid)
-
-    # Fallback to best station if no selection
-    if station_for_details is None:
-        station_for_details = best_station
-        selected_uuid = _station_uuid(best_station) if best_station else None
 
     # Persist the current UX state snapshot (best-effort, writes only if changed)
     maybe_persist_state()

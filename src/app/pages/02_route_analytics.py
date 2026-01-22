@@ -10,24 +10,19 @@ Data source:
 - st.session_state["last_run"] written by src/app/streamlit_app.py
 """
 
-from __future__ import annotations
-
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import altair as alt
 import pandas as pd
 import streamlit as st
-
-import altair as alt 
-
-from datetime import datetime, timezone
 
 try:
     from zoneinfo import ZoneInfo  # Python 3.9+
 except Exception:
     ZoneInfo = None
-    
 
 # ---------------------------------------------------------------------
 # Minimum plausible €/L (guards against 0.00 or corrupted values in cached runs)
@@ -57,10 +52,7 @@ from ui.formatting import (
     _fmt_km,
     _fmt_min,
 )
-from services.presenters import build_ranking_dataframe
-
 from ui.styles import apply_app_css
-
 from ui.sidebar import render_sidebar_shell, _render_help_action, _render_settings_quick_routes
 
 from config.settings import ensure_persisted_state_defaults
@@ -71,10 +63,10 @@ from services.session_store import init_session_context, restore_persisted_state
 # Helpers
 # -----------------------------
 
-    # ---------------------------------------------------------------------
-    # Compatibility helpers (used by Page 02 constraint/summary blocks)
-    # Keep these thin wrappers so the section code stays readable.
-    # ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
+# Compatibility helpers (used by Page 02 constraint/summary blocks)
+# Keep these thin wrappers so the section code stays readable.
+# ---------------------------------------------------------------------
 def _format_km(x: Any) -> str:
     return _fmt_km(x)
 
@@ -94,24 +86,6 @@ def _format_liters(x: Any) -> str:
         return f"{float(x):.2f} L"
     except (TypeError, ValueError):
         return "—"
-
-
-def render_metric_grid(items: List[Tuple[str, str]], cols: int = 2) -> None:
-    """
-    Simple responsive metric grid:
-    - On desktop, shows `cols` columns.
-    - On mobile, Streamlit will naturally stack columns.
-    """
-    if not items:
-        return
-
-    cols = max(1, int(cols))
-    row = st.columns(cols)
-
-    for i, (label, value) in enumerate(items):
-        row[i % cols].metric(label, value)
-        if (i % cols) == (cols - 1) and i != (len(items) - 1):
-            row = st.columns(cols)
 
 
 def render_card_grid(items: List[Tuple[str, str]], cols: int = 2) -> None:
@@ -248,11 +222,6 @@ def render_key_visualization(
         alt_line1 = "Alternative route is unavailable (no recommended station cached)."
         alt_line2 = None
 
-    # station marker label (optional)
-    station_label = ""
-    if isinstance(best_station, dict) and best_station:
-        name = best_station.get("brand") or best_station.get("station_name") or best_station.get("name") or "Best station"
-        station_label = _safe_text(name)
 
     # --- render (page-local CSS; uses your map colors) ---
     st.markdown(
@@ -348,24 +317,20 @@ def _get_last_run() -> Optional[Dict[str, Any]]:
 def _detour_metrics(station: Dict[str, Any]) -> Tuple[float, float]:
     """Return (detour_km, detour_min), clamped to >= 0."""
     d_km = station.get("detour_distance_km")
-    d_min = station.get("detour_duration_min")
-
     if d_km is None:
         d_km = station.get("detour_km")
+
+    d_min = station.get("detour_duration_min")
     if d_min is None:
         d_min = station.get("detour_min")
 
-    try:
-        km = float(d_km) if d_km is not None else 0.0
-    except (TypeError, ValueError):
-        km = 0.0
+    def _safe_float(v: Any) -> float:
+        try:
+            return max(0.0, float(v)) if v is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
 
-    try:
-        mins = float(d_min) if d_min is not None else 0.0
-    except (TypeError, ValueError):
-        mins = 0.0
-
-    return max(0.0, km), max(0.0, mins)
+    return _safe_float(d_km), _safe_float(d_min)
 
 
 def _distance_along_km(station: Dict[str, Any]) -> float:
@@ -577,40 +542,6 @@ def _station_google_address_best_effort(station: Dict[str, Any]) -> str:
     return ", ".join([p for p in parts if p]) if parts else "—"
 
 
-def _compute_baseline_price_for_display(
-    stations: List[Dict[str, Any]],
-    *,
-    fuel_code: str,
-    onroute_max_detour_km: float = 1.0,
-    onroute_max_detour_min: float = 5.0,
-) -> Optional[float]:
-    """
-    Recompute a baseline price similar to the decision layer:
-    - cheapest predicted price among "on-route" stations (per onroute thresholds)
-    - fallback: global cheapest predicted price
-    """
-    pred_key = f"pred_price_{fuel_code}"
-
-    onroute_prices: List[float] = []
-    all_prices: List[float] = []
-
-    for s in stations or []:
-        p = _as_float(s.get(pred_key))
-        if p is None:
-            continue
-        all_prices.append(p)
-
-        km, mins = _detour_metrics(s)
-        if km <= float(onroute_max_detour_km) and mins <= float(onroute_max_detour_min):
-            onroute_prices.append(p)
-
-    if onroute_prices:
-        return min(onroute_prices)
-    if all_prices:
-        return min(all_prices)
-    return None
-
-
 def _coerce_bool(x: Any) -> Optional[bool]:
     if x is None:
         return None
@@ -627,7 +558,6 @@ def _coerce_bool(x: Any) -> Optional[bool]:
     return None
 
 
-
 def _open_at_eta_flag(station: Dict[str, Any]) -> Optional[bool]:
     """Return whether the station is open at the Google ETA, if the pipeline provided the flag."""
     for k in ("is_open_at_eta", "open_at_eta", "google_open_at_eta", "is_open_google_eta"):
@@ -641,309 +571,6 @@ def _is_closed_at_eta(station: Dict[str, Any]) -> bool:
     """True if we have an explicit open-at-ETA flag and it is False."""
     v = _open_at_eta_flag(station)
     return v is False
-
-
-def _price_basis_row(station: Dict[str, Any], fuel_code: str) -> Dict[str, Any]:
-    """
-    Best-effort extraction of 'price basis' debug fields. We do not assume every run
-    populates these keys; UI should degrade gracefully.
-    """
-    pred_key = f"pred_price_{fuel_code}"
-    curr_key = f"price_current_{fuel_code}"
-
-    used_current = _coerce_bool(station.get(f"debug_{fuel_code}_used_current_price"))
-    horizon_used = station.get(f"debug_{fuel_code}_horizon_used")
-    eta_raw = (
-        station.get("eta")  # if your pipeline keeps the local ETA string, prefer it
-        or station.get(f"debug_{fuel_code}_eta_utc")  # otherwise convert UTC debug ETA
-        or station.get("eta_utc")
-    )
-    eta_local = _format_eta_local_for_display(eta_raw, tz_name="Europe/Berlin")
-
-    minutes_to_arrival = (
-        station.get(f"debug_{fuel_code}_minutes_to_arrival")
-        or station.get(f"debug_{fuel_code}_minutes_ahead")
-    )
-    cells_ahead = station.get(f"debug_{fuel_code}_cells_ahead_raw") or station.get(f"debug_{fuel_code}_cells_ahead")
-
-    # Robust basis label
-    if used_current is True:
-        basis = "Current price used (no forecast)"
-    elif used_current is False:
-        basis = "Forecast used"
-    else:
-        # Fallback inference if the explicit flag is missing
-        pred = station.get(pred_key)
-        curr = station.get(curr_key)
-        if (not _is_missing_number(pred)) and (not _is_missing_number(curr)):
-            try:
-                basis = "Current/Forecast (inferred)" if abs(float(pred) - float(curr)) < 1e-6 else "Forecast (inferred)"
-            except Exception:
-                basis = "Current/Forecast (inferred)"
-        else:
-            basis = "Unknown (missing debug)"
-
-    if horizon_used not in (None, "", 0):
-        basis = f"{basis} — horizon={horizon_used}"
-
-    return {
-        "Station": _safe_text(station.get("brand") or station.get("station_name") or station.get("name")),
-        "Basis": basis,
-        "ETA (Europe/Berlin)": _safe_text(eta_local),
-        "Minutes to arrival": minutes_to_arrival if minutes_to_arrival is not None else "—",
-        "Cells ahead": cells_ahead if cells_ahead is not None else "—",
-    }
-
-
-def _price_basis_table(stations: List[Dict[str, Any]], fuel_code: str, limit: int = 12) -> pd.DataFrame:
-    rows: List[Dict[str, Any]] = []
-    for s in stations[: max(0, int(limit))]:
-        rows.append(_price_basis_row(s, fuel_code=fuel_code))
-    return pd.DataFrame(rows)
-
-
-def _compute_funnel_counts(
-    stations: List[Dict[str, Any]],
-    ranked: List[Dict[str, Any]],
-    excluded: List[Dict[str, Any]],
-    fuel_code: str,
-    use_economics: bool,
-    cap_detour_km: Optional[float],
-    cap_detour_min: Optional[float],
-    min_distance_km: Optional[float],
-    max_distance_km: Optional[float],
-    min_net_saving_eur: Optional[float],
-    *,
-    filter_closed_at_eta_enabled: bool,
-    closed_at_eta_filtered_n: Optional[int] = None,
-) -> Dict[str, int]:
-    """
-    High-level funnel counts computed from the station objects *you already cache*.
-
-    Notes:
-    - "Closed at ETA" can appear either:
-      (a) as part of the cached station list (if you keep stations and mark them), or
-      (b) only as an upstream count (if you remove them before caching).
-    This function supports both patterns.
-    """
-    pred_key = f"pred_price_{fuel_code}"
-    econ_key = f"econ_net_saving_eur_{fuel_code}"
-
-    total = len(stations)
-    ranked_n = len(ranked)
-
-    missing_pred = 0
-    closed_at_eta = 0
-    cap_failed = 0
-    econ_failed = 0
-    other = 0
-    distance_failed = 0
-
-    # Count only among excluded stations we can still observe.
-    for s in excluded:
-        # 1) missing prediction
-        if _is_missing_number(s.get(pred_key)):
-            missing_pred += 1
-            continue
-
-        # 2) closed at ETA (if the pipeline provides the flag)
-        if filter_closed_at_eta_enabled and _is_closed_at_eta(s):
-            closed_at_eta += 1
-            continue
-
-        # 3) detour caps
-        km, mins = _detour_metrics(s)
-        cap_fail = False
-        if cap_detour_km is not None and km is not None and km > float(cap_detour_km):
-            cap_fail = True
-        if cap_detour_min is not None and mins is not None and mins > float(cap_detour_min):
-            cap_fail = True
-        if cap_fail:
-            cap_failed += 1
-            continue
-
-        # 4) distance window (hard constraints)
-        dist_km = _distance_along_km(s)
-        if min_distance_km is not None and dist_km < float(min_distance_km):
-            distance_failed += 1
-            continue
-        if max_distance_km is not None and dist_km > float(max_distance_km):
-            distance_failed += 1
-            continue
-
-        # 4) economics threshold
-        if use_economics and min_net_saving_eur is not None:
-            net = s.get(econ_key)
-            if (not _is_missing_number(net)) and (float(net) < float(min_net_saving_eur)):
-                econ_failed += 1
-                continue
-
-        other += 1
-
-    upstream_closed = 0
-    try:
-        upstream_closed = int(closed_at_eta_filtered_n) if closed_at_eta_filtered_n is not None else 0
-    except Exception:
-        upstream_closed = 0
-
-    # If upstream filtering removed stations before caching, add that to the observable excluded count.
-    closed_at_eta_total = closed_at_eta + max(0, upstream_closed)
-
-    return {
-        "candidates_total": total,
-        "ranked": ranked_n,
-        "excluded": len(excluded),
-        "missing_prediction": missing_pred,
-        "closed_at_eta": closed_at_eta_total,
-        "failed_distance_window": distance_failed,
-        "closed_at_eta_in_cache": closed_at_eta,
-        "closed_at_eta_upstream": max(0, upstream_closed),
-        "failed_detour_caps": cap_failed,
-        "failed_economics": econ_failed,
-        "excluded_other": other,
-    }
-
-
-def _coerce_numeric_series(s: pd.Series) -> pd.Series:
-    """
-    Robust numeric coercion:
-    - handles comma decimals ("1,706")
-    - strips currency/unit text ("€/L", " km", etc.)
-    - keeps negatives and decimals
-    """
-    as_str = s.astype(str)
-    as_str = as_str.str.replace(",", ".", regex=False)
-    as_str = as_str.str.replace(r"[^0-9.\-]+", "", regex=True)
-    return pd.to_numeric(as_str, errors="coerce")
-
-
-def _compute_onroute_worst_price(
-    ranked: List[Dict[str, Any]],
-    fuel_code: str,
-    *,
-    onroute_max_detour_km: float = 1.0,
-    onroute_max_detour_min: float = 5.0,
-) -> Optional[float]:
-    """Worst (highest) predicted price among on-route stations."""
-    pred_key = f"pred_price_{fuel_code}"
-    vals: List[float] = []
-    for s in ranked:
-        p = s.get(pred_key)
-        if p is None:
-            continue
-        km, mins = _detour_metrics(s)
-        if km <= onroute_max_detour_km and mins <= onroute_max_detour_min:
-            try:
-                vals.append(float(p))
-            except (TypeError, ValueError):
-                continue
-    return max(vals) if vals else None
-
-
-def _compute_net_vs_onroute_worst(
-    best: Dict[str, Any],
-    onroute_worst: Optional[float],
-    fuel_code: str,
-    litres_to_refuel: Optional[float],
-) -> Optional[float]:
-    """
-    (worst_onroute - chosen) * litres - detour_fuel_cost - time_cost.
-
-    This matches the "story" you display on Page 1 (worst on-route baseline).
-    Note: Your economics engine uses a different baseline ("cheapest on-route"),
-    so we show both on this page.
-    """
-    if onroute_worst is None or litres_to_refuel is None:
-        return None
-
-    pred_key = f"pred_price_{fuel_code}"
-    p = best.get(pred_key)
-    if p is None:
-        return None
-
-    try:
-        chosen = float(p)
-        litres = float(litres_to_refuel)
-    except (TypeError, ValueError):
-        return None
-
-    detour_fuel_cost = best.get(f"econ_detour_fuel_cost_eur_{fuel_code}")
-    time_cost = best.get(f"econ_time_cost_eur_{fuel_code}")
-
-    try:
-        detour_fuel_cost_f = float(detour_fuel_cost) if detour_fuel_cost is not None else 0.0
-    except (TypeError, ValueError):
-        detour_fuel_cost_f = 0.0
-
-    try:
-        time_cost_f = float(time_cost) if time_cost is not None else 0.0
-    except (TypeError, ValueError):
-        time_cost_f = 0.0
-
-    gross = (float(onroute_worst) - chosen) * litres
-    return gross - detour_fuel_cost_f - time_cost_f
-
-
-def _exclusion_reason(
-    s: Dict[str, Any],
-    *,
-    fuel_code: str,
-    use_economics: bool,
-    cap_km: Optional[float],
-    cap_min: Optional[float],
-    min_distance_km: Optional[float],
-    max_distance_km: Optional[float],
-    min_net_saving: Optional[float],
-    filter_closed_at_eta_enabled: bool,
-) -> str:
-    """Best-effort reason label for excluded stations (fallback when filter_log is missing)."""
-    pred_key = f"pred_price_{fuel_code}"
-    econ_net_key = f"econ_net_saving_eur_{fuel_code}"
-
-    # 1) Prediction presence/validity (hard)
-    if s.get(pred_key) is None:
-        return "Missing predicted price"
-
-    # 2) Closed-at-ETA (hard, if enabled)
-    if filter_closed_at_eta_enabled and _is_closed_at_eta(s):
-        return "Closed at ETA (Google)"
-
-    # 3) Detour caps (hard)
-    km, mins = _detour_metrics(s)
-    if cap_km is not None and km > cap_km:
-        return "Detour distance above cap"
-    if cap_min is not None and mins > cap_min:
-        return "Detour time above cap"
-
-    # 4) Distance window (hard) — NEW
-    dist_km = _distance_along_km(s)
-    if min_distance_km is not None and dist_km < float(min_distance_km):
-        return "Below minimum distance"
-    if max_distance_km is not None and dist_km > float(max_distance_km):
-        return "Above maximum distance"
-
-    # 5) Economics threshold (soft stage in your UI narrative; keep as-is)
-    if use_economics and (min_net_saving is not None):
-        net = s.get(econ_net_key)
-        if net is None:
-            return "Missing economics metrics"
-        try:
-            if float(net) < float(min_net_saving):
-                return "Below minimum net saving"
-        except (TypeError, ValueError):
-            return "Invalid economics metrics"
-
-    return "Not ranked (other)"
-
-
-def _station_label(s: Dict[str, Any], idx: Optional[int] = None, tag: str = "") -> str:
-    brand = s.get("brand")
-    name = s.get("tk_name") or s.get("osm_name") or s.get("name") or "Station"
-    city = s.get("city") or ""
-    title = brand if (brand and str(brand).strip()) else name
-    prefix = f"#{idx} " if idx is not None else ""
-    suffix = f" [{tag}]" if tag else ""
-    return _safe_text(f"{prefix}{title} ({city}){suffix}")
 
 
 def _render_page02_sidebar_action() -> None:
@@ -1172,17 +799,44 @@ def main() -> None:
     run_summary: Dict[str, Any] = cached.get("run_summary") or {}
     use_economics: bool = bool(run_summary.get("use_economics") or cached.get("use_economics", False))
 
-    # Advanced Settings (persisted by Page 01)
-    filter_closed_at_eta_enabled: bool = bool(run_summary.get("filter_closed_at_eta", False))
-    closed_at_eta_filtered_n = run_summary.get("closed_at_eta_filtered_n", 0)
 
-    brand_filter_selected = run_summary.get("brand_filter_selected") or []
+    # Advanced Settings (persisted by Page 01)
+    # Source of truth: Page 01 writes these into cached["advanced_settings"].
+    # (Older runs may store parts in run_summary or inside run_summary["constraints"].)
+    adv = (cached.get("advanced_settings") or run_summary.get("advanced_settings") or {})
+    constraints = run_summary.get("constraints") or {}
+
+    filter_closed_at_eta_enabled: bool = bool(
+        (adv.get("filter_closed_at_eta") if isinstance(adv, dict) else False)
+        or run_summary.get("filter_closed_at_eta")
+        or cached.get("filter_closed_at_eta", False)
+    )
+    closed_at_eta_filtered_n = None
+    if isinstance(adv, dict) and adv.get("closed_at_eta_filtered_n") is not None:
+        closed_at_eta_filtered_n = adv.get("closed_at_eta_filtered_n")
+    if closed_at_eta_filtered_n is None:
+        closed_at_eta_filtered_n = run_summary.get("closed_at_eta_filtered_n", 0)
+
+    # Brand filter (whitelist) configuration
+    brand_filter_selected = []
+    if isinstance(adv, dict) and adv.get("brand_filter_selected") is not None:
+        brand_filter_selected = adv.get("brand_filter_selected") or []
+    elif isinstance(constraints, dict) and constraints.get("brand_filter_selected") is not None:
+        brand_filter_selected = constraints.get("brand_filter_selected") or []
+    else:
+        brand_filter_selected = run_summary.get("brand_filter_selected") or []
+
     if isinstance(brand_filter_selected, str):
         brand_filter_selected = [brand_filter_selected]
-    brand_filter_selected = [str(x) for x in brand_filter_selected]
+    brand_filter_selected = [str(x).strip() for x in brand_filter_selected if str(x).strip()]
 
-    brand_filtered_out_n = run_summary.get("brand_filtered_out_n", 0)
-    brand_filter_aliases = run_summary.get("brand_filter_aliases") or {}
+    brand_filtered_out_n = None
+    if isinstance(adv, dict) and adv.get("brand_filtered_out_n") is not None:
+        brand_filtered_out_n = adv.get("brand_filtered_out_n")
+    elif isinstance(constraints, dict) and constraints.get("brand_filtered_out_n") is not None:
+        brand_filtered_out_n = constraints.get("brand_filtered_out_n")
+    else:
+        brand_filtered_out_n = run_summary.get("brand_filtered_out_n", 0)
 
     try:
         closed_at_eta_filtered_n = int(closed_at_eta_filtered_n or 0)
@@ -1193,6 +847,7 @@ def main() -> None:
         brand_filtered_out_n = int(brand_filtered_out_n or 0)
     except (TypeError, ValueError):
         brand_filtered_out_n = 0
+
 
     litres_to_refuel = cached.get("litres_to_refuel")
     debug_mode: bool = bool(st.session_state.get("debug_mode", False))
@@ -1576,7 +1231,7 @@ If no on-route stations exist, the benchmark is not applicable and the economics
         )
 
         # -----------------------------
-        # Local helpers (scoped to this view)
+        # Local helpers)
         # -----------------------------
         def _as_int(x: Any) -> int:
             try:
@@ -1733,13 +1388,28 @@ If no on-route stations exist, the benchmark is not applicable and the economics
 
         # Upstream filters (already parsed above this view)
         eta_upstream_n = _as_int(closed_at_eta_filtered_n) if filter_closed_at_eta_enabled else 0
-        brand_upstream_n = _as_int(brand_filtered_out_n) if (isinstance(brand_filter_selected, list) and len(brand_filter_selected) > 0) else 0
 
-        # "Stations" in cache are AFTER upstream removals (if those are applied upstream).
+        # Page 01 applies the brand filter upstream (before caching) but keeps the pre-brand station
+        # universe in cached["stations_for_map_all"]. Use it to keep counts/tables audit-correct.
+        stations_universe = cached.get("stations_for_map_all")
+        if not isinstance(stations_universe, list) or (stations_universe and not isinstance(stations_universe[0], dict)):
+            stations_universe = stations
+
+        # "stations" in cache are AFTER upstream removals (brand + open-at-ETA if enabled).
         candidates_in_cache_n = len(stations)
 
-        # Reconstruct "total found" for accuracy (includes upstream removals)
-        total_found_n = max(0, candidates_in_cache_n + eta_upstream_n + brand_upstream_n)
+        # Brand-filtered-out count: prefer the explicit audit number, but validate against the stored universe.
+        if isinstance(brand_filter_selected, list) and len(brand_filter_selected) > 0:
+            inferred_brand_n = max(0, len(stations_universe) - candidates_in_cache_n)
+            brand_upstream_n = max(_as_int(brand_filtered_out_n), int(inferred_brand_n))
+        else:
+            brand_upstream_n = 0
+
+        # Total stations found (includes upstream removals). Note:
+        # - stations_universe already includes brand-filtered-out stations (if brand filter active)
+        # - eta_upstream_n must still be added because those stations were removed before stations_universe existed
+        total_found_n = max(0, len(stations_universe) + eta_upstream_n)
+
 
         # -----------------------------
         # SECTION: Stations funnel (Found → Hard-feasible → Economically selected)
@@ -2026,7 +1696,7 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
         )
 
     # -----------------------------
-    # SECTION: Important results (lightweight summary, no logic changes)
+    # SECTION: Important results
     # -----------------------------
         st.markdown(
             "#### Important results",
@@ -2290,16 +1960,27 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
         # A–D: User-facing explanation (keep lightweight; no ranking logic changes)
         # -----------------------------
 
-        # Prefer the full station universe ("stations") over any ranked/filtered subset ("ranked")
+        # Prefer the broadest available station universe for auditability:
+        # - if a brand filter is active, Page 01 keeps the pre-brand list in "stations_for_map_all"
+        # - otherwise fall back to "stations", then to ranked variants
         stations_for_explain: List[Dict[str, Any]] = []
 
-        v_all = (cached or {}).get("stations")
+        v_all = (cached or {}).get("stations_for_map_all")
         if isinstance(v_all, list) and v_all and isinstance(v_all[0], dict):
             stations_for_explain = v_all
         else:
-            v_ranked = (cached or {}).get("ranked")
-            if isinstance(v_ranked, list) and v_ranked and isinstance(v_ranked[0], dict):
-                stations_for_explain = v_ranked
+            v_all2 = (cached or {}).get("stations")
+            if isinstance(v_all2, list) and v_all2 and isinstance(v_all2[0], dict):
+                stations_for_explain = v_all2
+            else:
+                v_ranked_all = (cached or {}).get("ranked_for_map_all")
+                if isinstance(v_ranked_all, list) and v_ranked_all and isinstance(v_ranked_all[0], dict):
+                    stations_for_explain = v_ranked_all
+                else:
+                    v_ranked = (cached or {}).get("ranked")
+                    if isinstance(v_ranked, list) and v_ranked and isinstance(v_ranked[0], dict):
+                        stations_for_explain = v_ranked
+
 
         best_station = (cached or {}).get("best_station")
         best_uuid = _station_uuid(best_station) if isinstance(best_station, dict) else ""
@@ -3011,23 +2692,6 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
                     )
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         # Fourth headline
         st.markdown(
             "#### E) Full input/output values:",
@@ -3506,14 +3170,27 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
         # Case 1 (no on-route benchmark) or economics off: economics selection is N/A → pass-through
         selected__p4 = list(hard_feasible__p4)
 
+    # Include stations removed purely by the Page-01 brand whitelist filter.
+    # Page 01 keeps the pre-brand station universe in cached["stations_for_map_all"].
+    brand_filtered_out__p4: List[Dict[str, Any]] = []
+    if isinstance(brand_filter_selected, list) and len(brand_filter_selected) > 0:
+        universe__p4 = cached.get("stations_for_map_all")
+        if isinstance(universe__p4, list) and universe__p4:
+            # Object-identity comparison is safe here because Page 01 builds kept_stations via list
+            # comprehension from the same dict objects.
+            kept_obj_ids = {id(s) for s in (stations or [])}
+            brand_filtered_out__p4 = [s for s in universe__p4 if id(s) not in kept_obj_ids]
+
     discarded__p4: List[Dict[str, Any]] = (
-        list(hard_invalid_pred__p4)
+        list(brand_filtered_out__p4)
+        + list(hard_invalid_pred__p4)
         + list(hard_closed_eta__p4)
         + list(hard_duplicates_removed__p4)
         + list(hard_cap_failed__p4)
         + list(hard_distance_failed__p4)
         + list(econ_rejected__p4)
     )
+
 
     # Default sort (UI): descending by net saving (when available)
     if bool(use_economics):
