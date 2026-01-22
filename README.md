@@ -4,7 +4,7 @@ We build a route-aware refueling recommender for Germany that forecasts station-
 **Project overview**
 | Step1 | Description2   | Directory3  | Ressources4     | Detailed Information5 |
 |------|----------------|---------------|----------------|----------------------|
-| Find fuel stations near route   | Zelle 1.2  |./src/data_pipeline/ | Google APIs (Geocoding, Directions, Places)      | [./src/data_pipeline/README.md](./src/data_pipeline/README.md)|
+| Data Input    | The `data_pipeline` component is responsible for acquisition and preparation of station-location and fuel-price data, enriching station records with route, detour and ETA context for downstream modeling and the decision/UI layers.  |./src/data_pipeline/ | Google APIs (Geocoding, Directions, Places), Tankerkönig (Daily Station & Price CSV), Supabase (managed PostgreSQL database)      | [./src/data_pipeline/README.md](./src/data_pipeline/README.md)|
 | Training price prediction model    | Train price prediction model for each fuel type      | ./src/modeling/     | Tankerkönig (historical data)      | [./src/modeling/README.md](./src/modeling/README.md)            |
 | 3    | Zelle 3.2      | ./src/app/     | Zelle 3.4|  [./src/app/README.md](./src/app/README.md)         |
 | 4    | Zelle 4.2      | ./src/integration/   |Zelle 4.4| [./src/integration/README.md](./src/integration/README.md)                 |
