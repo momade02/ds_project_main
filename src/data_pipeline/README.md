@@ -131,8 +131,15 @@ Notes:
 - Intended triggers:
   - `update_prices_stations.py` is intended to be scheduled daily at a fixed CET time (e.g., 07:00 CET).  
   - `route_stations.py` is intended to be called on-demand by the application backend when a user requests a route recommendation.
+
+## 6) Validation & quality checks data
+- Environment check: verify the Google API key is present
+- Plausibility:
+  - Geocoding returns valid lat/lon
+  - Detour distance/duration must be > 0; invalid records are rejected.
+  - Stations candidates without coordinates or without a valid detour route are skipped
+
 ```diff
-## 6) Validation & quality checks
 - Environment checks: required env vars are validated at start; missing critical keys cause a `ConfigError` and early exit.
 - Schema checks: downloaded CSVs are checked for expected columns and valid types; malformed rows are logged and either coerced or dropped depending on severity.
 - Determinism: route decoding and ETA calculations are deterministic given the same inputs and API responses.
