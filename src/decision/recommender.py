@@ -1,24 +1,62 @@
 """
-Module: Fuel Station Recommendation Engine.
+Station ranking and refueling stop recommendation (decision layer).
 
-Description:
-    This module implements the decision logic for selecting the optimal refueling stop.
-    It operates on enriched station data (from the integration layer) and applies
-    two distinct ranking strategies based on available input:
+Purpose
+-------
+This module implements the project’s decision logic for selecting and ranking
+candidate refueling stations. It consumes enriched station dictionaries produced
+by the integration layer, ensures predictions exist, applies feasibility filters,
+and returns a sorted list of stations according to the active objective.
 
-    1. **Economic Ranking (Cost-Benefit Analysis):**
-       - Active when `litres_to_refuel` and `consumption_l_per_100km` are provided.
-       - Calculates the "Net Saving" of a detour compared to an "On-Route Baseline".
-       - Formula: (BaselinePrice - StationPrice) * Litres - (DetourFuelCost + TimeCost).
-       - Filters stations exceeding max detour constraints.
+Decision modes
+--------------
+1) Economic mode (cost-benefit ranking)
+   Activated when the user provides:
+   - litres_to_refuel
+   - consumption_l_per_100km
+   Optional:
+   - value_of_time_per_hour
+   In this mode, the module computes:
+   - a baseline “on-route” reference price (minimal detour candidates),
+   - per-station gross saving vs. baseline,
+   - detour fuel + time costs,
+   - net saving and breakeven liters,
+   and ranks by net saving (descending), subject to hard constraints.
 
-    2. **Price-Only Ranking (Fallback):**
-       - Active when economic parameters are missing.
-       - Simply sorts stations by the lowest predicted price.
-       - Tie-breakers: Distance along route (earlier is better).
+2) Price-only mode (fallback ranking)
+   Activated when economic parameters are missing/invalid.
+   In this mode, the module ranks stations by predicted price (ascending),
+   with stability tie-breakers (e.g., route progress / distance along route).
 
-Usage:
-    Called by the UI layer to populate the "Recommended Stop" card and the result list.
+Hard constraints and quality guards
+-----------------------------------
+- Detour caps (km/min), with defaults in economic mode.
+- Optional distance-along-route window filtering (min/max).
+- Plausibility checks to exclude missing/invalid predictions
+  (e.g., 0.00 €/L or below a minimum threshold).
+- Deduplication by station UUID (keep the best-priced variant).
+
+Prediction integration
+----------------------
+If predictions are not yet present in the station dictionaries, this module
+invokes the modeling layer (`predict_for_fuel`) to populate the required
+`pred_price_<fuel>` keys prior to ranking.
+
+Audit logging (optional)
+------------------------
+When an `audit_log` dict is provided, the module records:
+- inclusion/exclusion reasons per station,
+- primary exclusion reason by priority,
+- counts per reason, and
+- ranked vs. excluded station identifiers.
+This enables transparent UI debugging and reproducible analysis.
+
+Usage
+-----
+Called by the application/service layer to produce:
+- the recommended stop,
+- ranked station lists,
+- discarded station lists and their exclusion rationale (when auditing is enabled).
 """
 
 from __future__ import annotations

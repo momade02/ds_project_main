@@ -1,15 +1,36 @@
 """
-Streamlit UI for the route-aware fuel price recommender.
+MODULE: Trip Planner (Home / Page 01) — Route-Aware Refueling Recommender
+-----------------------------------------------------------------------
 
-Real route (Google route + Supabase + Tankerkönig pipeline)
-   - Uses `get_fuel_prices_for_route(...)`.
-   - Always uses real-time Tankerkönig prices.
+Primary responsibility:
+- Orchestrates an end-to-end route run: user inputs → route retrieval → candidate stations → price prediction
+  → decision/ranking → UI presentation (map, summary blocks, results).
+- Acts as the main "entry point" for the Streamlit application and the canonical source of a fresh run.
 
-High-level pipeline:
-integration (route → stations → historical + real-time prices)
-    → ARDL models with horizon logic
-    → decision layer (ranking & best station)
+Key inputs (UI / sidebar):
+- Start & destination (address/place), optional waypoint(s)
+- Fuel type, litres-to-refuel (or comparable refuel volume proxy)
+- Hard constraints (detour caps, distance window, open-at-ETA requirements, brand filters, etc.)
+- Debug / exploration toggles (if enabled)
+
+Core outputs (state + UI):
+- Writes a structured run payload into `st.session_state["last_run"]` (route info, stations, constraints, logs).
+- Populates caches used by downstream pages (e.g., reverse-geocode cache for addresses).
+- Renders the map view and the primary result summaries for the most recent run.
+
+Data flow (high level):
+- Build `RouteRunInputs` from session/UI
+- Execute `run_route_recommendation(...)` (services layer)
+- Persist results (Redis-backed persistence via session_store) and render UI
+- Provide navigational continuity to Analytics (Page 02) and Station Details (Page 03)
+
+Key dependencies:
+- `services.route_recommender.run_route_recommendation` (run orchestration)
+- `services.session_store` (restore/persist across refresh)
+- `ui.maps` (Mapbox GL rendering)
+- `ui.sidebar` (input shell)
 """
+
 from __future__ import annotations
 
 import sys

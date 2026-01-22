@@ -1,4 +1,41 @@
-# src/app/ui/maps.py
+"""
+MODULE: Maps — Map Rendering Utilities for Route and Station Visualizations
+-------------------------------------------------------------------------
+
+Purpose
+- Encapsulates all map-generation logic so pages can render consistent route/station maps without
+  duplicating HTML/JS details or coordinate/viewport calculations.
+
+What this module does
+- Viewport/zoom:
+  - Provides `calculate_zoom_for_bounds(...)` to estimate a Web Mercator zoom level that fits a given
+    bounding box (with padding and clamps).
+- Map rendering (primary):
+  - Builds a self-contained Mapbox GL JS iframe HTML payload via `create_mapbox_gl_html(...)` for use
+    with `streamlit.components.html(...)`.
+  - Implements “cooperative gestures”:
+    - Desktop: Ctrl/⌘ + scroll to zoom
+    - Mobile: two-finger gestures to pan/zoom
+- Layers and semantics:
+  - Renders the main route polyline (baseline) and optional via/alternative polyline.
+  - Renders station markers with stable UUIDs, and supports “best”, “selected”, and category-based pins.
+  - Builds best-effort popup content (brand/name, address, current/predicted price, detour metrics, and
+    optional economic savings vs worst on-route baseline).
+- Token handling:
+  - Reads Mapbox token from environment/secrets (`MAPBOX_ACCESS_TOKEN` preferred), and returns a
+    user-friendly error HTML block when missing.
+
+Inputs and contracts
+- Expects route coordinates as [lon, lat] pairs and stations as dicts containing at least `lat`, `lon`
+  plus optional pipeline fields for prices, detours, and economics.
+- Uses UI formatting helpers (price, EUR, km, min) to ensure consistent display formatting.
+
+Design constraints
+- Must not trigger external API calls; it only renders from provided payloads.
+- Must be resilient to partial/malformed station records (best-effort rendering, skip invalid points).
+- Must preserve backwards compatibility (underscore alias `_calculate_zoom_for_bounds`).
+"""
+
 from __future__ import annotations
 
 import base64

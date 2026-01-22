@@ -1,3 +1,49 @@
+/* =============================================================================
+  FILE: app.css — Global UI Styling for the Streamlit Frontend
+  =============================================================================
+
+  Purpose
+  - Provides the centralized CSS layer for the Streamlit UI, ensuring consistent layout,
+    spacing, and component styling across all pages (Trip Planner, Analytics, Station Details,
+    Station Explorer).
+
+  Scope / Strategy
+  - Uses scoped selectors whenever possible to avoid unintended global side effects.
+  - Relies on Streamlit’s DOM attributes (e.g., data-testid) and widget-key wrappers
+    (e.g., `.st-key-...`) for targeted overrides.
+  - Complements (and is injected by) `src/app/ui/styles.py`.
+
+  Major sections in this file
+  1) Global layout & spacing
+    - Reduces default top padding in the main block container.
+    - Tightens sidebar header + content padding and widget spacing.
+    - Applies page-specific spacing fixes where Streamlit defaults are too generous.
+
+  2) Page 01 (Trip Planner) UI rules
+    - Top navigation segmented control styling (`st.key="top_nav"`).
+    - Recommended-station “hero” header block and responsive metric grid.
+    - Map header, map toggle button, and map legend.
+
+  3) Sidebar system rules (all pages)
+    - Sidebar width override and segmented-control equal-width buttons.
+    - Sidebar top-nav (Action / Info / Settings / Profile) icon-only buttons via inline SVG.
+    - Route input widgets: right-aligned start/destination icons + connector dots, spacing tightening.
+
+  4) Map help popover & header row DOM tweaks
+    - Custom help marker styling and popover panel formatting.
+    - Layout tightening for the map header row containing style controls.
+
+  5) Page 03 (Station Details) mobile-first styling
+    - Hero section, traffic-light indicator, quick facts, trip card, savings calculator.
+    - Charts, expandable sections, comparison table, alerts, and mobile adjustments.
+
+  6) Page 04 (Station Explorer) scoped spacing adjustments
+    - Selector subtitle and selector block spacing.
+    - Legend spacing wrapper and metric-wrap spacing.
+
+  ============================================================================= */
+  
+
 /* ==========================================================================
    GLOBAL LAYOUT / SPACING
    ========================================================================== */

@@ -1,3 +1,33 @@
+"""
+MODULE: Styles — Global CSS Injection and Mobile Sidebar Toggle Stabilization
+----------------------------------------------------------------------------
+
+Purpose
+- Centralizes how application CSS is loaded and injected into Streamlit, and implements the
+  mobile-friendly sidebar toggle behavior used in production.
+
+What this module does
+- CSS discovery:
+  - Locates `app.css` using relative-path heuristics to avoid hardcoding absolute paths
+    (expected layout: `src/app/static/app.css`).
+- Cached CSS loading:
+  - Uses `st.cache_data` to cache CSS file reads and automatically invalidate on file modification time.
+- CSS injection:
+  - Injects the CSS into the main Streamlit document via `st.markdown(<style>...)`.
+- Mobile sidebar toggle:
+  - Injects a small HTML/JS snippet via `streamlit.components.v1.html(...)` that:
+    - Adds a dedicated mobile toggle button (custom DOM id)
+    - Hides Streamlit’s native sidebar toggles on mobile only
+    - Uses mutation observers + resize listeners to remain stable across reruns and DOM changes
+    - Delegates to Streamlit’s native open/close buttons so behavior remains compatible with Streamlit
+      internals.
+
+Design constraints
+- Must be safe to call early and repeatedly (idempotent, best-effort).
+- Must not break desktop behavior; mobile-only overrides are gated by viewport width checks.
+- Must fail gracefully with an informative warning if `app.css` cannot be located.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
