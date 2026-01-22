@@ -61,7 +61,7 @@ except ImportError as e:
 # Type Definitions (LLM Context Hints)
 # ==========================================
 
-# A raw station matched from Google/OSM logic
+# A raw station matched from Google logic
 InputStationDict: TypeAlias = Dict[str, Any]
 
 # A dictionary containing price data: {'e5': 1.70, 'e10': ..., 'diesel': ...}
