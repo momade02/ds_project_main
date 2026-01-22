@@ -1,57 +1,69 @@
+"""
+# src/app/pages/04_station_explorer.py
+
+MODULE: Station Explorer (Page 04)
+----------------------------------
+This module renders the "Explorer" interface, allowing users to search, filter, and 
+compare fuel stations around a geographic center (City/Address) rather than a route.
+
+FILE STRUCTURE & COMPONENT OVERVIEW:
+
+1.  **Bootstrap & Configuration**:
+    - Sets up system paths (`PROJECT_ROOT`) to allow relative imports.
+    - Loads environment variables and initializes session state.
+
+2.  **Helper Functions**:
+    - `_get_station_display_name` / `_format_station_address`: Standardized formatting for UI consistency.
+    - `_pick_cheapest_station`: Logic to rank stations by price (and distance as tie-breaker).
+    - `_build_results_table`: Formats raw API data into a Pandas DataFrame for the bottom view.
+
+3.  **Main Application Logic (`main`)**:
+    - **State Management**: Persists search results (`explorer_results`) and map configuration to handle Streamlit re-runs.
+    - **Sidebar Integration**: Renders the input form (Location, Radius, Fuel Type) inside the "Action" tab.
+    - **API Integration**: Calls `search_stations_nearby_list_api` based on user inputs.
+    - **Visualizations**:
+      - *Metrics*: Summary cards (Stations found, Open count).
+      - *Map*: Interactive Mapbox GL view distinguishing "Best" (cheapest) vs. "Standard" stations.
+      - *Selector*: A ranked dropdown to quickly inspect specific stations.
+      - *Table*: Detailed list view of all search results.
+
+DATA FLOW:
+    User Input (Sidebar) -> Params Hash Check -> API Call -> Session State Storage -> Render UI
+"""
+
 # src/app/pages/04_station_explorer.py
 from __future__ import annotations
 
 import sys
+import json
+import hashlib
+import inspect
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
+# --- Bootstrap Paths ---
+APP_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path: sys.path.insert(0, str(PROJECT_ROOT))
+if str(APP_ROOT) not in sys.path: sys.path.insert(0, str(APP_ROOT))
+
+# --- App Imports ---
+from config.settings import load_env_once, ensure_persisted_state_defaults
+from services.session_store import init_session_context, restore_persisted_state, maybe_persist_state
+from app_errors import AppError
+from src.app.services.station_explorer import StationExplorerInputs, search_stations_nearby_list_api
+import ui.maps as maps_mod
 from ui.styles import apply_app_css
-
 from ui.sidebar import render_sidebar_shell, _render_help_explorer, _render_settings_quick_routes
-
-from config.settings import load_env_once
+from ui.formatting import _station_uuid, _safe_text, _format_price
 
 load_env_once()
 
-from config.settings import ensure_persisted_state_defaults
-from services.session_store import init_session_context, restore_persisted_state, maybe_persist_state
-
-import json
-import hashlib
-
-# ---------------------------------------------------------------------
-# Import bootstrap (same pattern as your other pages)
-# ---------------------------------------------------------------------
-APP_ROOT = Path(__file__).resolve().parents[1]       # .../src/app
-PROJECT_ROOT = Path(__file__).resolve().parents[3]   # repo root
-
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-if str(APP_ROOT) not in sys.path:
-    sys.path.insert(0, str(APP_ROOT))
-
-from app_errors import AppError
-
-from src.app.services.station_explorer import (
-    StationExplorerInputs,
-    search_stations_nearby_list_api,
-)
-
-import ui.maps as maps_mod
-import inspect
-
-import streamlit.components.v1 as components
-
-from ui.formatting import (
-    _station_uuid,
-    _safe_text,
-    _format_price,
-)
-
-# Fixed brand options (same canonical list as Trip Planner / Page 01)
+# Fixed brand options (canonical list)
 BRAND_OPTIONS = ["ARAL", "AVIA", "AGIP ENI", "Shell", "Total", "ESSO", "JET", "ORLEN", "HEM", "OMV"]
 
 # ------------------------------------------------------------------
@@ -59,146 +71,93 @@ BRAND_OPTIONS = ["ARAL", "AVIA", "AGIP ENI", "Shell", "Total", "ESSO", "JET", "O
 # ------------------------------------------------------------------
 
 def _fuel_label_to_code(label: str) -> str:
-    m = {"E5": "e5", "E10": "e10", "Diesel": "diesel"}
-    return m.get(label, "e5")
-
-
-def _build_results_table(stations: List[Dict[str, Any]], fuel_code: str) -> pd.DataFrame:
-    """
-    Explorer results table (Page 04).
-    Columns (left -> right):
-      Brand, Name, City, Full Address, Distance (air-line in km), Current Price <fuel>, Open (Yes/No)
-    """
-    price_key = f"price_current_{fuel_code}"
-
-    def _full_address(s: Dict[str, Any]) -> str:
-        def _first(*keys: str) -> str:
-            for k in keys:
-                v = (s or {}).get(k)
-                if v is None:
-                    continue
-                t = str(v).strip()
-                if t:
-                    return t
-            return ""
-
-        street = _first("street", "addr_street", "addr:street")
-        house = _first("houseNumber", "house_number", "housenumber", "addr_housenumber", "addr:housenumber")
-        postcode = _first("postCode", "postcode", "zip", "postal_code", "postalCode", "addr_postcode", "addr:postcode")
-        city = _first("city", "place", "town", "village")
-
-        line1 = " ".join([p for p in [street, house] if p]).strip()
-        line2 = " ".join([p for p in [postcode, city] if p]).strip()
-
-        if line1 and line2:
-            return f"{line1}, {line2}"
-        if line1:
-            return line1
-        if line2:
-            return line2
-        return city or ""
-
-    current_price_col = f"Current Price {fuel_code.upper()}"
-
-    rows: List[Dict[str, Any]] = []
-    for s in stations or []:
-        is_open = (s or {}).get("is_open")
-        open_label = "Yes" if is_open is True else "No"
-
-        name = (s or {}).get("tk_name") or (s or {}).get("osm_name") or (s or {}).get("name") or "Unknown"
-        brand = (s or {}).get("brand") or ""
-        city = (s or {}).get("city") or (s or {}).get("place") or ""
-
-        rows.append(
-            {
-                "Brand": brand,
-                "Name": name,
-                "City": city,
-                "Full Address": _full_address(s),
-                "Distance (air-line in km)": round(float((s or {}).get("distance_km") or 0.0), 2),
-                current_price_col: _format_price((s or {}).get(price_key)),
-                "Open (Yes/No)": open_label,
-            }
-        )
-
-    return pd.DataFrame(rows)
-
+    return {"E5": "e5", "E10": "e10", "Diesel": "diesel"}.get(label, "e5")
 
 def _try_float(v: object) -> Optional[float]:
-    if v is None:
-        return None
+    if v is None: return None
     try:
-        # handle "1,599" style strings defensively
-        if isinstance(v, str):
-            v = v.replace(",", ".").strip()
+        if isinstance(v, str): v = v.replace(",", ".").strip()
         return float(v)
-    except (TypeError, ValueError):
-        return None
+    except (TypeError, ValueError): return None
 
+def _get_station_display_name(s: Dict[str, Any]) -> str:
+    """Returns 'Brand' if available, otherwise falls back to the station name."""
+    name = (s or {}).get("tk_name") or (s or {}).get("osm_name") or (s or {}).get("name") or "Unknown"
+    brand = (s or {}).get("brand")
+    return str(brand).strip() if (brand and str(brand).strip()) else str(name).strip()
+
+def _format_station_address(s: Dict[str, Any]) -> str:
+    """Consolidated address formatter used by Table, Header, and Dropdown."""
+    def _first(*keys: str) -> str:
+        for k in keys:
+            v = (s or {}).get(k)
+            if v is not None and str(v).strip():
+                return str(v).strip()
+        return ""
+
+    street = _first("street", "addr_street", "addr:street")
+    house = _first("houseNumber", "house_number", "housenumber", "addr_housenumber", "addr:housenumber")
+    postcode = _first("postCode", "postcode", "zip", "postal_code", "postalCode", "addr_postcode", "addr:postcode")
+    city = _first("city", "place", "town", "village")
+
+    line1 = " ".join(filter(None, [street, house]))
+    line2 = " ".join(filter(None, [postcode, city]))
+
+    if line1 and line2: return f"{line1}, {line2}"
+    return line1 or line2 or city or ""
 
 def _pick_cheapest_station(stations: List[Dict[str, Any]], fuel_code: str) -> Optional[Dict[str, Any]]:
-    """
-    Returns the station with the lowest current price for the selected fuel.
-    Tie-break: if multiple stations share the same best price, pick the closer one (distance_km).
-    Ignores stations with missing/non-numeric prices.
-    """
+    """Returns station with lowest price. Tie-break: closer distance."""
     price_key = f"price_current_{fuel_code}"
-
-    best_s: Optional[Dict[str, Any]] = None
-    best_key: Optional[tuple[float, float]] = None  # (price, distance_km)
+    best_s, best_key = None, None
 
     for s in stations or []:
         p = _try_float((s or {}).get(price_key))
-        if p is None:
-            continue
-
+        if p is None: continue
+        
         d = _try_float((s or {}).get("distance_km"))
-        d_f = float(d) if d is not None else 1e9
-
-        k = (float(p), d_f)
+        k = (p, float(d) if d is not None else 1e9)
+        
         if best_key is None or k < best_key:
-            best_key = k
-            best_s = s
-
+            best_key, best_s = k, s
     return best_s
 
+def _build_results_table(stations: List[Dict[str, Any]], fuel_code: str) -> pd.DataFrame:
+    """Explorer results table."""
+    price_key = f"price_current_{fuel_code}"
+    current_price_col = f"Current Price {fuel_code.upper()}"
+    rows = []
+    
+    for s in stations or []:
+        rows.append({
+            "Brand": (s or {}).get("brand") or "",
+            "Name": (s or {}).get("tk_name") or (s or {}).get("osm_name") or (s or {}).get("name") or "Unknown",
+            "City": (s or {}).get("city") or (s or {}).get("place") or "",
+            "Full Address": _format_station_address(s),
+            "Distance (air-line in km)": round(float((s or {}).get("distance_km") or 0.0), 2),
+            current_price_col: _format_price((s or {}).get(price_key)),
+            "Open (Yes/No)": "Yes" if (s or {}).get("is_open") is True else "No",
+        })
+    return pd.DataFrame(rows)
 
 def _render_cheapest_station_header(station: Dict[str, Any], fuel_code: str) -> None:
-    """
-    Reuse Page 01 'station-header' styling for Explorer.
-    No reverse-geocoding; use payload fields only.
-    """
-    if not station:
-        return
-
-    station_name = station.get("tk_name") or station.get("osm_name") or station.get("name") or "Unknown"
-    brand = station.get("brand")
+    if not station: return
+    
+    base_name = _get_station_display_name(station)
     city = station.get("city") or station.get("place") or ""
+    title = f"{base_name} in {city.strip()}" if city else base_name
+    
+    price_val = _format_price(station.get(f"price_current_{fuel_code}"))
+    subtitle = f"Current {fuel_code.upper()}: {price_val}"
 
-    # Line 1: brand preferred; fall back to station name
-    base_name = brand if (brand and str(brand).strip()) else station_name
-    city_clean = str(city).strip() if city else ""
-    title_line = f"{base_name} in {city_clean}" if (base_name and city_clean) else base_name
-
-    price_key = f"price_current_{fuel_code}"
-    price_line = f"Current {fuel_code.upper()}: {_format_price(station.get(price_key))}"
-
-    subtitle_line = price_line
-
-    label_html = _safe_text("Cheapest & closest station:")
-    name_html = _safe_text(title_line) if title_line else ""
-    addr_html = _safe_text(subtitle_line) if subtitle_line else ""
-
-    station_header_html = (
-        "<div class='station-header'>"
-        f"<div class='label'>{label_html}</div>"
-        f"<div class='name'>{name_html}</div>"
-        + (f"<div class='addr'>{addr_html}</div>" if addr_html else "")
-        + "</div>"
+    st.markdown(
+        f"<div class='station-header'>"
+        f"<div class='label'>{_safe_text('Cheapest & closest station:')}</div>"
+        f"<div class='name'>{_safe_text(title)}</div>"
+        f"<div class='addr'>{_safe_text(subtitle)}</div>"
+        "</div>",
+        unsafe_allow_html=True
     )
-
-    st.markdown(station_header_html, unsafe_allow_html=True)
-
 
 # ------------------------------------------------------------------
 # MAIN
@@ -689,51 +648,13 @@ def main() -> None:
 
 
     # ------------------------------------------------------------------
-    # Stations dropdown (ranked) — placed between Cheapest block and Map
+    # Stations dropdown (ranked)
     # ------------------------------------------------------------------
     st.markdown(f"#### Stations Selector")
     st.markdown(
         "<div class='explorer-selector-subtitle'>Find out more in Station Explorer.</div>",
         unsafe_allow_html=True,
     )
-
-    def _station_primary_name(s: Dict[str, Any]) -> str:
-        """Brand preferred; fallback to station name."""
-        station_name = (s.get("tk_name") or s.get("osm_name") or s.get("name") or "Unknown")
-        brand = s.get("brand")
-        return str(brand).strip() if (brand and str(brand).strip()) else str(station_name).strip()
-
-    def _station_address_line(s: Dict[str, Any]) -> str:
-        """
-        Build a compact address string. If structured fields are missing, fall back to a
-        'postcode city' style string (or city only as last resort).
-        """
-        def _first(*keys: str) -> str:
-            for k in keys:
-                v = s.get(k)
-                if v is None:
-                    continue
-                t = str(v).strip()
-                if t:
-                    return t
-            return ""
-
-        street = _first("street", "addr_street", "addr:street")
-        house = _first("houseNumber", "house_number", "housenumber", "addr_housenumber", "addr:housenumber")
-        postcode = _first("postCode", "postcode", "zip", "postal_code", "postalCode", "addr_postcode", "addr:postcode")
-        city = _first("city", "place", "town", "village")
-
-        line1 = " ".join([p for p in [street, house] if p]).strip()
-        line2 = " ".join([p for p in [postcode, city] if p]).strip()
-
-        # prefer full street line; otherwise show postcode+city; otherwise city
-        if line1 and line2:
-            return f"{line1}, {line2}"
-        if line1:
-            return line1
-        if line2:
-            return line2
-        return city or ""
 
     def _station_price_value(s: Dict[str, Any]) -> float:
         v = _try_float(s.get(f"price_current_{fuel_code}"))
@@ -746,21 +667,19 @@ def main() -> None:
     )
 
     # Build dropdown options
-    options: List[Dict[str, Any]] = []
-    labels: List[str] = []
+    options, labels = [], []
     for i, s in enumerate(ranked, start=1):
-        u = _station_uuid(s)
-        if not u:
-            continue
-        primary = _station_primary_name(s)
-        addr = _station_address_line(s)
+        if not _station_uuid(s): continue
+        
+        primary = _get_station_display_name(s)
+        addr = _format_station_address(s)
         labels.append(f"{i}. {primary} — {addr}" if addr else f"{i}. {primary}")
         options.append(s)
 
     if not options:
         st.info("No selectable stations available.")
     else:
-        # Pick default: currently selected uuid (if present), otherwise the first ranked station
+        # Pick default: currently selected uuid (if present), otherwise first ranked
         selected_uuid = st.session_state.get("selected_station_uuid")
         default_index = 0
         if selected_uuid:
@@ -770,35 +689,24 @@ def main() -> None:
                     break
 
         chosen_label = st.selectbox(
-            "Station",
-            options=labels,
-            index=default_index,
-            key="explorer_station_dropdown",
-            label_visibility="collapsed",
-            help="Ranked by current price for the selected fuel (tie-break: closer to center).",
+            "Station", options=labels, index=default_index,
+            key="explorer_station_dropdown", label_visibility="collapsed",
+            help="Ranked by current price for the selected fuel (tie-break: closer to center)."
         )
 
-        chosen_idx = labels.index(chosen_label)
-        chosen_station = options[chosen_idx]
-        chosen_uuid = _station_uuid(chosen_station)
-
-        # Optional: show a compact line under the dropdown (remove if you want it cleaner)
+        chosen_station = options[labels.index(chosen_label)]
+        
         st.markdown(
             f"<div class='explorer-selector-price'>Current {fuel_code.upper()}: "
             f"{_safe_text(_format_price(chosen_station.get(f'price_current_{fuel_code}')))}</div>",
             unsafe_allow_html=True,
         )
 
-        if st.button("Open in Station Details", 
-                     key="explorer_open_station_details_btn", 
-                     use_container_width=True, 
-                     help="Opens the selected station in Page 03 with the station preselected.",):
-            st.session_state["selected_station_uuid"] = chosen_uuid
+        if st.button("Open in Station Details", key="explorer_open_station_details_btn", use_container_width=True):
+            st.session_state["selected_station_uuid"] = _station_uuid(chosen_station)
             st.session_state["selected_station_data"] = chosen_station
-            try:
-                maybe_persist_state(force=True)
-            except Exception:
-                pass
+            try: maybe_persist_state(force=True)
+            except Exception: pass
             st.switch_page("pages/03_station_details.py")
 
     # ------------------------------------------------------------------

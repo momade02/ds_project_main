@@ -77,7 +77,6 @@ from src.integration.historical_data import (
 from ui.formatting import (
     _station_uuid,
     _safe_text,
-    calculate_traffic_light_status,
     check_smart_price_alert,
 )
 
@@ -805,10 +804,6 @@ def create_hourly_pattern_chart(hourly_df: pd.DataFrame, fuel_type: str) -> go.F
             height=250,
         )
         return fig
-
-    # Count hours with actual data
-    hours_with_data = hourly_df["avg_price"].notna().sum()
-    total_records = hourly_df["count"].sum() if "count" in hourly_df.columns else hours_with_data
     
     # MOBILE: Show every 2 hours (12 bars instead of 24)
     hourly_df_mobile = hourly_df[hourly_df["hour"] % 2 == 0].copy()
@@ -1272,9 +1267,7 @@ def _render_trip_settings():
     ranked = list(last_run.get("ranked") or [])
     stations = list(last_run.get("stations") or [])
     route_station_count = len(stations)
-    
-    explorer_station_count = len(explorer_results)
-    
+        
     # Station selectors FIRST (main interaction)
     st.sidebar.markdown(
         "### Select Station",
@@ -1528,41 +1521,11 @@ def main():
     baseline_price = _safe_float(station.get(econ_baseline_key))
     
     # -------------------------------------------------------------------------
-    # Selection universe (IMPORTANT):
-    # Page 01 persists the "value view" set into last_run:
-    # - value_view_stations: stations considered "selected/value-comparable" (new logic)
-    # - value_view_meta: metadata about the benchmark (optional)
-    #
-    # For route context, we treat "value_view_stations" as the authoritative set.
-    # For explorer context, we keep the neutral "Explorer" behavior.
+    # DATA PREP FOR DISPLAY
     # -------------------------------------------------------------------------
-    value_view_stations = list((last_run or {}).get("value_view_stations") or [])
-    value_view_meta = dict((last_run or {}).get("value_view_meta") or {})
-
-    # Use the new selection set if available (route mode).
-    # Fall back to legacy ranked if value view is missing (older cache).
-    rank_universe = value_view_stations if value_view_stations else list(ranked or [])
-
-    # "Selected" means: part of the value-view universe (new logic) when coming from route.
-    # In Explorer mode, we do not apply selection status.
-    is_selected = (not is_from_explorer) and any(_station_uuid(s) == station_uuid for s in rank_universe)
-
-    # Backward-compatible alias: the rest of the page still expects `is_ranked`.
-    # In route context, "ranked" now means "selected/value-comparable" (new logic).
-    is_ranked = is_selected
-
-    # Get thresholds from last_run for exclusion detection (best effort)
-    # on-route thresholds: define what counts as "on-route" for benchmark (e.g. 1 km, 5 min)
-    onroute_km_threshold, onroute_min_threshold = _get_onroute_thresholds(last_run)
-    # exclusion thresholds: user's hard caps (e.g. 5 km, 10 min)
-    max_detour_km_cap, max_detour_min_cap = _get_exclusion_thresholds(last_run)
-
+    
+    # ETA datetime extraction (needed for Opening Hours card below)
     eta_str_for_check = station.get("eta")
-
-    # -------------------------------------------------------------------------
-    # ETA datetime + opening-hours evaluation
-    # (Needed for the Opening Hours info card further below)
-    # -------------------------------------------------------------------------
     eta_datetime: Optional[datetime] = None
     if eta_str_for_check:
         try:
@@ -1573,67 +1536,6 @@ def main():
         except Exception:
             eta_datetime = None
 
-    # Always compute opening status (ETA if available, otherwise "now")
-    is_open, time_info = _parse_opening_hours(station, eta_datetime)
-
-    # Provide an explanation ONLY when a route station is not in the selected/value set.
-    # Note: This is now aligned with the new logic: "selected" vs "other stations".
-    exclusion_reason = None
-    if (not is_from_explorer) and (not is_selected):
-        # Best-effort "why not selected?" checks.
-        # We keep your existing checks, but we do NOT label this as "Not Ranked" anymore.
-
-        # 1) Detour caps
-        if detour_km is not None and max_detour_km_cap is not None and detour_km > max_detour_km_cap:
-            exclusion_reason = f"Detour exceeds limit ({detour_km:.1f} km > {max_detour_km_cap:.1f} km max)"
-        elif detour_min is not None and max_detour_min_cap is not None and detour_min > max_detour_min_cap:
-            exclusion_reason = f"Detour time exceeds limit ({detour_min:.0f} min > {max_detour_min_cap:.0f} min max)"
-
-        # 2) Closed at ETA (only if we can evaluate opening hours)
-        elif eta_str_for_check:
-            try:
-                eta_dt = (
-                    datetime.fromisoformat(eta_str_for_check.replace("Z", "+00:00"))
-                    if isinstance(eta_str_for_check, str)
-                    else eta_str_for_check
-                )
-                is_open_check, _ = _parse_opening_hours(station, eta_dt)
-                if is_open_check is False:
-                    exclusion_reason = (
-                        f"Station closed at arrival time ({eta_dt.strftime('%H:%M') if eta_dt else 'unknown'})"
-                    )
-            except Exception:
-                pass
-
-        # 3) Missing prediction (value-view requires a valid predicted price)
-        if exclusion_reason is None and predicted_price is None:
-            exclusion_reason = "No predicted price available (not part of the value comparison set)"
-
-        # 4) Economics: if enabled and net_saving exists, explain directionally
-        # (We intentionally do NOT enforce the old 'net_saving < 0' logic here.)
-        if exclusion_reason is None and use_economics:
-            if net_saving is None:
-                exclusion_reason = "Savings could not be computed (missing economic inputs)"
-            else:
-                # If Page 01 provided a benchmark price, the value-view logic is price-based.
-                # Still give a user-friendly economic interpretation:
-                if float(net_saving) < 0:
-                    exclusion_reason = (
-                        f"Negative net savings (€{float(net_saving):.2f}) – detour cost exceeds price benefit"
-                    )
-                else:
-                    exclusion_reason = (
-                        f"Positive net savings (€{float(net_saving):.2f}), but not in the value comparison set"
-                    )
-
-        if exclusion_reason is None:
-            exclusion_reason = "Not part of the selected/value comparison set for this run"
-
-    # -------------------------------------------------------------------------
-    # HERO SECTION (NO RATING)
-    # - Keep the cyan box with station title, address and price only.
-    # - No traffic-light / ranking / tooltip / expander.
-    # -------------------------------------------------------------------------
 
     # =========================================================================
     # HERO SECTION - CYAN BOX WITH PRICE (NO TRAFFIC LIGHT)
