@@ -614,7 +614,7 @@ def _render_trip_planner_action() -> SidebarState:
     max_distance_km = st.sidebar.number_input(
         "Maximum distance to station (km)",
         min_value=1.0,
-        max_value=1000.0,
+        max_value=1500.0,
         step=1.0,
         value=float(_canonical("max_distance_km", 750.0)),
         key=_w("max_distance_km"),
