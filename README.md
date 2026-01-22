@@ -4,11 +4,11 @@ We build a route-aware refueling recommender for Germany that forecasts station-
 **Project overview**
 | Step1 | Description2   | Directory3  | Ressources4     | Detailed Information5 |
 |------|----------------|---------------|----------------|----------------------|
-| Find fuel stations near route   | Geocode starting point and destination, search for route, find fuel stations near route    | route_stations.py    | Google APIs (Geocoding, Directions, Places)      | Zelle 1.5            |
+| Find fuel stations near route   | Zelle 1.2  |./src/data_pipeline/ | Google APIs (Geocoding, Directions, Places)      | [./src/data_pipeline/README.md](./src/data_pipeline/README.md)|
 | Training price prediction model    | Train price prediction model for each fuel type      | ./src/modeling/     | Tankerkönig (historical data)      | [./src/modeling/README.md](./src/modeling/README.md)            |
-| 3    | Zelle 3.2      | Zelle 3.3     | Zelle 3.4|  [./src/app/README.md](./src/app/README.md)         |
-| 4    | Zelle 4.2      | Zelle 4.3     |Zelle 4.4| [./src/integration/README.md](./src/integration/README.md)                 |
-| 5    | Zelle 5.2      | Zelle 5.3     |   5.4  | [src/decision/README.md](./src/decision/README.md)          |
+| 3    | Zelle 3.2      | ./src/app/     | Zelle 3.4|  [./src/app/README.md](./src/app/README.md)         |
+| 4    | Zelle 4.2      | ./src/integration/   |Zelle 4.4| [./src/integration/README.md](./src/integration/README.md)                 |
+| 5    | Zelle 5.2      | ./src/decision/     |   5.4  | [src/decision/README.md](./src/decision/README.md)          |
 | 6    | Zelle 6.2      | Zelle 6.3     |  6.4   |  |
 
 

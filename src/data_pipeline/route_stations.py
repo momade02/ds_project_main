@@ -54,6 +54,10 @@ LOCAL_TIMEZONE: Final[ZoneInfo] = ZoneInfo("Europe/Berlin")
 GOOGLE_PLACES_SEARCH_URL: Final[str] = "https://places.googleapis.com/v1/places:searchText"
 
 
+# ==========================================
+# Helper Functions
+# ==========================================
+
 def _is_open_at_eta(
     *,
     eta_dt: datetime,
@@ -134,11 +138,6 @@ def _is_open_at_eta(
 
     # If we could parse periods but ETA did not fall into any open interval, treat as closed.
     return False
-
-
-# ==========================================
-# Helper Functions
-# ==========================================
 
 def environment_check() -> str:
     """
@@ -666,8 +665,8 @@ if __name__ == "__main__":
         START_ADDR = {"street": "Wilhelmstraße 7", "city": "Tübingen", "country": "Germany"}
         END_ADDR = {"street": "", "city": "Berlin", "country": "Germany"}
     elif TEST_SCENARIO == "switzerland":
-        START_ADDR = {"street": "Zinngärten 9", "city": "Stühlingen", "country": "Germany"}
-        END_ADDR = {"street": "Lendenbergstrasse 32", "city": "Schleitheim", "country": "Switzerland"}
+        START_ADDR = {"street": "", "city": "Stühlingen", "country": "Germany"}
+        END_ADDR = {"street": "", "city": "Schleitheim", "country": "Switzerland"}
     else:
         raise ValueError(f"Unknown test scenario: {TEST_SCENARIO}")
 
