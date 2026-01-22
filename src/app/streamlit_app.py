@@ -54,7 +54,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from route_stations import environment_check, google_route_via_waypoint
+from src.data_pipeline.route_stations import environment_check, google_route_via_waypoint
+
 from src.decision.recommender import (
     ONROUTE_MAX_DETOUR_KM,
     ONROUTE_MAX_DETOUR_MIN,

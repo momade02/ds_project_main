@@ -43,25 +43,17 @@ from src.app.app_errors import (
     ExternalServiceError,
 )
 
-# --- Dynamic Import Setup for route_stations.py ---
-# Ensures we can import the sibling module regardless of execution context
+# import route_stations.py
 try:
-    _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-    if "src" in _PROJECT_ROOT:
-        _PROJECT_ROOT = os.path.dirname(os.path.dirname(_PROJECT_ROOT))
-    if _PROJECT_ROOT not in sys.path:
-        sys.path.insert(0, _PROJECT_ROOT)
-
-    from route_stations import (
+    from src.data_pipeline.route_stations import (
         environment_check,
         google_geocode_structured,
         google_places_fuel_along_route,
         google_route_driving_car,
     )
-
     _ROUTE_FUNCTIONS_AVAILABLE = True
-except ImportError:
-    print("WARNING: 'route_stations.py' not found. Integration features disabled.")
+except ImportError as e:
+    print(f"WARNING: Could not import route_stations from data_pipeline: {e}")
     _ROUTE_FUNCTIONS_AVAILABLE = False
 
 
