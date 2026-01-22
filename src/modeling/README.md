@@ -15,7 +15,7 @@ Table of Contents
 
 ## 1) Purpose & quick summary
 
-`modeling` — Responsible for automated, horizon-aware predictions of fuel prices at gas stations using fitted ARDL (Autoregressive Distributed Lag) models. The component transforms station data with price lags and ETAs into actionable price forecasts for downstream analysis and dashboard presentation.
+`modeling` — Responsible for horizon-aware predictions of fuel prices at gas stations using fitted ARDL (Autoregressive Distributed Lag) models. The component transforms station data with price lags and ETAs into actionable price forecasts for downstream analysis and dashboard presentation.
 
 For non-technical readers: This component uses econometrics to predict fuel prices at stations along a route, so the app can recommend optimal refueling decisions.
 
@@ -125,8 +125,6 @@ Example output station dict:
 ---
 
 ## 8) Model selection rationale
-
-## 8) Model selection rationale (LightGBM → ARDL)
 
 Before estimating the ARDL models, we experimented with a Gradient Boosting approach (LightGBM) to assess whether a flexible machine-learning model could capture additional predictive structure. The analysis of feature importance (gain) revealed that model performance is largely driven by simple lagged price information, in particular yesterday’s price, while most other features contribute only marginally.
 
