@@ -27,4 +27,4 @@ supabase  # Supabase client (station/metadata storage, optional persistence laye
 # --- Config / networking ---
 python-dotenv  # Load environment variables from .env (local dev parity with Azure env vars)
 requests  # HTTP requests to external APIs/services (Tankerkoenig, custom endpoints, etc.)
-certifi==2024.0.0  # CA bundle for TLS verification (stabilizes SSL behavior across environments)
+certifi>=2024.0.0  # CA bundle for TLS verification (stabilizes SSL behavior across environments)
