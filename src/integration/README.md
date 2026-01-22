@@ -121,10 +121,11 @@ GOOGLE_MAPS_API_KEY=<YOUR_GOOGLE_MAPS_API_KEY>
 
 ## 9) Links
 
-- Root README: [../../README.md](../../README.md)
-- Data Pipeline: [../data_pipeline/README.md](../data_pipeline/README.md)
-- Modeling: [../modeling/README.md](../modeling/README.md)
-- App/UI: [../app/README.md](../app/README.md)
+- [Back to root README](../../README.md)
+- Related components:
+  - Data Pipeline: [../data_pipeline/README.md](../data_pipeline/README.md)
+  - Modeling: [../modeling/README.md](../modeling/README.md)
+  - App/UI: [../app/README.md](../app/README.md)
 
 ---
 
