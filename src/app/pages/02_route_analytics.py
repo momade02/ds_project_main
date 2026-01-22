@@ -799,16 +799,45 @@ def main() -> None:
     run_summary: Dict[str, Any] = cached.get("run_summary") or {}
     use_economics: bool = bool(run_summary.get("use_economics") or cached.get("use_economics", False))
 
-    # Advanced Settings (persisted by Page 01)
-    filter_closed_at_eta_enabled: bool = bool(run_summary.get("filter_closed_at_eta", False))
-    closed_at_eta_filtered_n = run_summary.get("closed_at_eta_filtered_n", 0)
 
-    brand_filter_selected = run_summary.get("brand_filter_selected") or []
+    # Advanced Settings (persisted by Page 01)
+    # Source of truth: Page 01 writes these into cached["advanced_settings"].
+    # (Older runs may store parts in run_summary or inside run_summary["constraints"].)
+    adv = (cached.get("advanced_settings") or run_summary.get("advanced_settings") or {})
+    constraints = run_summary.get("constraints") or {}
+
+    filter_closed_at_eta_enabled: bool = bool(
+        (adv.get("filter_closed_at_eta") if isinstance(adv, dict) else False)
+        or run_summary.get("filter_closed_at_eta")
+        or cached.get("filter_closed_at_eta", False)
+    )
+    closed_at_eta_filtered_n = None
+    if isinstance(adv, dict) and adv.get("closed_at_eta_filtered_n") is not None:
+        closed_at_eta_filtered_n = adv.get("closed_at_eta_filtered_n")
+    if closed_at_eta_filtered_n is None:
+        closed_at_eta_filtered_n = run_summary.get("closed_at_eta_filtered_n", 0)
+
+    # Brand filter (whitelist) configuration
+    brand_filter_selected = []
+    if isinstance(adv, dict) and adv.get("brand_filter_selected") is not None:
+        brand_filter_selected = adv.get("brand_filter_selected") or []
+    elif isinstance(constraints, dict) and constraints.get("brand_filter_selected") is not None:
+        brand_filter_selected = constraints.get("brand_filter_selected") or []
+    else:
+        brand_filter_selected = run_summary.get("brand_filter_selected") or []
+
     if isinstance(brand_filter_selected, str):
         brand_filter_selected = [brand_filter_selected]
-    brand_filter_selected = [str(x) for x in brand_filter_selected]
+    brand_filter_selected = [str(x).strip() for x in brand_filter_selected if str(x).strip()]
 
-    brand_filtered_out_n = run_summary.get("brand_filtered_out_n", 0)
+    brand_filtered_out_n = None
+    if isinstance(adv, dict) and adv.get("brand_filtered_out_n") is not None:
+        brand_filtered_out_n = adv.get("brand_filtered_out_n")
+    elif isinstance(constraints, dict) and constraints.get("brand_filtered_out_n") is not None:
+        brand_filtered_out_n = constraints.get("brand_filtered_out_n")
+    else:
+        brand_filtered_out_n = run_summary.get("brand_filtered_out_n", 0)
+
     try:
         closed_at_eta_filtered_n = int(closed_at_eta_filtered_n or 0)
     except (TypeError, ValueError):
@@ -818,6 +847,7 @@ def main() -> None:
         brand_filtered_out_n = int(brand_filtered_out_n or 0)
     except (TypeError, ValueError):
         brand_filtered_out_n = 0
+
 
     litres_to_refuel = cached.get("litres_to_refuel")
     debug_mode: bool = bool(st.session_state.get("debug_mode", False))
@@ -1358,13 +1388,28 @@ If no on-route stations exist, the benchmark is not applicable and the economics
 
         # Upstream filters (already parsed above this view)
         eta_upstream_n = _as_int(closed_at_eta_filtered_n) if filter_closed_at_eta_enabled else 0
-        brand_upstream_n = _as_int(brand_filtered_out_n) if (isinstance(brand_filter_selected, list) and len(brand_filter_selected) > 0) else 0
 
-        # "Stations" in cache are AFTER upstream removals (if those are applied upstream).
+        # Page 01 applies the brand filter upstream (before caching) but keeps the pre-brand station
+        # universe in cached["stations_for_map_all"]. Use it to keep counts/tables audit-correct.
+        stations_universe = cached.get("stations_for_map_all")
+        if not isinstance(stations_universe, list) or (stations_universe and not isinstance(stations_universe[0], dict)):
+            stations_universe = stations
+
+        # "stations" in cache are AFTER upstream removals (brand + open-at-ETA if enabled).
         candidates_in_cache_n = len(stations)
 
-        # Reconstruct "total found" for accuracy (includes upstream removals)
-        total_found_n = max(0, candidates_in_cache_n + eta_upstream_n + brand_upstream_n)
+        # Brand-filtered-out count: prefer the explicit audit number, but validate against the stored universe.
+        if isinstance(brand_filter_selected, list) and len(brand_filter_selected) > 0:
+            inferred_brand_n = max(0, len(stations_universe) - candidates_in_cache_n)
+            brand_upstream_n = max(_as_int(brand_filtered_out_n), int(inferred_brand_n))
+        else:
+            brand_upstream_n = 0
+
+        # Total stations found (includes upstream removals). Note:
+        # - stations_universe already includes brand-filtered-out stations (if brand filter active)
+        # - eta_upstream_n must still be added because those stations were removed before stations_universe existed
+        total_found_n = max(0, len(stations_universe) + eta_upstream_n)
+
 
         # -----------------------------
         # SECTION: Stations funnel (Found → Hard-feasible → Economically selected)
@@ -1915,16 +1960,27 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
         # A–D: User-facing explanation (keep lightweight; no ranking logic changes)
         # -----------------------------
 
-        # Prefer the full station universe ("stations") over any ranked/filtered subset ("ranked")
+        # Prefer the broadest available station universe for auditability:
+        # - if a brand filter is active, Page 01 keeps the pre-brand list in "stations_for_map_all"
+        # - otherwise fall back to "stations", then to ranked variants
         stations_for_explain: List[Dict[str, Any]] = []
 
-        v_all = (cached or {}).get("stations")
+        v_all = (cached or {}).get("stations_for_map_all")
         if isinstance(v_all, list) and v_all and isinstance(v_all[0], dict):
             stations_for_explain = v_all
         else:
-            v_ranked = (cached or {}).get("ranked")
-            if isinstance(v_ranked, list) and v_ranked and isinstance(v_ranked[0], dict):
-                stations_for_explain = v_ranked
+            v_all2 = (cached or {}).get("stations")
+            if isinstance(v_all2, list) and v_all2 and isinstance(v_all2[0], dict):
+                stations_for_explain = v_all2
+            else:
+                v_ranked_all = (cached or {}).get("ranked_for_map_all")
+                if isinstance(v_ranked_all, list) and v_ranked_all and isinstance(v_ranked_all[0], dict):
+                    stations_for_explain = v_ranked_all
+                else:
+                    v_ranked = (cached or {}).get("ranked")
+                    if isinstance(v_ranked, list) and v_ranked and isinstance(v_ranked[0], dict):
+                        stations_for_explain = v_ranked
+
 
         best_station = (cached or {}).get("best_station")
         best_uuid = _station_uuid(best_station) if isinstance(best_station, dict) else ""
@@ -3114,14 +3170,27 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
         # Case 1 (no on-route benchmark) or economics off: economics selection is N/A → pass-through
         selected__p4 = list(hard_feasible__p4)
 
+    # Include stations removed purely by the Page-01 brand whitelist filter.
+    # Page 01 keeps the pre-brand station universe in cached["stations_for_map_all"].
+    brand_filtered_out__p4: List[Dict[str, Any]] = []
+    if isinstance(brand_filter_selected, list) and len(brand_filter_selected) > 0:
+        universe__p4 = cached.get("stations_for_map_all")
+        if isinstance(universe__p4, list) and universe__p4:
+            # Object-identity comparison is safe here because Page 01 builds kept_stations via list
+            # comprehension from the same dict objects.
+            kept_obj_ids = {id(s) for s in (stations or [])}
+            brand_filtered_out__p4 = [s for s in universe__p4 if id(s) not in kept_obj_ids]
+
     discarded__p4: List[Dict[str, Any]] = (
-        list(hard_invalid_pred__p4)
+        list(brand_filtered_out__p4)
+        + list(hard_invalid_pred__p4)
         + list(hard_closed_eta__p4)
         + list(hard_duplicates_removed__p4)
         + list(hard_cap_failed__p4)
         + list(hard_distance_failed__p4)
         + list(econ_rejected__p4)
     )
+
 
     # Default sort (UI): descending by net saving (when available)
     if bool(use_economics):

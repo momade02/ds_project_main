@@ -1,17 +1,10 @@
 """
+
 Station Details & Analysis (Page 03)
 
-FINAL VERSION
-- Trip settings in LEFT SIDEBAR "Action" tab (replaces placeholder)
-- 7-day price trend (clean line, no dots)
-- Hourly chart with gridlines
-- All mobile optimizations
-- Zoom disabled on plots
+Displays detailed information and historical price analysis for a selected fuel station.
+This page is accessed from the Trip Planner (Page 02) or Station Explorer (Page 04).
 
-Selection sources supported (cross-page navigation):
-1) st.session_state["selected_station_data"] (preferred)
-2) st.session_state["selected_station_uuid"] resolved from last_run["ranked"]/["stations"]
-3) st.session_state["explorer_results"] (Page 04 -> Page 03 handoff)
 """
 
 from __future__ import annotations
