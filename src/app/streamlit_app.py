@@ -1107,8 +1107,8 @@ def main() -> None:
 
         # --- YouTube intro video shown only before first run ---
         st.markdown("### Introduction video")
-        st.video("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-        st.markdown("The [Video](https://www.youtube.com/watch?v=dQw4w9WgXcQ) above provides a quick overview of how to use the Fuel Station Recommender application.")
+        st.video("https://youtu.be/BxHp7tvfZaw")
+        st.markdown("The [Video](https://youtu.be/BxHp7tvfZaw) above provides a quick overview of how to use the Fuel Station Recommender application.")
 
     # -----------------------------
     # Parameters hash (controls recompute warnings)
