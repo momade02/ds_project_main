@@ -719,9 +719,11 @@ def _render_help_action() -> SidebarState:
             "\n  - *Geocoding API:* Converts addresses to coordinates."
             "\n  - *Directions API:* Calculates optimal driving routes."
             "\n  - *Places API (New):* Locates stations along the route and provides opening hours."
-            "\n- **Tankerkönig API:**"
-            "\n  - *Real-time Data:* Provides current fuel prices for over 14,000 stations across Germany."
+            "\n - © 2026 Google "
+            "\n- **Tankerkönig:**"
+            "\n  - *Prices API:* Provides current fuel prices for over 14,000 stations across Germany."
             "\n  - *Historical Data:* Used to train the price prediction models."
+            "\n - [tankerkoenig.de](https://tankerkoenig.de/)"
         )
 
     with st.sidebar.expander("Route finding process"):
