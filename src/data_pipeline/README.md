@@ -170,10 +170,11 @@ GOOGLE_MAPS_API_KEY=<YOUR_GOOGLE_MAPS_API_KEY>
 ```
 
 ## 9) Links
-- Root README: [../../README.md](../../README.md)
-- Integrion: [../integration/README.md](../integration/README.md)
-- Modeling component: [../modeling/README.md](../modeling/README.md)
-- App/UI component: [../app/README.md](../app/README.md)
+- [Back to Root README](../../README.md)
+- Related components:
+  - Integration: [../integration/README.md](../integration/README.md)
+  - Modeling component: [../modeling/README.md](../modeling/README.md)
+  - App/UI component: [../app/README.md](../app/README.md)
 
 ## Mini file tree
 ```
