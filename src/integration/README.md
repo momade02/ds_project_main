@@ -52,7 +52,7 @@ For non-technical readers: This component connects route planning (Google Maps) 
 
 ## 4) How it works (high level)
 
-**Code documentation:** All code throughout this component is extensively commented with inline documentation explaining function logic, variables and rules. For low-level implementation details refer directly to the source code files listed in the [Mini file tree](#10-mini-file-tree) section—each file contains detailed comments.
+**Code documentation:** All code throughout this component is extensively commented with inline documentation explaining function logic, variables and rules. For low-level implementation details refer directly to the source code files listed in the [Mini file tree](#10-mini-file-tree) section-each file contains detailed comments.
 
 **route_tankerkoenig_integration.py** (main pipeline):
 - Stations from Google are matched to nearest Tankerkönig stations using a spatial KD-Tree (coordinates don't match exactly)
