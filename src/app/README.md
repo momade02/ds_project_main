@@ -29,6 +29,8 @@ For non-technical readers: This is the web interface where users plan trips, see
 
 ## 3) Inputs & Outputs
 
+All input parameters, UI components, and data transformations are extensively commented throughout the codebase to facilitate understanding. Additionally, all user inputs are explained directly within the UI via helper text, tooltips, and inline documentation to ensure users understand what each parameter does.
+
 **Page 01 — Trip Planner (`streamlit_app.py`):**
 - **Inputs:**
   - Route parameters: start/destination addresses, optional waypoints, departure time
@@ -82,6 +84,8 @@ For non-technical readers: This is the web interface where users plan trips, see
 - Shared state includes: last_run, user preferences, selected stations, comparison selections
 
 ## 4) How it works (high level)
+
+**Code documentation:** All code throughout this component is extensively commented with inline documentation explaining function logic, variables and rules. For low-level implementation details refer directly to the source code files listed in the [Mini file tree](#9-mini-file-tree) section—each file contains detailed comments.
 
 **Architecture:**
 - Multi-page Streamlit application with shared session state and Redis-backed persistence

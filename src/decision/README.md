@@ -8,9 +8,8 @@ Table of Contents
 5. [Automation hooks](#5-automation-hooks)  
 6. [Validation & Quality checks](#6-validation--quality-checks)  
 7. [Error handling & troubleshooting](#7-error-handling--troubleshooting)  
-8. [Configuration (.env.example)](#8-configuration-envexample)  
-9. [Testing](#9-testing)  
-10. [Links](#10-links)
+8. [Links](#8-links)
+9. [Mini file tree](#9-mini-file-tree)
 
 ## 1) Purpose & quick summary
 Responsible for selection and ranking refueling stations using predicted prices, detour costs, and user constraints to recommend the best stop with minimal user effort.
@@ -30,6 +29,9 @@ For non-technical readers: Turns model outputs into an easy, automated “where 
   - Ranked list with injected economics fields (e.g., `econ_net_saving_eur_<fuel>`, `econ_detour_fuel_cost_eur_<fuel>` and `net_saving_eur`.
 
 ## 4) How it works (high level)
+
+**Code documentation:** All code throughout this component is extensively commented with inline documentation explaining function logic, variables and rules. For low-level implementation details refer directly to the source code files listed in the [Mini file tree](#9-mini-file-tree) section—each file contains detailed comments.
+
 - The requested fuel_type is normalized. Missing predictions trigger predict_for_fuel.
 - Implausible prices are filtered (>= 0.50 €/L guard); duplicates per UUID are resolved by keeping the lowest price.
 - **Mode selection:**  
@@ -65,7 +67,7 @@ High level structure graph
   - Modeling component: [../modeling/README.md](../modeling/README.md)
   - App/UI component: [../app/README.md](../app/README.md)
 
-## Mini file tree
+## 9) Mini file tree
 ```
 src/decision/
 ├─ README.md
