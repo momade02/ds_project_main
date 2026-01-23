@@ -73,6 +73,8 @@ Example output station dict:
 
 ## 4) How it works (high level)
 
+**Code documentation:** All code throughout this component is extensively commented with inline documentation explaining function logic, variables and rules. For low-level implementation details refer directly to the source code files. Each file contains detailed comments.
+
 - For each station and fuel type, the component:
   1. Determines the prediction horizon based on ETA and current time (minutes-based logic).
   2. Selects the appropriate ARDL model (h0 for daily-only, h1–h4 for intraday).

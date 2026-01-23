@@ -10,6 +10,7 @@ Table of Contents
 7. [Error handling & troubleshooting](#7-error-handling--troubleshooting)
 8. [Configuration (.env.example)](#8-configuration-envexample)
 9. [Links](#9-links)
+10. [Mini file tree](#10-mini-file-tree)
 
 ## 1) Purpose & quick summary
 
@@ -114,6 +115,8 @@ Change flag values: `0` = no change, `1` = price increased, `-1` = price decreas
 The `prices` table does not have a foreign key constraint to `stations.uuid`. This is intentional: Tankerkoenig occasionally removes stations from their master list (e.g., station closes or rebrands), but historical price records may still exist in our 14-day window. Enforcing referential integrity would break the daily ingestion. JOINs work normally; orphaned records are simply excluded.
 
 ## 4) How it works (high level)
+
+**Code documentation:** All code throughout this component is extensively commented with inline documentation explaining function logic, variables and rules. For low-level implementation details refer directly to the source code files listed in the [Mini file tree](#mini-file-tree) section—each file contains detailed comments.
 
 **route_stations.py** (Google Maps integration)
 - Geocoding converts human-readable addresses to coordinates
@@ -236,7 +239,7 @@ UPSTASH_REDIS_URL=your-redis-url
   - Modeling: [../modeling/README.md](../modeling/README.md)
   - App/UI: [../app/README.md](../app/README.md)
 
-## Mini file tree
+## 10) Mini file tree
 
 ```
 src/data_pipeline/
