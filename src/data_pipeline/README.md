@@ -27,7 +27,7 @@ For non-technical readers: This component gathers fuel station locations and pri
 
 **Inputs**
 
-- `route_stations.py`: origin/destination address (`str`), `GOOGLE_MAPS_API_KEY` (env). Example: "Berlin, Germany".
+- `route_stations.py`: origin/destination address, `GOOGLE_MAPS_API_KEY` (env). Example: "Berlin, Germany".
 - `update_prices_stations.py`: Tankerkoenig CSVs accessible via authenticated URL (constructed using `TANKERKOENIG_EMAIL` and `TANKERKOENIG_API_KEY` in env) and Supabase credentials (`SUPABASE_URL`, `SUPABASE_SECRET_KEY`).
 
 **Outputs**
@@ -68,7 +68,7 @@ Example row:
 ```
 uuid: 44e2bdb7-13e3-4156-8576-8326cdd20459
 name: bft Tankstelle
-brand: NULL
+brand: bft
 street: Schellengasse
 house_number: 53
 post_code: 36304
@@ -116,7 +116,7 @@ The `prices` table does not have a foreign key constraint to `stations.uuid`. Th
 
 ## 4) How it works (high level)
 
-**Code documentation:** All code throughout this component is extensively commented with inline documentation explaining function logic, variables and rules. For low-level implementation details refer directly to the source code files listed in the [Mini file tree](#mini-file-tree) section—each file contains detailed comments.
+**Code documentation:** All code throughout this component is extensively commented with inline documentation explaining function logic, variables and rules. For low-level implementation details refer directly to the source code files listed in the [Mini file tree](#mini-file-tree) section. Each file contains detailed comments.
 
 **route_stations.py** (Google Maps integration)
 - Geocoding converts human-readable addresses to coordinates
@@ -151,10 +151,10 @@ Notes:
   ```bash
   python -m src.integration.route_tankerkoenig_integration
   ```
-  - Called automatically by the dashboard when a user plans a trip
+- Called automatically by the dashboard when a user plans a trip
 
 ## 6) Validation & quality checks
-**`route_stations.py` validation**
+**`route_stations.py`**
 
 - Environment validation:
   - `GOOGLE_MAPS_API_KEY` must be set; raises `ConfigError` if missing.
@@ -172,7 +172,7 @@ Notes:
   - The distances and time durations between "Origin -> Station" and "Station -> Destination" must be >= 0 otherwise the station is skipped (no error, filtered silently).
   
 
-**`update_prices_stations.py` validation**
+**`update_prices_stations.py`**
 
 - Environment validation:
   - Required env vars (`SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `TANKERKOENIG_EMAIL`, `TANKERKOENIG_API_KEY`) are validated at start; missing keys cause early exit with `sys.exit(1)`.
