@@ -50,6 +50,7 @@ The system follows a modular pipeline architecture:
   <source media="(prefers-color-scheme: light)" srcset="./structure_graphs/light_theme_workflow.drawio.svg">
   <img alt="Overview of the project structure" src="./structure_graphs/dark_theme_workflow.drawio.svg">
 </picture>
+
 ETA = Expected time of arrival, ARDL = Autoregressive Distributed Lag
 
 ## 3) Tech Stack
