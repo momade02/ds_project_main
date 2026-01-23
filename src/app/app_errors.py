@@ -72,3 +72,10 @@ class PredictionError(AppError):
     Raised during the ML inference phase.
     Example: Model file missing or feature vector shape mismatch.
     """
+
+
+class GeocodingError(AppError):
+    """
+    Raised when geocoding of an address fails (no results returned).
+    Example: Address not found.
+    """
