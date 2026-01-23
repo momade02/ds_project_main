@@ -1,4 +1,4 @@
-# Modeling — Fuel Price Prediction
+# Modeling - Component README
 
 Table of Contents  
 1. [Purpose & quick summary](#1-purpose--quick-summary)  
@@ -8,18 +8,14 @@ Table of Contents
 5. [Automation hooks](#5-automation-hooks)  
 6. [Validation & quality checks](#6-validation--quality-checks)  
 7. [Error handling & troubleshooting](#7-error-handling--troubleshooting)
-8. [Model performance](#8-model-selection-rationale) 
+8. [ Model selection rationale](#8-model-selection-rationale) 
 9. [Links](#9-links)  
-
----
 
 ## 1) Purpose & quick summary
 
 `modeling` — Responsible for horizon-aware predictions of fuel prices at gas stations using fitted ARDL (Autoregressive Distributed Lag) models. The component transforms station data with price lags and ETAs into actionable price forecasts for downstream analysis and dashboard presentation.
 
 For non-technical readers: This component uses econometrics to predict fuel prices at stations along a route, so the app can recommend optimal refueling decisions.
-
----
 
 ## 2) Where this fits in the pipeline
 
@@ -29,8 +25,6 @@ For non-technical readers: This component uses econometrics to predict fuel pric
 - **Downstream:**  
   - `src/decision` (stop optimization and recommendation logic)  
   - `src/app` (dashboard/UI presentation)
-
----
 
 ## 3) Inputs & Outputs
 
@@ -77,8 +71,6 @@ Example output station dict:
 }
 ```
 
----
-
 ## 4) How it works (high level)
 
 - For each station and fuel type, the component:
@@ -90,8 +82,6 @@ Example output station dict:
 
 - If ETA is missing or current price is unavailable, fallback logic ensures robust predictions or flags missing data.
 
----
-
 ## 5) Automation hooks
 
 - Intended triggers:
@@ -102,8 +92,6 @@ Example output station dict:
   - Models are loaded automatically and cached (LRU cache) for efficiency
   - All logic is encapsulated; users do not need to modify code
 
----
-
 ## 6) Validation & quality checks
 
 - Checks for presence of all required lag features before prediction
@@ -111,8 +99,6 @@ Example output station dict:
 - Skips prediction if feature vector is incomplete
 - Annotates outputs with debug fields for downstream validation and audit
 - Raises explicit errors if model files are missing or corrupt
-
----
 
 ## 7) Error handling & troubleshooting
 
@@ -122,19 +108,15 @@ Example output station dict:
 - Incomplete feature vector: Skips prediction, output remains `None`
 - ETA parsing errors: Falls back to cell-based logic
 
----
-
 ## 8) Model selection rationale
 
-Before estimating the ARDL models, we experimented with a Gradient Boosting approach (LightGBM) to assess whether a flexible machine-learning model could capture additional predictive structure. The analysis of feature importance (gain) revealed that model performance is largely driven by simple lagged price information, in particular yesterday’s price, while most other features contribute only marginally.
+Before estimating the ARDL models, we experimented with a Gradient Boosting approach (LightGBM) to assess whether a flexible machine-learning model could capture additional predictive structure. The analysis of feature importance (gain) revealed that model performance is largely driven by simple lagged price information, while most other features contribute only marginally.
 
 ![Feature importance](../../structure_graphs/Feature_Importance.jpg)
 
 This finding suggests that short-term price dynamics are primarily governed by temporal dependence rather than complex nonlinear interactions. Consequently, we transitioned to a dedicated time-series framework using ARDL models. As a transparent benchmark, we therefore use the previous day’s price as the baseline reference against which more advanced models are evaluated. 
 ![Diesel vs. Baseline](../../structure_graphs/Diesel_vs_Baseline.png)
 In the diesel case, the ARDL models consistently achieve lower monthly MAE than the simple lag-1 baseline (“yesterday’s price”), indicating a performance gain from explicitly modeling time-series dynamics.
-
----
 
 ## 9) Links
 
@@ -143,5 +125,3 @@ In the diesel case, the ARDL models consistently achieve lower monthly MAE than 
   - Integration: [../integration/README.md](../integration/README.md)
   - Decision: [../decision/README.md](../decision/README.md)
   - App/UI: [../app/README.md](../app/README.md)
-
----

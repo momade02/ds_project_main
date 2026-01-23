@@ -1,4 +1,4 @@
-# Data Pipeline — Component README
+# Data Pipeline - Component README
 
 Table of Contents
 1. [Purpose & quick summary](#1-purpose--quick-summary)
@@ -19,8 +19,8 @@ For non-technical readers: This component gathers fuel station locations and pri
 See sections below for exact inputs, outputs, validation checks, and automation hooks.
 
 ## 2) Where this fits in the pipeline
-- Upstream: UI/Integration that provides starting point/destination; external data providers (Tankerkönig CSV releases; Google Maps APIs).  
-- Downstream: `src/integration` (create full dataset)`src/modeling` (price forecasting), `src/decision` (stop optimizer), `src/app` (dashboard and route recommendations).
+- **Upstream:** UI/Integration that provides starting point/destination; external data providers (Tankerkönig CSV releases; Google Maps APIs).  
+- **Downstream:** `src/integration` (create full dataset) `src/modeling` (price forecasting), `src/decision` (stop optimizer), `src/app` (dashboard and route recommendations).
 
 ## 3) Inputs & Outputs
 
@@ -131,6 +131,11 @@ Notes:
 - Intended triggers:
   - `update_prices_stations.py` is intended to be scheduled daily at a fixed CET time (e.g., 07:00 CET).  
   - `route_stations.py` is intended to be called on-demand by the application backend when a user requests a route recommendation.
+    - Can be called directly via Python (from project root):
+    ```bash
+    python -m src.integration.route_tankerkoenig_integration
+    ```
+    - Called automatically by the dashboard when a user plans a trip
 
 ## 6) Validation & quality checks data
 - Environment check: verify the Google API key is present
@@ -154,12 +159,12 @@ Notes:
 
 Troubleshooting steps:
 1. Inspect logs (default log folder is the user profile `logs` directory or `LOG_DIR` if set).   
-2. For API issues, record request IDs and timestamps.
+2. For API issues record request IDs.
 
 ## 8) Configuration (`.env.example`)
 Create a `.env` file from the example below.
 ```ini
-# .env.example — copy to .env and fill values
+# .env.example - copy to .env and fill values
 SUPABASE_URL=<https://your-project.supabase.co>
 SUPABASE_SECRET_KEY=<SUPABASE_SERVICE_ROLE_KEY>
 
