@@ -39,8 +39,8 @@ For non-technical readers: Turns model outputs into an easy, automated “where 
 
 High level structure graph
 <picture>
-  <source media="(prefers-color-scheme: light)" srcset="./structure_graphs/light_theme_recommender.drawio.svg">
-  <img alt="High level structure graph" src="./structure_graphs/dark_theme_recommender.drawio.svg">
+  <source media="(prefers-color-scheme: light)" srcset="../../structure_graphs/light_theme_recommender.drawio.svg">
+  <img alt="High level structure graph" src="../../structure_graphs/dark_theme_recommender.drawio.svg">
 </picture>
 
 ## 5) Automation hooks
