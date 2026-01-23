@@ -1,4 +1,4 @@
-# Decision Layer – Component README
+# Decision Layer - Component README
 
 Table of Contents  
 1. [Purpose & quick summary](#1-purpose--quick-summary)  
@@ -30,14 +30,11 @@ For non-technical readers: Turns model outputs into an easy, automated “where 
 
 ## 4) How it works (high level)
 
-**Code documentation:** All code throughout this component is extensively commented with inline documentation explaining function logic, variables and rules. For low-level implementation details refer directly to the source code files listed in the [Mini file tree](#9-mini-file-tree) section—each file contains detailed comments.
+**Code documentation:** All code throughout this component is extensively commented with inline documentation explaining function logic, variables and rules. For low-level implementation details refer directly to the source code files listed in the [Mini file tree](#9-mini-file-tree) section. Each file contains detailed comments.
 
-- The requested fuel_type is normalized. Missing predictions trigger predict_for_fuel.
-- Implausible prices are filtered (>= 0.50 €/L guard); duplicates per UUID are resolved by keeping the lowest price.
-- **Mode selection:**  
-  - Economic mode (when `litres_to_refuel` and `consumption_l_per_100km` are valid): baseline on-route price → gross/net savings → detour fuel/time costs → breakeven liters → rank by net saving.  
-  - Price-only fallback: rank by predicted price when economic inputs are absent.
-- Sorting favors net savings (economic) or predicted price (fallback) with route-progress tie-breakers. Optional audit log records inclusion/exclusion reasons for transparency.
+- The requested fuel_type is normalized.
+- Implausible prices are filtered (>= 0.50 €/L guard), duplicates per UUID are resolved by keeping the lowest price. 
+- Sorting favors net savings with route-progress tie-breakers. Audit log records inclusion/exclusion reasons for transparency.
 
 High level structure graph
 
@@ -47,11 +44,10 @@ High level structure graph
 </picture>
 
 ## 5) Automation hooks
-- Invoked from the service layer/API without manual steps; predictions are auto-fetched if missing.
+- Can be invoked without manual steps.
 
 ## 6) Validation & Quality checks
 - Price validity check (`>= 0.50 €/L`) and NaN/None rejection.
-- Detour caps (distance/time) with defaults in economic mode to enforce feasibility.
 - Optional distance window filters (`min_distance_km`, `max_distance_km`).
 - Audit log captures exclusion reasons and thresholds for transparency and testing.
 
