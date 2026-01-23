@@ -141,6 +141,7 @@ def create_mapbox_gl_html(
     fuel_code: str | None = None,
     litres_to_refuel: float | None = None,
     onroute_worst_price: float | None = None,
+    value_of_time_eur_per_hour: float | None = None,
     popup_variant: str = "route",  # "route" (Page 01) vs "explorer" (Page 04)
     **_ignored_kwargs: Any,
 ) -> str:
@@ -261,10 +262,23 @@ def create_mapbox_gl_html(
                 except (TypeError, ValueError):
                     detour_fuel_cost_f = 0.0
 
-                try:
-                    time_cost_f = float(time_cost) if time_cost is not None else 0.0
-                except (TypeError, ValueError):
-                    time_cost_f = 0.0
+                # Time cost: prefer precomputed econ_time_cost; else compute from detour minutes + value-of-time (if provided)
+                time_cost_f = 0.0
+                if time_cost is not None:
+                    try:
+                        time_cost_f = float(time_cost)
+                    except (TypeError, ValueError):
+                        time_cost_f = 0.0
+                elif value_of_time_eur_per_hour is not None:
+                    # Best-effort detour minutes lookup
+                    dm = s.get("detour_duration_min") or s.get("detour_min")
+                    try:
+                        dm_f = float(dm) if dm is not None else 0.0
+                        vot_f = float(value_of_time_eur_per_hour)
+                        time_cost_f = max(0.0, dm_f) / 60.0 * max(0.0, vot_f)
+                    except Exception:
+                        time_cost_f = 0.0
+
 
                 net = gross - detour_fuel_cost_f - time_cost_f
                 save_vs_worst_s = _fmt_eur(net)
