@@ -1086,7 +1086,6 @@ def main() -> None:
         # UI summary (responsive via your existing metric-grid CSS)
         items = [
             ("Fuel type", fuel_code.upper()),
-            ("Decision mode", "Economics-based" if use_economics else "Price-only"),
             ("Max extra distance", _format_km(max_detour_km)),
             ("Max extra time", _format_min(max_detour_min)),
         ]

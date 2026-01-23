@@ -181,9 +181,6 @@ Each preset will automatically:
         elif mode == "economical":
             value_of_time = 0.0
             min_net_saving = float(rng.choice([0.0, 0.0, 0.5]))
-        elif mode == "no_econ":
-            use_economics = False
-            value_of_time = 0.0
 
         return {
             # Route
@@ -341,7 +338,7 @@ def _read_cached_values_for_non_action() -> SidebarState:
         end_address="",
         fuel_label=fuel_label,
         fuel_code=fuel_code,
-        use_economics=bool(_ss("use_economics", True)),
+        use_economics=True,
         litres_to_refuel=float(_ss("litres_to_refuel", 40.0)),
         consumption_l_per_100km=float(_ss("consumption_l_per_100km", 7.0)),
         value_of_time_eur_per_hour=float(_ss("value_of_time_eur_per_hour", 0.0)),
@@ -539,11 +536,11 @@ def _render_trip_planner_action() -> SidebarState:
         ),
     )
 
-    use_economics = st.sidebar.checkbox(
-        "Economics-based decision",
-        value=bool(_canonical("use_economics", True)),
-        key=_w("use_economics"),
-    )
+    st.session_state["use_economics"] = True
+
+    st.session_state[_w("use_economics")] = True
+
+    use_economics = True
 
     litres_to_refuel = st.sidebar.number_input(
         "Litres to refuel",
