@@ -1,4 +1,4 @@
-# Integration — Component README
+# Integration - Component README
 
 Table of Contents  
 1. [Purpose & quick summary](#1-purpose--quick-summary)  
@@ -12,15 +12,11 @@ Table of Contents
 9. [Links](#9-links)  
 10. [Mini file tree](#10-mini-file-tree)  
 
----
-
 ## 1) Purpose & quick summary
 
 `integration` — Responsible for enriching fuel stations with historical and real-time fuel price data, matching stations found by Google places API (new) to fuel stations of the `stations` table from Tankerkönig, and producing feature vectors for downstream modeling and dashboard presentation.
 
 For non-technical readers: This component connects route planning (Google Maps) with fuel price analytics, so the app can recommend where and when to refuel based on both route and price history.
-
----
 
 ## 2) Where this fits in the pipeline
 
@@ -30,8 +26,6 @@ For non-technical readers: This component connects route planning (Google Maps) 
   - `src/modeling` (price forecasting)  
   - `src/decision` (recommendation logic)  
   - `src/app` (dashboard/UI)
-
----
 
 ## 3) Inputs & Outputs
 
@@ -56,8 +50,6 @@ For non-technical readers: This component connects route planning (Google Maps) 
   - Price history DataFrame (14-day time series)
   - Hourly statistics DataFrame (avg/min/max per hour)
 
----
-
 ## 4) How it works (high level)
 
 **route_tankerkoenig_integration.py** (main pipeline):
@@ -72,8 +64,6 @@ For non-technical readers: This component connects route planning (Google Maps) 
 - Computes hourly price statistics to identify best/worst refueling times
 - Used exclusively by Page 03 (Station Details)
 
----
-
 ## 5) Automation hooks
 
 - Can be called directly via Python (from project root):
@@ -84,16 +74,12 @@ For non-technical readers: This component connects route planning (Google Maps) 
 - Uses parallel database queries for faster data loading
 - Station list is cached for 1 hour to reduce database load
 
----
-
 ## 6) Validation & quality checks
 
 - Coordinates are matched and filtered against the Tankerkönig database (unmatched stations are excluded)
 - Ensures price data is available for required lags; falls back to most recent available within a window
 - Deduplication logic for route-station matches
 - Output schema is enforced implicitly through typed function signatures and consistent return structures
-
----
 
 ## 7) Error handling & troubleshooting
 
@@ -104,8 +90,6 @@ For non-technical readers: This component connects route planning (Google Maps) 
 Troubleshooting steps:
 1. Check for missing environment variables in `.env`
 2. Inspect logs and error messages for API failures or data gaps
-
----
 
 ## 8) Configuration (`.env.example`)
 
@@ -120,8 +104,6 @@ TANKERKOENIG_API_KEY=<YOUR_TANKERKOENIG_API_KEY>
 GOOGLE_MAPS_API_KEY=<YOUR_GOOGLE_MAPS_API_KEY>
 ```
 
----
-
 ## 9) Links
 
 - [Back to root README](../../README.md)
@@ -130,13 +112,10 @@ GOOGLE_MAPS_API_KEY=<YOUR_GOOGLE_MAPS_API_KEY>
   - Modeling: [../modeling/README.md](../modeling/README.md)
   - App/UI: [../app/README.md](../app/README.md)
 
----
-
 ## 10) Mini file tree
 
 ```
 src/integration/
-├─ __init__.py
 ├─ README.md
 ├─ historical_data.py
 └─ route_tankerkoenig_integration.py
