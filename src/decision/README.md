@@ -40,9 +40,10 @@ For non-technical readers: Turns model outputs into an easy, automated “where 
 - Sorting favors net savings (economic) or predicted price (fallback) with route-progress tie-breakers. Optional audit log records inclusion/exclusion reasons for transparency.
 
 High level structure graph
+
 <picture>
-  <source media="(prefers-color-scheme: light)" srcset="../../structure_graphs/light_theme_recommender.drawio.svg">
-  <img alt="High level structure graph" src="../../structure_graphs/dark_theme_recommender.drawio.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="../../structure_graphs/dark_theme_recommender.drawio.svg">
+  <img alt="High level structure graph" src="../../structure_graphs/light_theme_recommender.drawio.svg">
 </picture>
 
 ## 5) Automation hooks
