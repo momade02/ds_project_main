@@ -1,4 +1,4 @@
-# Exclude Git history (crucial for smaller images)
+# Exclude Git history 
 .git
 .gitignore
 
@@ -14,3 +14,7 @@ Thumbs.db
 # Exclude your Docker files (the container doesn't need its own recipe)
 Dockerfile
 .dockerignore
+
+# Do not send local environment/secrets into the Docker build context
+.env
+.env.*
