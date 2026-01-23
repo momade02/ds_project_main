@@ -298,12 +298,14 @@ def load_all_stations_from_supabase() -> pd.DataFrame:
 
     df = pd.DataFrame(all_rows)
 
-    # Validate Coordinates
+    # Validate Coordinates for Germany specific range
     valid_mask = (
         df["latitude"].notna()
         & df["longitude"].notna()
-        & (df["latitude"].abs() <= 90)
-        & (df["longitude"].abs() <= 180)
+        & (df["latitude"] <= 57)
+        & (df["latitude"] >= 45)
+        & (df["longitude"] <= 17)
+        & (df["longitude"] >= 4)
     )
     df = df[valid_mask]
 
