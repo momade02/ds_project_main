@@ -1,0 +1,651 @@
+/* ==========================================================================
+   GLOBAL LAYOUT / SPACING
+   ========================================================================== */
+
+/* Reduce the default top padding above the first element */
+div.block-container { padding-top: 0rem; }
+
+/* --- Sidebar: pull content to the very top --- */
+
+/* Reduce padding in the sidebar header area (collapse button row) */
+section[data-testid="stSidebar"] div[data-testid="stSidebarHeader"] {
+  padding-top: 0rem !important;
+  padding-bottom: 0rem !important;
+}
+
+/* Reduce top padding of the actual sidebar content container */
+section[data-testid="stSidebar"] div[data-testid="stSidebarUserContent"] {
+  padding-top: 0rem !important;
+}
+
+/* Ensure the first element doesn't add its own top spacing */
+section[data-testid="stSidebar"] div[data-testid="stSidebarUserContent"] > div:first-child {
+  margin-top: -1rem !important;
+  padding-top: 0 !important;
+}
+
+
+/* ==========================================================================
+   DEBUG OUTLINES (currently always enabled in your app)
+   ========================================================================== */
+
+/* Outline the main structural containers so you see the usable layout */
+section[data-testid="stSidebar"] { outline: 2px dashed rgba(0,0,0,0.25); outline-offset: -2px; }
+section[data-testid="stMain"] { outline: 2px dashed rgba(0,0,0,0.25); outline-offset: -2px; }
+div.block-container { outline: 2px dashed rgba(255,0,0,0.25); outline-offset: -2px; }
+
+/* Outline each vertical block (helpful to see spacing between blocks) */
+div[data-testid="stVerticalBlock"] { outline: 1px dashed rgba(0,0,255,0.20); outline-offset: -1px; }
+
+/* Outline columns */
+div[data-testid="column"] { outline: 1px dashed rgba(0,128,0,0.20); outline-offset: -1px; }
+
+/* Tighten spacing above Streamlit caption blocks */
+div[data-testid="stCaptionContainer"] { margin-top: -1.3rem !important; }
+
+
+/* ==========================================================================
+   TOP NAV (Page 1 segmented control: st.key = "top_nav")
+   ========================================================================== */
+
+/* Reduce vertical gap between subtitle caption and the top nav segmented control */
+section[data-testid="stMain"] div.st-key-top_nav {
+  margin-top: -0.7rem !important;   /* increase/decrease to taste */
+  margin-bottom: -0.7rem !important;
+}
+
+/* Make the top nav labels bold (BaseWeb typography inside the buttons) */
+section[data-testid="stMain"] div.st-key-top_nav [data-baseweb="button-group"] button [data-baseweb="typo"] {
+  font-weight: 700 !important;
+}
+
+/* Fallback: force bold on any nested label element Streamlit/BaseWeb uses */
+section[data-testid="stMain"] div.st-key-top_nav [data-baseweb="button-group"] button * {
+  font-weight: 700 !important;
+}
+
+
+/* ==========================================================================
+   RECOMMENDED STATION HERO + METRIC GRID
+   ========================================================================== */
+
+.station-header {
+  margin: 0.25rem auto 0.85rem auto;
+  padding: 1.05rem 1.15rem;
+  max-width: 980px;
+  text-align: center;
+
+  /* theme-consistent: teal-tinted surface */
+  background: rgba(14, 116, 144, 0.08);  /* based on primaryColor */
+  border: 1px solid rgba(14, 116, 144, 0.22);
+  border-radius: 1.05rem;
+  box-shadow: 0 6px 18px rgba(31, 41, 55, 0.08);
+}
+
+/* --- Sidebar segmented control: equal-size buttons --- */
+section[data-testid="stSidebar"] div[data-testid="stSegmentedControl"] [data-baseweb="button-group"]{
+  display: flex !important;
+  width: 100% !important;
+}
+
+section[data-testid="stSidebar"] div[data-testid="stSegmentedControl"] [data-baseweb="button-group"] > div{
+  flex: 1 1 0 !important;   /* equal widths */
+}
+
+section[data-testid="stSidebar"] div[data-testid="stSegmentedControl"] [data-baseweb="button-group"] button{
+  width: 100% !important;
+  justify-content: center !important; /* center text */
+}
+
+/* Keep dashed debug feel without being too loud */
+.station-header { outline: 1px dashed rgba(14, 116, 144, 0.35); outline-offset: -4px; }
+
+.station-header .label {
+  margin: 0 0 0.30rem 0 !important;
+  font-size: 1.10rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  opacity: 0.95;
+}
+
+.station-header .name {
+  margin: 0 0 0.25rem 0 !important;
+  font-size: 1.70rem;     /* slightly larger than before */
+  font-weight: 780;
+  line-height: 1.15;
+}
+
+.station-header .addr {
+  margin: 0 !important;
+  font-size: 1.05rem;     /* a bit larger */
+  font-weight: 600;
+  opacity: 0.82;
+  line-height: 1.25;
+}
+
+
+/* -----------------------------
+   Responsive metric grid (3 cols desktop, 2 cols mobile)
+   ----------------------------- */
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.25rem;
+}
+
+@media (max-width: 900px) {
+  .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Only collapse to 1 column on very narrow screens */
+@media (max-width: 420px) {
+  .metric-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.metric-card {
+  padding: 0.85rem 0.95rem;
+  border: 1px solid rgba(49, 51, 63, 0.18);
+  border-radius: 0.9rem;
+}
+
+/* Keep your “dashed debug” feel for these custom cards too */
+.metric-grid { outline: 1px dashed rgba(0, 0, 255, 0.20); outline-offset: -1px; }
+.metric-card { outline: 1px dashed rgba(0, 128, 0, 0.20); outline-offset: -1px; }
+
+.metric-label {
+  font-size: 0.95rem;
+  opacity: 0.85;
+  margin: 0 0 0.35rem 0;
+  line-height: 1.2;
+}
+
+.metric-value {
+  font-size: 1.7rem;
+  font-weight: 650;
+  margin: 0;
+  line-height: 1.05;
+}
+
+
+/* ==========================================================================
+   MAP HEADER / TOGGLE BUTTON
+   ========================================================================== */
+
+/* Map section header (force title + subtitle on separate lines) */
+.map-header {
+  display: block !important;
+  margin-top: 0.70rem;
+  margin-bottom: 0.35rem;
+}
+
+.map-title {
+  display: block !important;
+  font-size: 1.20rem;
+  font-weight: 700;
+  margin: 0 !important;
+  line-height: 1.15;
+}
+
+.map-subtitle {
+  display: block !important;
+  margin: 0.20rem 0 0 0 !important;  /* small gap below title */
+  opacity: 0.80;
+  font-size: 0.98rem;
+  line-height: 1.25;
+}
+
+/* Make the map toggle button look consistent and compact */
+.st-key-toggle_basemap button {
+  padding: 0.30rem 0.80rem !important;
+  border: 1px solid rgba(31, 41, 55, 0.35) !important;
+  border-radius: 10px !important;
+  background: rgba(255, 255, 255, 0.90) !important;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.10) !important;
+}
+.st-key-toggle_basemap button:hover {
+  border-color: rgba(31, 41, 55, 0.55) !important;
+}
+
+
+/* ==========================================================================
+   SIDEBAR: "RUN RECOMMENDER" BUTTON
+   ========================================================================== */
+
+section[data-testid="stSidebar"] div.st-key-run_recommender_btn button{
+  background-color: #2E7D32 !important;
+  color: #ffffff !important;
+  border: 1px solid #2E7D32 !important;
+}
+section[data-testid="stSidebar"] div.st-key-run_recommender_btn button:hover{
+  background-color: #256628 !important;
+  border-color: #256628 !important;
+}
+section[data-testid="stSidebar"] div.st-key-run_recommender_btn button:active{
+  background-color: #1F5622 !important;
+  border-color: #1F5622 !important;
+}
+section[data-testid="stSidebar"] div.st-key-run_recommender_btn button:focus{
+  box-shadow: 0 0 0 0.2rem rgba(46, 125, 50, 0.35) !important;
+}
+
+
+/* ==========================================================================
+   SIDEBAR: TOP NAV (Action / Info / Settings / Profile)
+   ========================================================================== */
+
+/* Space below the top nav buttons */
+section[data-testid="stSidebar"] div.st-key-sidebar_view{
+  margin-bottom: 14px !important;
+}
+
+/* Space below the top nav buttons (robust: works even if the wrapper is display: contents) */
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"]{
+  margin-bottom: 8px !important;  /* adjust as desired */
+}
+
+/* Hide the actual label text for buttons 2–4 */
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(2) button span,
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(3) button span,
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(4) button span,
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(2) span,
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(3) span,
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(4) span{
+  display: none !important;
+}
+
+/* Center the icon cleanly in buttons 2–4 */
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(2) button,
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(3) button,
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(4) button,
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(2),
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(3),
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(4){
+  justify-content: center !important;
+  gap: 0 !important;
+  padding-left: 0rem !important;
+  padding-right: 1.6rem !important;
+}
+
+/* Base icon pseudo-element */
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(2) button::after,
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(3) button::after,
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(4) button::after,
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(2)::after,
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(3)::after,
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(4)::after{
+  content: "" !important;
+  display: inline-block !important;
+  width: 30px !important;
+  height: 30px !important;
+  background-repeat: no-repeat !important;
+  background-position: center !important;
+  background-size: contain !important;
+}
+
+/* Info icon: ? in circle (button 2) */
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(2) button::after,
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(2)::after{
+  background-image: url("data:image/svg+xml;utf8,\
+  <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>\
+  <circle cx='12' cy='12' r='9' fill='none' stroke='%2331333F' stroke-width='2'/>\
+  <path d='M9.9 9.2a2.6 2.6 0 0 1 4.7 1.6c0 1.7-1.5 2.1-2.2 2.7-.5.4-.6.7-.6 1.8' fill='none' stroke='%2331333F' stroke-width='2' stroke-linecap='round'/>\
+  <circle cx='12' cy='17.3' r='1.1' fill='%2331333F'/>\
+  </svg>");
+}
+
+/* Settings icon: gear (button 3) */
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(3) button::after,
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(3)::after{
+  background-image: url("data:image/svg+xml;utf8,\
+  <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>\
+  <path fill='none' stroke='%2331333F' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='\
+  M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z'/>\
+  <path fill='none' stroke='%2331333F' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='\
+  M19.4 12a7.7 7.7 0 0 0-.1-1l2-1.6-2-3.5-2.4 1a7.4 7.4 0 0 0-1.7-1L15 3h-4l-.2 2.9a7.4 7.4 0 0 0-1.7 1l-2.4-1-2 3.5 2 1.6a7.7 7.7 0 0 0-.1 1c0 .3 0 .7.1 1l-2 1.6 2 3.5 2.4-1a7.4 7.4 0 0 0 1.7 1L11 21h4l.2-2.9a7.4 7.4 0 0 0 1.7-1l2.4 1 2-3.5-2-1.6c.1-.3.1-.7.1-1z'/>\
+  </svg>");
+}
+
+/* Profile icon: head/shoulders (button 4) */
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] > div:nth-child(4) button::after,
+section[data-testid="stSidebar"] div.st-key-sidebar_view [data-baseweb="button-group"] button:nth-of-type(4)::after{
+  background-image: url("data:image/svg+xml;utf8,\
+  <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>\
+  <circle cx='12' cy='9' r='3.2' fill='none' stroke='%2331333F' stroke-width='2'/>\
+  <path d='M6.5 20c1.5-3.3 3.8-4.8 5.5-4.8S15.9 16.7 17.5 20' fill='none' stroke='%2331333F' stroke-width='2' stroke-linecap='round'/>\
+  </svg>");
+}
+
+
+/* ==========================================================================
+   SIDEBAR WIDTH + ROUTE INPUT ICONS
+   ========================================================================== */
+
+/* Force sidebar width (unsupported CSS override) */
+section[data-testid="stSidebar"] {
+  width: 340px !important;      /* pick your default */
+  min-width: 300px !important;
+}
+
+/* --- Route input: stable icon column (no SVG) --- */
+
+.route-start-circle {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 2px solid rgba(49, 51, 63, 0.55);
+  box-sizing: border-box;
+}
+
+.route-dots {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 8px 0;
+}
+
+.route-dots span {
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(49, 51, 63, 0.35);
+}
+
+/* Teardrop pin using pure CSS */
+.route-pin {
+  width: 14px;
+  height: 14px;
+  background: #D32F2F;
+  border-radius: 999px 999px 999px 0;
+  transform: rotate(-45deg);
+  position: relative;
+  margin-top: 2px;
+}
+
+.route-pin::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 999px;
+  position: absolute;
+  top: 4px;
+  left: 4px;
+}
+
+.route-icon-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;     /* vertical centering */
+  height: 100%;               /* take full column height */
+  padding-top: 1.1rem;        /* remove manual offset */
+}
+
+
+/* ==========================================================================
+   SIDEBAR ROUTE (NO COLUMNS): ICONS RIGHT + INPUTS NARROWER
+   ========================================================================== */
+
+/* Reserve a fixed right gutter so inputs are proactively less wide */
+section[data-testid="stSidebar"] div.st-key-start_locality,
+section[data-testid="stSidebar"] div.st-key-end_locality {
+  position: relative !important;
+}
+
+/* Narrow the visible input box by reducing its max-width */
+section[data-testid="stSidebar"] div.st-key-start_locality .stTextInput,
+section[data-testid="stSidebar"] div.st-key-end_locality .stTextInput {
+  max-width: calc(100% - 46px) !important;   /* <- controls “proactively less wide” */
+}
+
+/* Ensure the input itself doesn’t overlap the icon area */
+section[data-testid="stSidebar"] div.st-key-start_locality input,
+section[data-testid="stSidebar"] div.st-key-end_locality input {
+  padding-right: 0.75rem !important;
+}
+
+/* Start icon: circle on the right, vertically centered to the input */
+section[data-testid="stSidebar"] div.st-key-start_locality::after {
+  content: "";
+  position: absolute;
+  right: 13px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 2px solid rgba(49, 51, 63, 0.55);
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+/* Destination icon: red pin on the right */
+section[data-testid="stSidebar"] div.st-key-end_locality::after {
+  content: "";
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+  pointer-events: none;
+
+  /* Inline SVG pin */
+  background-image: url("data:image/svg+xml;utf8,\
+  <svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'>\
+  <path fill='%23D32F2F' d='M12 2c-3.31 0-6 2.69-6 6 0 4.5 6 14 6 14s6-9.5 6-14c0-3.31-2.69-6-6-6zm0 8.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 5.5 12 5.5s2.5 1.12 2.5 2.5S13.38 10.5 12 10.5z'/>\
+  </svg>");
+}
+
+/* The three connector dots: aligned to the right gutter between inputs */
+section[data-testid="stSidebar"] .route-dots-right {
+  width: 40px;
+  margin-left: auto;
+  margin-top: -1.1rem;      /* pulls dots closer to the top input */
+  margin-bottom: -0.30rem;  /* pulls bottom input closer (reduce spacing) */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  pointer-events: none;
+}
+
+section[data-testid="stSidebar"] .route-dots-right span {
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(49, 51, 63, 0.35);
+  display: block;
+}
+
+/* Reduce vertical gap between the two inputs (sidebar only). */
+section[data-testid="stSidebar"] div.st-key-start_locality { margin-bottom: -1.4rem !important; }
+
+/* Reduce space above/below sidebar headings (Route, Fuel type, Detour economics, etc.) */
+section[data-testid="stSidebar"] h1,
+section[data-testid="stSidebar"] h2,
+section[data-testid="stSidebar"] h3 {
+  margin-top: -0.2rem !important;
+  margin-bottom: 0rem !important;
+}
+
+/* Slightly reduce vertical spacing between consecutive widgets in the sidebar */
+section[data-testid="stSidebar"] div[data-testid="stElementContainer"] {
+  margin-bottom: -0.7rem !important;
+}
+
+section[data-testid="stMain"] div.st-key-map_style_mode {
+  margin-top: -20px !important;
+}
+
+
+/* ==========================================================================
+   MAP HELP POPOVER + MAP HEADER ROW DOM TWEAKS
+   ========================================================================== */
+
+/* Map title row: title + help icon inline */
+.map-title-row{
+  display:flex;
+  align-items:center;
+  gap:0.55rem;
+}
+
+.map-help-q{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+
+  width:18px;
+  height:18px;
+  border-radius:999px;
+  border:1px solid rgba(49, 51, 63, 0.40);
+
+  font-size:12px;
+  font-weight:700;
+  line-height:1;
+  cursor: help;
+  user-select:none;
+}
+
+.map-help-details summary::-webkit-details-marker{
+  display: none;
+}
+
+.map-help-details[open] summary{
+  background: rgba(14, 116, 144, 0.10);
+  border-color: rgba(14, 116, 144, 0.35);
+}
+
+/* The popover panel */
+.map-help-content{
+  position: absolute;
+  top: 24px;
+  left: 0;
+
+  width: min(340px, 75vw);
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid rgba(49, 51, 63, 0.18);
+  border-radius: 0.75rem;
+  box-shadow: 0 10px 24px rgba(31, 41, 55, 0.14);
+
+  padding: 0.65rem 0.75rem;
+  font-size: 0.95rem;
+  line-height: 1.25;
+  z-index: 9999;
+}
+
+/* Map header row (the one that contains st-key-map_style_mode):
+   shrink the title generated by st.subheader() (DOM varies across Streamlit versions) */
+section[data-testid="stMain"]
+div[data-testid="stHorizontalBlock"]:has(div.st-key-map_style_mode)
+:is(
+  div[data-testid="stSubheader"],
+  div[data-testid="stHeading"],
+  div[data-testid="stMarkdownContainer"]
+)
+:is(h1, h2, h3, h4) {
+  font-size: 1.5rem !important;   /* adjust */
+  line-height: 1.15 !important;
+  margin: 0 !important;
+}
+
+/* Map header row: shrink the "box" height so it ends close under the text */
+section[data-testid="stMain"]
+div[data-testid="stHorizontalBlock"]:has(div.st-key-map_style_mode) {
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  margin-top: 0.5rem !important;
+  margin-bottom: -1.0rem !important;   /* keep a small pull-up, reduce if needed */
+}
+
+/* Remove extra spacing inside the left column that contains title/caption */
+section[data-testid="stMain"]
+div[data-testid="stHorizontalBlock"]:has(div.st-key-map_style_mode)
+div[data-testid="column"]:first-child
+div[data-testid="stVerticalBlock"] {
+  gap: 0 !important;  /* important: kills default vertical spacing */
+}
+
+/* Tighten the title and caption margins */
+section[data-testid="stMain"]
+div[data-testid="stHorizontalBlock"]:has(div.st-key-map_style_mode)
+:is(h1, h2, h3, h4) {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+section[data-testid="stMain"]
+div[data-testid="stHorizontalBlock"]:has(div.st-key-map_style_mode)
+div[data-testid="stCaptionContainer"] {
+  margin-top: 0.10rem !important;
+  margin-bottom: -0.8rem !important;
+  padding-bottom: 0 !important;
+}
+
+
+/* ======================================================================
+   MAP LEGEND (Page 01)
+   ====================================================================== */
+
+.map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.85rem;   /* tighter rows/columns */
+  margin-top: 0rem;
+  align-items: center;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.95rem;
+  opacity: 0.92;
+}
+
+.legend-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  display: inline-block;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+}
+
+.legend-dot.best   { background: #00C800; }
+.legend-dot.better { background: #FFA500; }
+.legend-dot.other  { background: #D32F2F; }
+
+.legend-line {
+  width: 22px;
+  height: 0;
+  display: inline-block;
+  border-top-width: 4px;
+  border-top-style: solid;
+  border-radius: 999px;
+  opacity: 0.95;
+}
+
+.legend-line.baseline {
+  border-top-color: rgba(30, 144, 255, 1.0);   /* matches map route-line */
+}
+
+.legend-line.via {
+  border-top-color: rgba(148, 0, 211, 1.0);    /* matches via-line */
+  border-top-style: dashed;
+}
+
+.legend-note {
+  margin-top: 0.25rem;
+  font-size: 0.90rem;
+  opacity: 0.75;
+  line-height: 1.25;
+}
