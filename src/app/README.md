@@ -1,4 +1,4 @@
-# App/UI Layer — Component README
+# App/UI Layer - Component README
 
 Table of Contents  
 1. [Purpose & quick summary](#1-purpose--quick-summary)  
@@ -31,7 +31,7 @@ For non-technical readers: This is the web interface where users plan trips, see
 
 All input parameters, UI components, and data transformations are extensively commented throughout the codebase to facilitate understanding. Additionally, all user inputs are explained directly within the UI via helper text, tooltips, and inline documentation to ensure users understand what each parameter does.
 
-**Page 01 — Trip Planner (`streamlit_app.py`):**
+**Page 01 - Trip Planner (`streamlit_app.py`):**
 - **Inputs:**
   - Route parameters: start/destination addresses, optional waypoints, departure time
   - Fuel selection: e5, e10, or diesel
@@ -43,7 +43,7 @@ All input parameters, UI components, and data transformations are extensively co
   - Recommended station card with price, economics breakdown and address. 
   - Session state payload (`last_run`) persisted to Redis
 
-**Page 02 — Route Analytics:**
+**Page 02 - Route Analytics:**
 - **Inputs:**
   - Session state (`last_run`) and user selections from Page 01
 
@@ -54,7 +54,7 @@ All input parameters, UI components, and data transformations are extensively co
   - Drill-down links to Station Details (Page 03)
   - Value view table (all competitive stations)
 
-**Page 03 — Station Details:**
+**Page 03 - Station Details:**
 - **Inputs:**
   - Station UUID (from Page01 or Page 04)
   - Fuel type selection (from session state or sidebar)
@@ -67,7 +67,7 @@ All input parameters, UI components, and data transformations are extensively co
   - Weekday-hour heatmap (identifies cheapest/most expensive time windows)
   - Comparison mode (compare stations on same price chart)
 
-**Page 04 — Station Explorer:**
+**Page 04 - Station Explorer:**
 - **Inputs:**
   - Location query (city name or address)
   - Search radius (km)
@@ -85,7 +85,7 @@ All input parameters, UI components, and data transformations are extensively co
 
 ## 4) How it works (high level)
 
-**Code documentation:** All code throughout this component is extensively commented with inline documentation explaining function logic, variables and rules. For low-level implementation details refer directly to the source code files listed in the [Mini file tree](#9-mini-file-tree) section—each file contains detailed comments.
+**Code documentation:** All code throughout this component is extensively commented with inline documentation explaining function logic, variables and rules. For low-level implementation details refer directly to the source code files listed in the [Mini file tree](#9-mini-file-tree) section-each file contains detailed comments.
 
 **Architecture:**
 - Multi-page Streamlit application with shared session state and Redis-backed persistence
@@ -95,26 +95,26 @@ All input parameters, UI components, and data transformations are extensively co
 
 **Page-level flow:**
 
-*Page 01 — Trip Planner (streamlit_app.py):*
+*Page 01 - Trip Planner (streamlit_app.py):*
 1. Collect user inputs via sidebar (addresses, fuel type, constraints)
 2. Call `route_recommender.run_route_recommendation(...)` to execute full pipeline
 3. Store results in `st.session_state["last_run"]` and persist to Redis
 4. Render interactive map with route polyline and station markers
 5. Display ranked station list with economic metrics and selection actions
 
-*Page 02 — Route Analytics:*
+*Page 02 - Route Analytics:*
 1. Load `last_run` from session state
 2. Display filter/audit log explaining station inclusion/exclusion
 3. Render comparison charts (price, distance, economics)
 4. Provide drill-down links to Station Details
 
-*Page 03 — Station Details:*
+*Page 03 - Station Details:*
 1. Accept station UUID from page navigation or direct URL parameter
 2. Fetch 14-day price history via `integration.historical_data`
 3. Display interactive charts (price timeline, hourly patterns, percentile bands)
 4. Show station metadata and quick route planning options
 
-*Page 04 — Station Explorer:*
+*Page 04 - Station Explorer:*
 1. Accept location query and search radius
 2. Fetch nearby stations via `station_explorer.search_stations_by_location(...)`
 3. Display grid of stations with realtime prices (if enabled)
