@@ -13,7 +13,7 @@ Table of Contents
 10. [Links](#10-links)
 
 ## 1) Purpose & quick summary
-Selects and ranks refueling stations using predicted prices, detour costs, and user constraints to recommend the best stop with minimal user effort.
+Responsible for selection and ranking refueling stations using predicted prices, detour costs, and user constraints to recommend the best stop with minimal user effort.
 
 For non-technical readers: Turns model outputs into an easy, automated “where to refuel” recommendation.
 
