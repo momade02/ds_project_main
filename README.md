@@ -37,7 +37,7 @@
 | Merge of Datasets, Create Feature Vector for Model | Responsible for enriching fuel stations with historical and real-time fuel price data and producing feature vectors for downstream modeling and dashboard presentation. | ./src/integration/   | [./src/integration/README.md](./src/integration/README.md) |
 | Price prediction model    | Responsible for predictions of fuel prices at gas stations using fitted ARDL (Autoregressive Distributed Lag) models.    | ./src/modeling/     | [./src/modeling/README.md](./src/modeling/README.md) |
 | Fuel station Recommendation  | Responsible for selection and ranking refueling stations using predicted prices, detour costs, and user constraints to recommend the best stop.    | ./src/decision/  | [./src/decision/README.md](./src/decision/README.md) |
-| 5    | Zelle 5.2      | ./src/app/      | [./src/app/README.md](./src/app/README.md) |
+| User Interface    | Responsible for orchestrating the end-to-end user experience through an interactive Streamlit dashboard that collects route inputs, presents predictions and recommendations, and provides detailed station analytics - all with minimal user effort.     | ./src/app/      | [./src/app/README.md](./src/app/README.md) |
 
 \
 **Overview graph of the project structure**
