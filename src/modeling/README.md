@@ -39,7 +39,6 @@ For non-technical readers: This component uses econometrics to predict fuel pric
 - **Outputs**
   - Annotated station dictionaries with:
     - Predicted price for each fuel (`pred_price_e5`, `pred_price_e10`, `pred_price_diesel`)
-    - Debug/explainability fields (e.g., `debug_e5_horizon_used`, `debug_e5_feature_cols`, `debug_e5_feature_values`)
     - Error flags if prediction could not be performed
 
 Example input station dict:
@@ -59,18 +58,6 @@ Example input station dict:
 }
 ```
 
-Example output station dict:
-```python
-{
-  ...existing fields...,
-  "pred_price_e5": 1.812,
-  "debug_e5_horizon_used": 2,
-  "debug_e5_feature_cols": ["price_lag_1d", "price_lag_2d", "price_lag_3d", "price_lag_7d", "price_lag_2cell"],
-  "debug_e5_feature_values": [1.789, 1.799, 1.809, 1.759, 1.799],
-  ...
-}
-```
-
 ## 4) How it works (high level)
 
 **Code documentation:** All code throughout this component is extensively commented with inline documentation explaining function logic, variables and rules. For low-level implementation details refer directly to the source code files. Each file contains detailed comments.
@@ -82,13 +69,12 @@ Example output station dict:
   4. Loads the model from disk (`.joblib` files in `src/modeling/models/`).
   5. Runs the prediction and writes the result back into the station dict.
 
-- If ETA is missing or current price is unavailable, fallback logic ensures robust predictions or flags missing data.
+- If current price is unavailable, fallback logic ensures robust predictions or flags missing data.
 
 ## 5) Automation hooks
 
 - Intended triggers:
   - Called directly via Python from the main pipeline script (`predict_all_fuels` function)
-  - Can be invoked via API/UI button in the dashboard
 
 - Automation features:
   - Models are loaded automatically and cached (LRU cache) for efficiency
@@ -98,9 +84,6 @@ Example output station dict:
 
 - Checks for presence of all required lag features before prediction
 - Validates fuel type and ETA format
-- Skips prediction if feature vector is incomplete
-- Annotates outputs with debug fields for downstream validation and audit
-- Raises explicit errors if model files are missing or corrupt
 
 ## 7) Error handling & troubleshooting
 
@@ -117,9 +100,13 @@ Before estimating the ARDL models, we experimented with a Gradient Boosting appr
 ![Feature importance](../../structure_graphs/Feature_Importance.jpg)
 
 This finding suggests that short-term price dynamics are primarily governed by temporal dependence rather than complex nonlinear interactions. Consequently, we transitioned to a dedicated time-series framework using ARDL models. As a transparent benchmark, we therefore use the previous day’s price as the baseline reference against which more advanced models are evaluated. 
-![Diesel vs. Baseline](../../structure_graphs/Diesel_vs_Baseline.png)
-In the diesel case, the ARDL models consistently achieve lower monthly MAE than the simple lag-1 baseline (“yesterday’s price”), indicating a performance gain from explicitly modeling time-series dynamics.
 
+The ARDL models achieve lower monthly MAE than the simple lag-1 baseline (“yesterday’s price”), indicating a performance gain from explicitly modeling time-series dynamics.
+
+**Horizon-Specific Models:**
+- Five ARDL variants trained, each tailored to different prediction horizons (h0–h4):
+  - **h0_daily**: Uses only daily lags (1d, 2d, 3d, 7d) for predictions ≥5 cells ahead
+  - **h1_1cell** – **h4_4cell**: Combine daily lags with intra-day lags (1cell–4cell) for tighter horizons
 ## 9) Links
 
 - [Back to Root README](../../README.md)
