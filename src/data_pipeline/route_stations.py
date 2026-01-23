@@ -67,7 +67,7 @@ import polyline  # type: ignore[import-untyped]
 import requests
 
 # Custom internal error handling
-from src.app.app_errors import ConfigError
+from src.app.app_errors import ConfigError, GeocodingError
 
 # --- Type Definitions for Improved LLM Readability ---
 # Coordinates format: [longitude, latitude] used by some GeoJSON structures
@@ -244,7 +244,6 @@ def decode_route_steps_lonlat(route: dict[str, Any]) -> RoutePathLonLat:
             decoded = googlemaps.convert.decode_polyline(enc)
             step_coords: RoutePathLonLat = [[p["lng"], p["lat"]] for p in decoded]
 
-            # Dedup Übergangspunkt zwischen Steps
             if coords and step_coords and coords[-1] == step_coords[0]:
                 step_coords = step_coords[1:]
 
@@ -316,14 +315,21 @@ def google_geocode_structured(
             - formatted_label (str): The resolved address label from Google.
 
     Raises:
-        ValueError: If geocoding fails to yield results or coordinates.
+        GeocodingError: If geocoding fails to yield results or coordinates.
     """
     client = googlemaps.Client(key=api_key)
     address_query = f"{street}, {city}, {country}"
     results = client.geocode(address_query)
 
     if not results:
-        raise ValueError(f"No geocoding results for {address_query}")
+        raise GeocodingError(
+            user_message=f"Address could not be found: '{address_query}'",
+            remediation=(
+                "Please check your input:\n"
+                "- Is the city name spelled correctly?\n"
+            ),
+            details=f"Google Geocoding API returned no results for query: {address_query}"
+        )
 
     # Extract data from the top result
     top_result = results[0]
@@ -331,9 +337,22 @@ def google_geocode_structured(
     lat = location_data.get("lat")
     lon = location_data.get("lng")
     label = top_result.get("formatted_address", address_query)
-
+    if address_query not in "Mittelpunkt Deutschlands" and lat == 51.165691 and lon == 10.451526:
+        raise GeocodingError(
+            user_message=f"Address could not be found: '{address_query}'",
+            remediation=(
+                "Please check your input:\n"
+                "- Is the city name spelled correctly?\n"
+            ),
+            details=""
+        )
+    
     if lat is None or lon is None:
-        raise ValueError(f"Geocoding returned missing coordinates for {address_query}")
+        raise GeocodingError(
+            user_message=f"No coordinates found for address: '{address_query}'",
+            remediation="Please provide a more complete address or try a different spelling.",
+            details=f"Geocoding returned result but missing lat/lon for {address_query}"
+        )
 
     return lat, lon, label
 
@@ -608,6 +627,12 @@ def google_places_fuel_along_route(
             if lat is None or lon is None:
                 continue
 
+            # Validate coordinate ranges
+            # Latitude must be between -90 and +90
+            # Longitude must be between -180 and +180
+            if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+                continue
+
             # Extract routing logic for detour calculation
             # The API returns 'legs' describing the detour:
             # Leg 0: Origin -> Station
@@ -631,9 +656,9 @@ def google_places_fuel_along_route(
                 leg_station_to_dest.get("duration", "0s")
             )
 
-            if dist_meters_oa <= 0 or dist_meters_ad <= 0:
+            if dist_meters_oa < 0 or dist_meters_ad < 0:
                 raise ValueError("Invalid detour distances returned by Places API.")
-            if duration_seconds_oa <= 0 or duration_seconds_ad <= 0:
+            if duration_seconds_oa < 0 or duration_seconds_ad < 0:
                 raise ValueError("Invalid detour durations returned by Places API.")
 
             # Total metrics for the route passing through the station (O -> A -> D)
@@ -707,12 +732,12 @@ if __name__ == "__main__":
 
     # --- Test Configuration ---
     # Select scenario: "short", "long", or "switzerland"
-    TEST_SCENARIO = "long"
+    TEST_SCENARIO = "short"
 
     # Hardcoded test addresses based on scenario selection
     if TEST_SCENARIO == "short":
-        START_ADDR = {"street": "Wilhelmstraße 7", "city": "Tübingen", "country": "Germany"}
-        END_ADDR = {"street": "Charlottenstraße 45", "city": "Reutlingen", "country": "Germany"}
+        START_ADDR = {"street": "", "city": "dfsjklfjlsdajfsdlf", "country": "Germany"}
+        END_ADDR = {"street": "", "city": "Sindelfingen", "country": "Germany"}
     elif TEST_SCENARIO == "long":
         START_ADDR = {"street": "Wilhelmstraße 7", "city": "Tübingen", "country": "Germany"}
         END_ADDR = {"street": "", "city": "Berlin", "country": "Germany"}
