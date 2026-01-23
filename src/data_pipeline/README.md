@@ -164,14 +164,19 @@ Troubleshooting steps:
 ## 8) Configuration (`.env.example`)
 Create a `.env` file from the example below.
 ```ini
-# .env.example - copy to .env and fill values
-SUPABASE_URL=<https://your-project.supabase.co>
-SUPABASE_SECRET_KEY=<SUPABASE_SERVICE_ROLE_KEY>
+# Database
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SECRET_KEY=your-service-role-key
 
-TANKERKOENIG_EMAIL=<YOUR_TANKERKOENIG_EMAIL>
-TANKERKOENIG_API_KEY=<YOUR_TANKERKOENIG_API_KEY>
+# APIs
+GOOGLE_MAPS_API_KEY=your-google-api-key
+TANKERKOENIG_API_KEY=your-tankerkoenig-api-key
+TANKERKOENIG_EMAIL=your-email
+MAPBOX_API_KEY=pk.eyJ1IjoibW9yaXR6bWFpZGwiLCJhIjoiY21rMTd6eWZ4MDM1ZTNzcXhwMTQ1bGoweSJ9.d4F_dBOh69xJjJhDVYW4nw
+MAPBOX_ACCESS_TOKEN=pk.eyJ1IjoibW9yaXR6bWFpZGwiLCJhIjoiY21rMTd6eWZ4MDM1ZTNzcXhwMTQ1bGoweSJ9.d4F_dBOh69xJjJhDVYW4nw
 
-GOOGLE_MAPS_API_KEY=<YOUR_GOOGLE_MAPS_API_KEY>
+# Session persistence (optional)
+UPSTASH_REDIS_URL=your-redis-url
 ```
 
 ## 9) Links

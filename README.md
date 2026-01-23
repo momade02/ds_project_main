@@ -14,8 +14,6 @@
 7. [Validation](#7-validation)
 8. [Acknowledgments](#8-acknowledgments)
 
----
-
 ## 1) Our Unique Approach to Smarter Refueling
 
 **Problem:** Fuel prices in Germany fluctuate considerably throughout the day and vary by location, creating a complex decision for drivers: Should they refuel now, or wait for a potentially cheaper station along their route? Additionally, drivers must consider whether the detour is worthwhile for the savings on fuel costs.
