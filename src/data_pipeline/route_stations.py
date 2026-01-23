@@ -337,6 +337,7 @@ def google_geocode_structured(
     lat = location_data.get("lat")
     lon = location_data.get("lng")
     label = top_result.get("formatted_address", address_query)
+
     if address_query not in "Mittelpunkt Deutschlands" and lat == 51.165691 and lon == 10.451526:
         raise GeocodingError(
             user_message=f"Address could not be found: '{address_query}'",
@@ -347,9 +348,11 @@ def google_geocode_structured(
             details=""
         )
     
-    if lat is None or lon is None:
+    # Start and destination addreses should yield valid lat/lon
+    # Can be outside Germany, so only check for None and valid ranges
+    if lat is None or lon is None or abs(lat) > 90 or abs(lon) > 180:
         raise GeocodingError(
-            user_message=f"No coordinates found for address: '{address_query}'",
+            user_message=f"No valid coordinates found for: '{address_query}'",
             remediation="Please provide a more complete address or try a different spelling.",
             details=f"Geocoding returned result but missing lat/lon for {address_query}"
         )
@@ -627,10 +630,8 @@ def google_places_fuel_along_route(
             if lat is None or lon is None:
                 continue
 
-            # Validate coordinate ranges
-            # Latitude must be between -90 and +90
-            # Longitude must be between -180 and +180
-            if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+            # Validate coordinate ranges (Germany bounding box)
+            if not (45 <= lat <= 57) or not (4 <= lon <= 17):
                 continue
 
             # Extract routing logic for detour calculation
@@ -657,9 +658,9 @@ def google_places_fuel_along_route(
             )
 
             if dist_meters_oa < 0 or dist_meters_ad < 0:
-                raise ValueError("Invalid detour distances returned by Places API.")
+                continue
             if duration_seconds_oa < 0 or duration_seconds_ad < 0:
-                raise ValueError("Invalid detour durations returned by Places API.")
+                continue
 
             # Total metrics for the route passing through the station (O -> A -> D)
             total_dist_meters_oad = dist_meters_oa + dist_meters_ad
@@ -736,7 +737,7 @@ if __name__ == "__main__":
 
     # Hardcoded test addresses based on scenario selection
     if TEST_SCENARIO == "short":
-        START_ADDR = {"street": "", "city": "dfsjklfjlsdajfsdlf", "country": "Germany"}
+        START_ADDR = {"street": "", "city": "Tübingen", "country": "Germany"}
         END_ADDR = {"street": "", "city": "Sindelfingen", "country": "Germany"}
     elif TEST_SCENARIO == "long":
         START_ADDR = {"street": "Wilhelmstraße 7", "city": "Tübingen", "country": "Germany"}

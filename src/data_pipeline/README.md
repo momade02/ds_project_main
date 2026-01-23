@@ -138,18 +138,34 @@ Notes:
     - Called automatically by the dashboard when a user plans a trip
 
 ## 6) Validation & quality checks data
-- Environment check: verify the Google API key is present
-- Plausibility:
-  - Geocoding returns valid lat/lon
-  - Detour distance/duration must be > 0; invalid records are rejected.
-  - Stations candidates without coordinates or without a valid detour route are skipped
+
+### `route_stations.py` validation
+- **Environment validation:**
+  - `GOOGLE_MAPS_API_KEY` must be set; raises `ConfigError` if missing.
+  
+- **Geocoding validation:**
+  - Query must return at least one result; raises `GeocodingError` if no results found.
+  - Result must contain valid latitude and longitude coordinates; raises `GeocodingError` if missing.
+  - Geocoding results that default to geographic center of Germany (lat=51.165691, lon=10.451526) are rejected; raises `GeocodingError`. This typically happens when the user inputs gibberish.
+
+- **Route validation:**
+  - Google Directions API must return a route; raises `ValueError` if no route found.
+  - Route distance must be greater than zero; raises `ValueError` if distance ≤ 0.
+  - Route duration must be greater than zero; raises `ValueError` if duration ≤ 0.
+  - Route must contain decodable step polylines; raises `ValueError` if geometry is empty.
+
+- **Station validation:**
+  - Station candidates without coordinates (lat/lon) or outside of Germany are skipped (no error, filtered silently).
+  - The distances and time durations between "Origin -> Station" and "Station -> Destination" must be ≥ 0 otherwise the station is skipped (no error, filtered silently).
 
 ```diff
-- Environment checks: required env vars are validated at start; missing critical keys cause a `ConfigError` and early exit.
-- Schema checks: downloaded CSVs are checked for expected columns and valid types; malformed rows are logged and either coerced or dropped depending on severity.
-- Determinism: route decoding and ETA calculations are deterministic given the same inputs and API responses.
-- Operational checks: insert success rates and row counts are logged; a post-run summary is produced with counts of inserted/failed rows.
+- Hier nochmal schauen
 ```
+### `update_prices_stations.py` validation
+- **Environment checks:** Required env vars (`SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `TANKERKOENIG_EMAIL`, `TANKERKOENIG_API_KEY`) are validated at start; missing critical keys cause a `ConfigError` and early exit.
+- **Schema checks:** Downloaded CSVs are checked for expected columns and valid types; malformed rows are logged and either coerced or dropped depending on severity.
+- **Determinism:** Route decoding and ETA calculations are deterministic given the same inputs and API responses.
+- **Operational checks:** Insert success rates and row counts are logged; a post-run summary is produced with counts of inserted/failed rows.
 
 ## 7) Error handling & troubleshooting
 - Common failure modes and mitigations:
