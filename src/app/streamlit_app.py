@@ -1381,6 +1381,35 @@ def main() -> None:
             stations_for_map_all = list(cached.get("stations_for_map_all") or cached.get("stations") or [])
             best_uuid = cached.get("best_uuid")
 
+            # Build a computed station lookup from the ranking outputs (these typically contain pred/econ keys)
+            computed_universe = (
+                cached.get("ranked_for_map_all")
+                or cached.get("ranked")
+                or cached.get("value_view_stations")
+                or []
+            )
+
+            computed_by_uuid: Dict[str, Dict[str, Any]] = {}
+            for cs in computed_universe:
+                if not isinstance(cs, dict):
+                    continue
+                u = _station_uuid(cs)
+                if u:
+                    computed_by_uuid[str(u)] = cs
+
+            # Enrich stable universe with computed keys where possible (do NOT mutate originals)
+            stations_for_map_all_enriched: List[Dict[str, Any]] = []
+            for s in stations_for_map_all:
+                if not isinstance(s, dict):
+                    continue
+                u = _station_uuid(s)
+                if u and str(u) in computed_by_uuid:
+                    merged = dict(s)
+                    merged.update(computed_by_uuid[str(u)])  # computed fields override raw fields
+                    stations_for_map_all_enriched.append(merged)
+                else:
+                    stations_for_map_all_enriched.append(s)
+
             value_view_uuids = set()
             for s in (cached.get("value_view_stations") or []):
                 u = _station_uuid(s)
@@ -1388,7 +1417,7 @@ def main() -> None:
                     value_view_uuids.add(u)
 
             marker_category_by_uuid: Dict[str, str] = {}
-            for s in stations_for_map_all:
+            for s in stations_for_map_all_enriched:
                 u = _station_uuid(s)
                 if not u:
                     continue
@@ -1402,19 +1431,33 @@ def main() -> None:
             _value_view_meta = cached.get("value_view_meta") or {}
             onroute_worst_price = _value_view_meta.get("onroute_worst_price")
 
+            # Pull value-of-time from the stored run summary constraints if available (best-effort)
+            _value_of_time_eur_per_hour = None
+            try:
+                _value_of_time_eur_per_hour = (
+                    (cached.get("run_summary") or {})
+                    .get("constraints", {})
+                    .get("value_of_time_eur_per_hour")
+                )
+            except Exception:
+                _value_of_time_eur_per_hour = None
+
             map_html = create_mapbox_gl_html(
                 route_coords=route_coords,
-                stations=stations_for_map_all,  # <-- key change (was ranked)
+                stations=stations_for_map_all_enriched,
                 best_station_uuid=best_uuid,
                 via_full_coords=via_overview,
                 use_satellite=use_satellite,
                 selected_station_uuid=st.session_state.get("selected_station_uuid"),
-                marker_category_by_uuid=marker_category_by_uuid,  # <-- new
+                marker_category_by_uuid=marker_category_by_uuid,
                 height_px=560,
 
                 fuel_code=fuel_code,
                 litres_to_refuel=litres_to_refuel,
                 onroute_worst_price=onroute_worst_price,
+
+                # Optional: enables map-side fallback time-cost computation when econ_time_cost is missing
+                value_of_time_eur_per_hour=_value_of_time_eur_per_hour,
             )
 
             components.html(map_html, height=560, scrolling=False)
