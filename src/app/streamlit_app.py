@@ -1135,7 +1135,7 @@ def main() -> None:
             return
         except Exception as exc:
             st.error("Unexpected error. Please try again. If it persists, check logs.")
-            st.caption(str(exc))
+            st.markdown(str(exc))
             return
 
         # Unpack results (same semantics as before)
