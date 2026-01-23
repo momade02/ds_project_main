@@ -58,7 +58,7 @@ ETA = Expected time of arrival, ARDL = Autoregressive Distributed Lag
 | **Hosting** | Microsoft Azure (App Service) (Fallback: Streamlit Cloud) |
 | **Database** | Supabase (PostgreSQL) |
 | **Data Integration** | AWS EC2 (Daily Cronjob) |
-| **Session Store** | Redis (Upstash) |
+| **Session Store** | Azure Cache for Redis |
 | **APIs/Data Aquisition** | Google APIs (Geocoding, Directions, Places), Tankerkönig (Daily Station & Price CSV, API) |
 | **Econometric Models** | scikit-learn (ARDL via OLS), joblib serialization, Tankerkönig (historic data) |
 
@@ -105,9 +105,6 @@ TANKERKOENIG_API_KEY=your-tankerkoenig-api-key
 TANKERKOENIG_EMAIL=your-email
 MAPBOX_API_KEY=your-mapbox-api-key
 MAPBOX_ACCESS_TOKEN=your-mapbox-access-token
-
-# Session persistence (optional)
-UPSTASH_REDIS_URL=your-redis-url
 ```
 
 ---
