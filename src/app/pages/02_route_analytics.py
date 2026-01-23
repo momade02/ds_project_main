@@ -1064,7 +1064,6 @@ def main() -> None:
         litres_to_refuel = constraints.get("litres_to_refuel")
         consumption_l_per_100km = constraints.get("consumption_l_per_100km")
         value_of_time_eur_per_hour = constraints.get("value_of_time_eur_per_hour")
-        min_net_saving_eur = constraints.get("min_net_saving_eur") if use_economics else None
 
         # Advanced Settings (persisted by Page 01)
         adv = (run_summary.get("advanced_settings") or cached.get("advanced_settings") or {})
@@ -1098,7 +1097,6 @@ def main() -> None:
                     ("Litres to refuel", _format_liters(litres_to_refuel)),
                     ("Consumption", f"{float(consumption_l_per_100km):.2f} L/100 km" if consumption_l_per_100km is not None else "—"),
                     ("Value of time", _format_eur(value_of_time_eur_per_hour) + "/h" if value_of_time_eur_per_hour is not None else "—"),
-                    ("Min net saving", _format_eur(min_net_saving_eur)),
                 ]
             )
 
@@ -2940,12 +2938,6 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
 
     fuel_type_label__p4 = _fuel_label__p4(fuel_code)
 
-    # Min net saving threshold (from sidebar / constraints). Best-effort key support.
-    min_net_saving_eur__p4 = _as_float(
-        (constraints__p4.get("min_net_saving_eur") if isinstance(constraints__p4, dict) else None)
-        or (constraints__p4.get("min_net_saving") if isinstance(constraints__p4, dict) else None)
-    )
-
     # Detour caps: in economics mode, caps default to 10 km / 10 min if unset.
     cap_km_f__p4 = _as_float(constraints__p4.get("max_detour_km"))
     cap_min_f__p4 = _as_float(constraints__p4.get("max_detour_min"))
@@ -3372,7 +3364,6 @@ Counts reconcile to: Discarded = Found − Economically selected.""",
 
             # Run context (constant per row; makes the table self-contained)
             "Fuel type": _safe_text(fuel_type_label__p4),
-            "Min net saving (threshold)": _fmt_eur_or_dash__p4(min_net_saving_eur__p4),
 
             "Gross saving": "—" if not bool(use_economics) else _fmt_eur_or_dash__p4(gross),
             "Net saving": "—" if not bool(use_economics) else _fmt_eur_or_dash__p4(net),

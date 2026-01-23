@@ -143,7 +143,6 @@ PERSISTED_STATE_FIELDS: Iterable[SessionStateField] = (
     SessionStateField("value_of_time_eur_per_hour", 0.0),
     SessionStateField("max_detour_km", 5.0),
     SessionStateField("max_detour_min", 10.0),
-    SessionStateField("min_net_saving_eur", 0.0),
     SessionStateField("filter_closed_at_eta", True),
     SessionStateField("brand_filter_selected", []),
     SessionStateField("sidebar_view", "Action"),

@@ -902,7 +902,6 @@ def main() -> None:
     value_of_time_eur_per_hour = sidebar.value_of_time_eur_per_hour
     max_detour_km = sidebar.max_detour_km
     max_detour_min = sidebar.max_detour_min
-    min_net_saving_eur = sidebar.min_net_saving_eur
     filter_closed_at_eta = sidebar.filter_closed_at_eta
     brand_filter_selected = list(getattr(sidebar, "brand_filter_selected", []) or [])
     min_distance_km = sidebar.min_distance_km  
@@ -972,7 +971,6 @@ def main() -> None:
         "value_of_time_eur_per_hour": value_of_time_eur_per_hour,
         "max_detour_km": max_detour_km,
         "max_detour_min": max_detour_min,
-        "min_net_saving_eur": min_net_saving_eur,
         "filter_closed_at_eta": bool(filter_closed_at_eta),
         "min_distance_km": min_distance_km,
         "max_distance_km": max_distance_km,
@@ -1013,7 +1011,6 @@ def main() -> None:
                 value_of_time_eur_per_h=value_of_time_eur_per_hour,
                 max_detour_time_min=max_detour_min,
                 max_detour_distance_km=max_detour_km,
-                min_net_saving_eur=min_net_saving_eur,
                 min_distance_km=min_distance_km,  # Added min_distance_km
                 max_distance_km=max_distance_km   # Added max_distance_km
             )
@@ -1034,7 +1031,6 @@ def main() -> None:
                     "value_of_time_per_hour": value_of_time_eur_per_hour,
                     "max_detour_km": max_detour_km,
                     "max_detour_min": max_detour_min,
-                    "min_net_saving_eur": min_net_saving_eur,
                 }
                 recommendation_kwargs = dict(ranking_kwargs)
             else:
@@ -1194,7 +1190,6 @@ def main() -> None:
             "constraints": {
                 "max_detour_km": float(max_detour_km),
                 "max_detour_min": float(max_detour_min),
-                "min_net_saving_eur": float(min_net_saving_eur),
                 "litres_to_refuel": float(litres_to_refuel),
                 "consumption_l_per_100km": float(consumption_l_per_100km),
                 "value_of_time_eur_per_hour": float(value_of_time_eur_per_hour),
