@@ -57,7 +57,7 @@ ETA = Expected time of arrival, ARDL = Autoregressive Distributed Lag
 | Layer | Technology |
 |-------|------------|
 | **Frontend** | Streamlit (Multi-Page App), Mapbox (Map provider) |
-| **Hosting** | Microsoft Azure (App Service) (Fallback: Streamlit Cloud) |
+| **Hosting** | Microsoft Azure (Container App) (Fallback: Streamlit Cloud) |
 | **Database** | Supabase (PostgreSQL) |
 | **Data Integration** | AWS EC2 (Daily Cronjob) |
 | **Session Store** | Azure Cache for Redis |
