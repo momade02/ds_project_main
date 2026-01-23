@@ -16,6 +16,7 @@ joblib  # Model/artifact persistence + caching (serialize fitted models, preproc
 
 # --- App / UI / visualization ---
 streamlit==1.52.2  # Web app framework (multi-page UI, session state, widgets)
+altair  # Declarative charts (Route Analytics Page 02)
 plotly  # Interactive charts (price curves, distributions, KPIs)
 pydeck  # Map visualization layer (deck.gl integration for station maps, route overlays)
 
