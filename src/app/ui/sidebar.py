@@ -202,7 +202,6 @@ Each preset will automatically:
             # Constraints
             "max_detour_km": max_detour_km,
             "max_detour_min": max_detour_min,
-            "min_net_saving_eur": min_net_saving,
 
             # Keep behavior consistent with your usual run defaults
             "filter_closed_at_eta": True,
@@ -288,7 +287,6 @@ class SidebarState:
     # Distance along-route filters (km)
     min_distance_km: float
     max_distance_km: float
-    min_net_saving_eur: float
 
     # Diagnostics
     debug_mode: bool
@@ -349,7 +347,6 @@ def _read_cached_values_for_non_action() -> SidebarState:
         value_of_time_eur_per_hour=float(_ss("value_of_time_eur_per_hour", 0.0)),
         max_detour_km=float(_ss("max_detour_km", 5.0)),
         max_detour_min=float(_ss("max_detour_min", 10.0)),
-        min_net_saving_eur=float(_ss("min_net_saving_eur", 0.0)),
         debug_mode=bool(_ss("debug_mode", True)),
         filter_closed_at_eta=bool(_ss("filter_closed_at_eta", True)),
         brand_filter_selected=list(_ss("brand_filter_selected", [])),
@@ -613,19 +610,6 @@ def _render_trip_planner_action() -> SidebarState:
         ),
     )
 
-    min_net_saving_eur = st.sidebar.number_input(
-        "Min net saving (€)",
-        min_value=0.0,
-        max_value=100.0,
-        step=0.5,
-        value=float(_canonical("min_net_saving_eur", 0.0)),
-        key=_w("min_net_saving_eur"),
-        help=(
-            "Minimum required net benefit for accepting a detour. Net saving = fuel price saving − "
-            "detour fuel cost − optional time cost. Set to 0 to allow any positive or zero net saving."
-        ),
-    )
-
     st.sidebar.markdown(
         "### Advanced Settings",
         help=(
@@ -702,7 +686,6 @@ def _render_trip_planner_action() -> SidebarState:
         "value_of_time_eur_per_hour",
         "max_detour_km",
         "max_detour_min",
-        "min_net_saving_eur",
         "min_distance_km",
         "max_distance_km",
         "filter_closed_at_eta",
@@ -722,7 +705,6 @@ def _render_trip_planner_action() -> SidebarState:
     max_detour_min = float(_canonical("max_detour_min", max_detour_min))
     min_distance_km = float(_canonical("min_distance_km", min_distance_km))
     max_distance_km = float(_canonical("max_distance_km", max_distance_km))
-    min_net_saving_eur = float(_canonical("min_net_saving_eur", min_net_saving_eur))
     filter_closed_at_eta = bool(_canonical("filter_closed_at_eta", filter_closed_at_eta))
     brand_filter_selected = list(_canonical("brand_filter_selected", brand_filter_selected))
 
@@ -743,7 +725,6 @@ def _render_trip_planner_action() -> SidebarState:
         max_detour_min=float(max_detour_min),
         min_distance_km=float(min_distance_km),
         max_distance_km=float(max_distance_km),
-        min_net_saving_eur=float(min_net_saving_eur),
         debug_mode=bool(_ss("debug_mode", True)),
         filter_closed_at_eta=bool(filter_closed_at_eta),
         brand_filter_selected=list(brand_filter_selected),

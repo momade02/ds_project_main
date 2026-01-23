@@ -24,7 +24,7 @@ For non-technical readers: Turns model outputs into an easy, automated “where 
 ## 3) Inputs & Outputs
 - **Inputs (data contracts):**
   - `stations: List[Dict]` with keys like `pred_price_<fuel>`, `detour_distance_km`, `detour_duration_min`, `distance_along_m`, `station_uuid`.
-  - User parameters: `fuel_type`, `litres_to_refuel`, `consumption_l_per_100km`, `value_of_time_per_hour`, `max_detour_km`, `max_detour_min`, `min_net_saving_eur`, `min_distance_km`, `max_distance_km`.
+  - User parameters: `fuel_type`, `litres_to_refuel`, `consumption_l_per_100km`, `value_of_time_per_hour`, `max_detour_km`, `max_detour_min`, `min_distance_km`, `max_distance_km`.
 - **Outputs:**
   - Ranked list with injected economics fields (e.g., `econ_net_saving_eur_<fuel>`, `econ_detour_fuel_cost_eur_<fuel>` and `net_saving_eur`.
 
