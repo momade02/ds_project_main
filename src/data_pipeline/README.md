@@ -226,9 +226,6 @@ GOOGLE_MAPS_API_KEY=your-google-api-key
 # Mapbox (required for map visualization)
 MAPBOX_API_KEY=your-mapbox-api-key
 MAPBOX_ACCESS_TOKEN=your-mapbox-access-token
-
-# Session persistence (optional)
-UPSTASH_REDIS_URL=your-redis-url
 ```
 
 ## 9) Links
