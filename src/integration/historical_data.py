@@ -14,9 +14,21 @@ Description:
     - get_station_metadata: Station info lookup (Page 03 uses now route data instead)
     - get_opening_hours_display: Opening hours parser (Page 03 uses now Google/TK API directly)
 
+    Data Validation:
+    This module focuses on data retrieval for visualization.
+    Validation responsibilities are distributed across the pipeline:
+    
+    - fuel_type: Validated here (must be e5, e10, or diesel)
+    - Station UUIDs: Received from route integration pipeline, which derives them
+      from the Supabase stations table; unknown UUIDs return empty results
+    - Empty results: Return empty DataFrame; UI layer (Page 03) shows "No data" messages
+    - Price plausibility: Validated downstream in recommender.py
+    
+    Price values from Tankerkoenig are trusted as-is since the data comes from
+    an official source regulated by the Bundeskartellamt (German competition authority).
+
     Implementation details:
     - Dates are handled in local German time (as stored in DB) to avoid TZ confusion.
-    - Pandas 2.x compatibility is enforced via `utc=False`.
     - Caching (`lru_cache`) is applied to static station metadata.
 """
 

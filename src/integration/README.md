@@ -14,7 +14,7 @@ Table of Contents
 
 ## 1) Purpose & quick summary
 
-`integration` — Responsible for enriching fuel stations with historical and real-time fuel price data, matching stations found by Google places API (new) to fuel stations of the `stations` table from Tankerkönig, and producing feature vectors for downstream modeling and dashboard presentation.
+`integration` - Responsible for enriching fuel stations with historical and real-time fuel price data, matching stations found by Google places API (new) to fuel stations of the `stations` table from Tankerkönig, and producing feature vectors for downstream modeling and dashboard presentation.
 
 For non-technical readers: This component connects route planning (Google Maps) with fuel price analytics, so the app can recommend where and when to refuel based on both route and price history.
 
@@ -76,32 +76,43 @@ For non-technical readers: This component connects route planning (Google Maps) 
 
 ## 6) Validation & quality checks
 
-- Coordinates are matched and filtered against the Tankerkönig database (unmatched stations are excluded)
-- Ensures price data is available for required lags; falls back to most recent available within a window
-- Deduplication logic for route-station matches
-- Output schema is enforced implicitly through typed function signatures and consistent return structures
+**In this component:**
+- Coordinates are filtered to Germany bounding box (lat 45-57, lon 4-17) in `load_all_stations_from_supabase()`
+- Fuel type validation in `historical_data.py` raises `DataQualityError` if not e5/e10/diesel
+- Missing price lags fall back to most recent available within a 3-day window
+- Duplicate stations are deduplicated by UUID, keeping the one with lowest detour
+
+**Handled downstream:**
+- Price plausibility is validated in `src/decision/recommender.py` - integration delivers raw data, recommender decides validity
+- Empty data display is handled by UI layer (`src/app/pages/03_station_details.py`) with "No data available" messages
+
+> **Note:** Tankerkoenig data comes from an official source regulated by the Bundeskartellamt (German competition authority), so raw price values are trusted without additional filtering in this step of the pipeline.
 
 ## 7) Error handling & troubleshooting
 
-- Handles missing credentials (Supabase, Tankerkönig API) with clear error messages
-- Catches and reports data quality issues (invalid fuel types, missing data)
-- External service errors (API failures) are surfaced with actionable remediation steps
+- Handles missing credentials (Supabase, Google API) with `ConfigError`
+- Missing Tankerkoenig API key logs a warning once and falls back to historical data
+- Catches and reports data quality issues (invalid fuel types, no stations found) via `DataQualityError`
+- External service errors (API failures) are surfaced via `ExternalServiceError` with details
 
 Troubleshooting steps:
 1. Check for missing environment variables in `.env`
 2. Inspect logs and error messages for API failures or data gaps
+3. Verify API keys are valid and have sufficient quota
 
 ## 8) Configuration (`.env.example`)
 
 Create a `.env` file from the example below.
 ```ini
-# .env.example - copy to .env and fill values
-SUPABASE_URL=<https://your-project.supabase.co>
-SUPABASE_SECRET_KEY=<SUPABASE_SERVICE_ROLE_KEY>
+# Required for this component
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SECRET_KEY=your-service-role-key
 
-TANKERKOENIG_API_KEY=<YOUR_TANKERKOENIG_API_KEY>
+# Required for route planning
+GOOGLE_MAPS_API_KEY=your-google-api-key
 
-GOOGLE_MAPS_API_KEY=<YOUR_GOOGLE_MAPS_API_KEY>
+# Optional - falls back to historical data if missing
+TANKERKOENIG_API_KEY=your-tankerkoenig-api-key
 ```
 
 ## 9) Links
@@ -116,7 +127,8 @@ GOOGLE_MAPS_API_KEY=<YOUR_GOOGLE_MAPS_API_KEY>
 
 ```
 src/integration/
-├─ README.md
-├─ historical_data.py
-└─ route_tankerkoenig_integration.py
+├── __init__.py
+├── README.md
+├── historical_data.py
+└── route_tankerkoenig_integration.py
 ```
