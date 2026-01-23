@@ -34,6 +34,8 @@ class AppError(Exception):
 
     def __str__(self) -> str:
         parts = [self.user_message]
+        if self.remediation:
+            parts.append(f"Remediation: {self.remediation}")
         if self.details:
             parts.append(f"Details: {self.details}")
         return " - ".join(parts)
