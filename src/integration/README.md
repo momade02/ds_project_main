@@ -111,6 +111,10 @@ SUPABASE_SECRET_KEY=your-service-role-key
 # Required for route planning
 GOOGLE_MAPS_API_KEY=your-google-api-key
 
+# Mapbox (required for map visualization)
+MAPBOX_API_KEY=your-mapbox-api-key
+MAPBOX_ACCESS_TOKEN=your-mapbox-access-token
+
 # Optional - falls back to historical data if missing
 TANKERKOENIG_API_KEY=your-tankerkoenig-api-key
 ```
