@@ -18,6 +18,19 @@ Description:
            |
     [Model-Ready Feature Vectors]
 
+    Data Validation:
+    This module focuses on data enrichment and feature engineering.
+    Validation responsibilities are distributed across the pipeline:
+    
+    - Coordinates: Filtered to Germany bounding box (lat 45-57, lon 4-17)
+    - Station UUIDs: Derived from Supabase stations table via KD-Tree matching;
+      only stations that exist in our database are included
+    - Price plausibility: Validated downstream in recommender.py
+    
+    Price values from Tankerkoenig are trusted as-is since the data comes from
+    an official source regulated by the Bundeskartellamt (German competition authority).
+
+
 Usage:
     The primary entrypoint is `get_fuel_prices_for_route(...)`.
 """
@@ -34,6 +47,10 @@ import numpy as np
 import pandas as pd
 import requests
 from scipy.spatial import cKDTree  # type: ignore
+
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
 
 # Custom Error Handling
 from src.app.app_errors import (
